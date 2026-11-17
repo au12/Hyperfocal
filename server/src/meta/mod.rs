@@ -33,6 +33,11 @@ pub struct FileMeta {
     pub xmp: Option<Xmp>,
 }
 
+/// f32 metadata values as tidy f64 (5.6, not 5.599999904632568).
+fn round2(v: f32) -> f64 {
+    (v as f64 * 100.0).round() / 100.0
+}
+
 fn clean(s: &str) -> Option<String> {
     let t = s.trim_matches(|c: char| c.is_whitespace() || c == '\0');
     if t.is_empty() { None } else { Some(t.to_string()) }
@@ -58,11 +63,11 @@ fn read_raw_meta(path: &Path) -> Result<FileMeta, String> {
         make: clean(&m.canonical_make).or_else(|| clean(&m.make)),
         model: clean(&m.canonical_model).or_else(|| clean(&m.model)),
         lens: m.lens.model.as_deref().and_then(clean),
-        focal: m.exposure.focal_length.map(|v| v as f64),
-        fnum: m.exposure.f_number.map(|v| v as f64),
+        focal: m.exposure.focal_length.map(round2),
+        fnum: m.exposure.f_number.map(round2),
         exposure: m.exposure.exposure_time,
         iso: m.exposure.iso,
-        bias: m.exposure.exposure_bias.map(|v| v as f64),
+        bias: m.exposure.exposure_bias.map(round2),
         creator: m.artist.as_deref().and_then(clean),
         rights: m.copyright.as_deref().and_then(clean),
         ..Default::default()

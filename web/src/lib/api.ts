@@ -1,0 +1,257 @@
+// Typed client for the Hyperfocal API. All URLs are relative so the app works behind
+// a reverse proxy, on a sub-path or straight on the container port.
+
+export type ToneMode = 'normal' | 'linear' | 'shadows' | 'highlights';
+export type WbMode = 'asshot' | 'daylight' | 'auto';
+export type LabelColor = 'red' | 'yellow' | 'green' | 'blue' | 'purple';
+
+export interface Progress {
+  phase: string;
+  folders_total: number;
+  folders_done: number;
+  photos_indexed: number;
+  current: string | null;
+  last_full_scan: number | null;
+  thumbs_pending: number;
+  library_ok: boolean;
+  message: string | null;
+}
+
+export interface Status {
+  version: string;
+  readonly: boolean;
+  reject_dir: string;
+  progress: Progress;
+  counts: { photos: number; folders: number; geotagged: number };
+  cache: Record<string, number>;
+  auth: boolean;
+  logged_in: boolean;
+}
+
+/** Folder tuple from /api/tree: [id, parent, name, count, isReject, scanned] */
+export type FolderRow = [number, number | null, string, number, number, boolean];
+
+export interface Folder {
+  id: number;
+  parent: number | null;
+  name: string;
+  count: number;
+  isReject: boolean;
+  children: Folder[];
+  total: number;
+  path: string;
+  depth: number;
+}
+
+/** Columnar photo list. */
+export interface PhotoList {
+  id: number[];
+  n: string[];
+  w: number[];
+  h: number[];
+  o: number[];
+  t: (number | null)[];
+  r: number[];
+  lc: (LabelColor | null)[];
+  p: number[];
+  k: number[];
+  f: number[];
+  g: number[];
+  v: string[];
+  x: string[];
+}
+
+export const emptyList = (): PhotoList => ({ id: [], n: [], w: [], h: [], o: [], t: [], r: [], lc: [], p: [], k: [], f: [], g: [], v: [], x: [] });
+
+export interface PhotoDetail {
+  id: number;
+  folder_id: number;
+  folder: string;
+  in_reject: boolean;
+  name: string;
+  ext: string;
+  kind: number;
+  size: number;
+  mtime: number;
+  width: number | null;
+  height: number | null;
+  orientation: number;
+  taken: number | null;
+  taken_str: string | null;
+  make: string | null;
+  model: string | null;
+  lens: string | null;
+  focal: number | null;
+  fnum: number | null;
+  exposure: number | null;
+  iso: number | null;
+  bias: number | null;
+  rating: number;
+  label: string | null;
+  lcolor: LabelColor | null;
+  pick: number;
+  title: string | null;
+  description: string | null;
+  creator: string | null;
+  rights: string | null;
+  keywords: string[];
+  hkeywords: string[];
+  lat: number | null;
+  lon: number | null;
+  alt: number | null;
+  city: string | null;
+  state: string | null;
+  country: string | null;
+  country_code: string | null;
+  sublocation: string | null;
+  sidecar: string | null;
+  sidecar_size: number | null;
+  companion: string | null;
+  files: string[];
+  error: string | null;
+  v: string;
+}
+
+export interface RawInfo {
+  w: number;
+  h: number;
+  hist: number[][];
+  hist_min_ev: number;
+  hist_per_ev: number;
+  over: [number, number, number, number];
+  under: number;
+  wb: [number, number, number];
+  baseline_ev: number;
+  boost_ev: number;
+  decode_ms: number;
+  develop_ms: number;
+  approximate: boolean;
+}
+
+export interface Patch {
+  rating?: number;
+  label?: string | null;
+  pick?: number;
+  title?: string | null;
+  description?: string | null;
+  creator?: string | null;
+  rights?: string | null;
+  keywords_add?: string[];
+  keywords_remove?: string[];
+  keywords_set?: string[];
+  gps?: { lat: number; lon: number; alt?: number | null } | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  country_code?: string | null;
+  sublocation?: string | null;
+  orientation?: number;
+  rotate?: number;
+}
+
+export interface BatchResult {
+  batch: string;
+  ok: number[];
+  failed: [number, string][];
+}
+
+export interface JournalEntry {
+  batch: string;
+  ts: number;
+  kind: string;
+  count: number;
+  summary: string | null;
+  undone: boolean;
+  undo_of: string | null;
+}
+
+export interface Cluster {
+  n: number;
+  lat: number;
+  lon: number;
+  id: number;
+  v: string | null;
+  bounds: [number, number, number, number];
+}
+
+export interface Facets {
+  cameras: [string, number][];
+  lenses: [string, number][];
+  years: [string, number][];
+  labels: [string, number][];
+}
+
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+const BASE = new URL('./api/', document.baseURI).pathname;
+
+export function apiUrl(path: string, params?: Record<string, unknown>): string {
+  let u = BASE + path.replace(/^\//, '');
+  if (params) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v === undefined || v === null || v === '' || v === false) continue;
+      q.set(k, v === true ? '1' : String(v));
+    }
+    const s = q.toString();
+    if (s) u += '?' + s;
+  }
+  return u;
+}
+
+async function req<T>(method: string, path: string, body?: unknown, params?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(apiUrl(path, params), {
+    method,
+    headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    credentials: 'same-origin',
+    signal,
+  });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      const j = await res.json();
+      msg = j.error ?? msg;
+    } catch {
+      /* not json */
+    }
+    if (res.status === 401) window.dispatchEvent(new CustomEvent('hf-auth'));
+    throw new ApiError(res.status, msg);
+  }
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  status: () => req<Status>('GET', 'status'),
+  tree: () => req<{ folders: FolderRow[] }>('GET', 'tree'),
+  photos: (params: Record<string, unknown>, signal?: AbortSignal) => req<PhotoList>('GET', 'photos', undefined, params, signal),
+  photo: (id: number, signal?: AbortSignal) => req<PhotoDetail>('GET', `photo/${id}`, undefined, undefined, signal),
+  rawinfo: (id: number, v: string, wb: WbMode, signal?: AbortSignal) => req<RawInfo>('GET', `photo/${id}/rawinfo`, undefined, { v, wb }, signal),
+  facets: () => req<Facets>('GET', 'facets'),
+  keywords: (q: string, signal?: AbortSignal) => req<[string, number][]>('GET', 'keywords', undefined, { q }, signal),
+  clusters: (params: Record<string, unknown>, signal?: AbortSignal) => req<{ cell: number; clusters: Cluster[] }>('GET', 'geo/clusters', undefined, params, signal),
+  meta: (ids: number[], patch: Patch) => req<BatchResult>('POST', 'meta', { ids, patch }),
+  reject: (ids: number[]) => req<BatchResult>('POST', 'reject', { ids }),
+  restore: (ids: number[]) => req<BatchResult>('POST', 'restore', { ids }),
+  undo: (batch?: string) => req<BatchResult>('POST', 'undo', { batch }),
+  journal: () => req<JournalEntry[]>('GET', 'journal'),
+  rescan: (folder?: number) => req<{ ok: boolean }>('POST', 'rescan', { folder }),
+  settings: () => req<Record<string, unknown>>('GET', 'settings'),
+  saveSettings: (s: Record<string, unknown>) => req<Record<string, unknown>>('POST', 'settings', s),
+  login: (password: string) => req<{ ok: boolean }>('POST', 'login', { password }),
+  logout: () => req<{ ok: boolean }>('POST', 'logout', {}),
+};
+
+export const urls = {
+  thumb: (id: number, v: string) => apiUrl(`photo/${id}/thumb`, { v }),
+  preview: (id: number, v: string, w: number) => apiUrl(`photo/${id}/preview`, { v, w }),
+  jpeg: (id: number, v: string) => apiUrl(`photo/${id}/jpeg`, { v }),
+  raw: (id: number, v: string, o: { w: number; mode: ToneMode; ev: number; wb: WbMode; low?: boolean }) =>
+    apiUrl(`photo/${id}/raw`, { v, w: o.w, mode: o.mode === 'normal' ? undefined : o.mode, ev: o.ev ? o.ev.toFixed(2) : undefined, wb: o.wb === 'asshot' ? undefined : o.wb, prio: o.low ? 'low' : undefined }),
+  rawmask: (id: number, v: string, wb: WbMode) => apiUrl(`photo/${id}/rawmask`, { v, wb: wb === 'asshot' ? undefined : wb }),
+  events: () => apiUrl('events'),
+};

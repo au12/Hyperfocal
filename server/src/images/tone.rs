@@ -64,9 +64,14 @@ pub fn curve(mode: ToneMode, x: f32) -> f32 {
         ToneMode::Linear => srgb_oetf(x.min(1.0)),
         ToneMode::Normal => contrast(srgb_oetf(x.min(1.0))),
         ToneMode::Shadows => {
-            const K: f32 = 7.0; // +3 EV at black, 0 EV at white
-            let y = x.min(1.0) * (1.0 + K) / (1.0 + K * x.min(1.0));
-            srgb_oetf(y)
+            // +2.5 EV in the deep shadows, fading out by -1.5 EV: shadows open up while
+            // mid-tones and highlights stay where they are (monotonic: the boost never
+            // falls faster than one stop per stop).
+            let x = x.min(1.0);
+            let ev = x.log2();
+            let t = ((ev + 6.0) / 4.5).clamp(0.0, 1.0);
+            let t = t * t * (3.0 - 2.0 * t);
+            srgb_oetf((x * 2f32.powf(2.5 * (1.0 - t))).min(1.0))
         }
         ToneMode::Highlights => {
             const STOPS: f32 = 3.0;
