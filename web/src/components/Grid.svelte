@@ -199,7 +199,7 @@
             {#if store.list.r[i] > 0}<span class="stars">{stars(store.list.r[i])}</span>{:else if store.list.r[i] < 0}<span class="rej-r">✕</span>{/if}
             <span class="grow"></span>
             {#if store.settings.showNames}<span class="name ellipsis">{store.list.n[i]}</span>{/if}
-            <span class="ext">{store.list.x[i].toUpperCase().replace('+', '+JPG')}</span>
+            <span class="ext">{store.list.x[i].toUpperCase()}</span>
           </div>
         </div>
       {/each}

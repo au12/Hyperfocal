@@ -1,6 +1,8 @@
 //! Decoder tests against the fixtures in tests/fixtures (regenerate them with
 //! tests/fixtures/make_fixtures.py). The ops run in-process here; the spawned
 //! helper is covered by tests/decoders.rs and the process handling below.
+// Builds without both decoders only run the process tests.
+#![cfg_attr(not(all(feature = "heic", feature = "libraw")), allow(unused_imports, dead_code))]
 
 use super::testing;
 use super::*;

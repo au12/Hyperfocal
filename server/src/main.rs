@@ -13,6 +13,7 @@ mod native;
 mod ops;
 mod repo;
 mod scan;
+mod sets;
 mod state;
 #[cfg(test)]
 mod safety_tests;

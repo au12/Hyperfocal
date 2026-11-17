@@ -407,6 +407,7 @@ fn parse_libraw_raw(out: &[u8]) -> Result<LibrawRaw> {
 /// In-process runs of the helper ops, parsed like a real response (the unit-test
 /// binary cannot spawn itself as the helper).
 #[cfg(test)]
+#[cfg_attr(not(all(feature = "heic", feature = "libraw")), allow(dead_code))]
 pub mod testing {
     use super::*;
 

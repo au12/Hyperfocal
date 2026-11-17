@@ -27,7 +27,7 @@ pub fn photo_from_row(r: &Row) -> rusqlite::Result<PhotoRec> {
         mtime: r.get(7)?,
         sidecar: r.get(8)?,
         sidecar_mtime: r.get(9)?,
-        pair_of: r.get(10)?,
+        // 10: pair_of, kept up to date by `regroup` and used in queries only.
         companion: r.get(11)?,
         width: r.get(12)?,
         height: r.get(13)?,
@@ -205,42 +205,52 @@ pub fn delete_photo(c: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Recompute RAW+JPEG pairs and the visible photo count of a folder.
-pub fn refresh_folder(c: &Connection, folder_id: i64) -> Result<()> {
-    let mut rows: Vec<(i64, String, i32, Option<i64>)> = Vec::new();
-    {
-        let mut st = c.prepare("SELECT id, stem, kind, pair_of FROM photos WHERE folder_id = ?1")?;
+/// Fold JPEG/HEIF files into their RAW (`pair_of`, and the RAW's `companion` list),
+/// following `sets`. Writes only what differs and returns whether anything did.
+pub fn regroup(c: &Connection, folder_id: i64) -> Result<bool> {
+    let rows: Vec<(i64, String, Option<i64>, Option<String>)> = {
+        let mut st = c.prepare("SELECT id, name, pair_of, companion FROM photos WHERE folder_id = ?1")?;
         let it = st.query_map([folder_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
-        for r in it {
-            rows.push(r?);
+        it.collect::<rusqlite::Result<_>>()?
+    };
+    let listing = crate::sets::Listing::new(rows.iter().map(|r| r.1.clone()).collect(), Vec::new());
+    let plan = crate::sets::Plan::new(&listing);
+    let id_of: std::collections::HashMap<&str, i64> = rows.iter().map(|r| (r.1.as_str(), r.0)).collect();
+    let mut changed = false;
+    for (id, name, pair_of, companion) in &rows {
+        let want_pair = match plan.role(name) {
+            Some(crate::sets::Role::Paired { raw }) => id_of.get(raw.as_str()).copied(),
+            _ => None,
+        };
+        let paired = plan.paired(name);
+        let want_companion = (!paired.is_empty()).then(|| paired.join(","));
+        if want_pair != *pair_of {
+            c.execute("UPDATE photos SET pair_of = ?1 WHERE id = ?2", params![want_pair, id])?;
+            changed = true;
+        }
+        if want_companion != *companion {
+            c.execute("UPDATE photos SET companion = ?1 WHERE id = ?2", params![want_companion, id])?;
+            changed = true;
         }
     }
-    let mut raw_by_stem = std::collections::HashMap::new();
-    for (id, stem, kind, _) in &rows {
-        if *kind == 1 {
-            raw_by_stem.entry(stem.to_lowercase()).or_insert(*id);
-        }
+    if changed {
+        update_count(c, folder_id)?;
     }
-    let mut companion: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-    for (id, stem, kind, pair) in &rows {
-        let want = if *kind == 2 || *kind == 5 { raw_by_stem.get(&stem.to_lowercase()).copied() } else { None };
-        if want != *pair {
-            c.execute("UPDATE photos SET pair_of = ?1 WHERE id = ?2", params![want, id])?;
-        }
-        if let Some(raw) = want {
-            let name: String = c.query_row("SELECT name FROM photos WHERE id=?1", [id], |r| r.get(0))?;
-            companion.insert(raw, name);
-        }
-    }
-    for (id, _, kind, _) in &rows {
-        if *kind == 1 {
-            c.execute("UPDATE photos SET companion = ?1 WHERE id = ?2", params![companion.get(id), id])?;
-        }
-    }
+    Ok(changed)
+}
+
+fn update_count(c: &Connection, folder_id: i64) -> Result<()> {
     c.execute(
-        "UPDATE folders SET photo_count = (SELECT count(*) FROM photos WHERE folder_id = ?1 AND pair_of IS NULL),
-            scanned_at = ?2 WHERE id = ?1",
-        params![folder_id, crate::db::now_ms()],
+        "UPDATE folders SET photo_count = (SELECT count(*) FROM photos WHERE folder_id = ?1 AND pair_of IS NULL) WHERE id = ?1",
+        [folder_id],
     )?;
+    Ok(())
+}
+
+/// Recompute the pairs and the visible photo count of a folder after its files changed.
+pub fn refresh_folder(c: &Connection, folder_id: i64) -> Result<()> {
+    regroup(c, folder_id)?;
+    update_count(c, folder_id)?;
+    c.execute("UPDATE folders SET scanned_at = ?2 WHERE id = ?1", params![folder_id, crate::db::now_ms()])?;
     Ok(())
 }

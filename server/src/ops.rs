@@ -6,6 +6,7 @@ use crate::meta::{self, xmp::Xmp};
 use crate::model::{Kind, PhotoRec};
 use crate::repo::{self, Located};
 use crate::scan;
+use crate::sets::Plan;
 use crate::state::{AppState, Event};
 use anyhow::{Result, anyhow, bail};
 use rusqlite::params;
@@ -447,11 +448,10 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
         repo::load(&c, id)?.ok_or_else(|| anyhow!("photo {id} not found"))?
     };
     let dir = scan::abs_dir(state, &loc.folder_path);
-    // Adobe/Excire convention: stem.xmp, shared by a RAW and its JPEG.
-    let sidecar_name = match &loc.rec.sidecar {
-        Some(s) if s.to_lowercase() == format!("{}.xmp", loc.rec.stem.to_lowercase()) => s.clone(),
-        _ => format!("{}.xmp", loc.rec.stem),
-    };
+    // `IMG_1.xmp` (the Adobe/Excire convention) for the photo that owns the name,
+    // `IMG_1.TIF.xmp` for another photo with the same name (see `sets`).
+    let listing = scan::listing(state, &loc.folder_path, loc.folder_is_reject)?;
+    let sidecar_name = Plan::new(&listing).write_sidecar(&loc.rec.name)?;
     let sidecar = dir.join(&sidecar_name);
     let existed = sidecar.exists();
     let (cur, embedded) = fresh(state, &loc, &sidecar);
@@ -541,10 +541,11 @@ fn move_one(state: &AppState, id: i64, to_reject: bool, batch: &str, undo_of: Op
         let c = state.db.get()?;
         repo::load(&c, id)?.ok_or_else(|| anyhow!("photo {id} not found"))?
     };
-    if loc.rec.pair_of.is_some() {
-        bail!("{} is the JPEG of a RAW+JPEG pair; reject the RAW", loc.rec.name);
-    }
     let src_dir = scan::abs_dir(state, &loc.folder_path);
+    // The photo, the JPEG/HEIF folded into it and the files that belong to them (see
+    // `sets`); refuses the JPEG half of a pair.
+    let listing = scan::listing(state, &loc.folder_path, loc.folder_is_reject)?;
+    let names = Plan::new(&listing).move_set(&loc.rec.name)?;
     let (dst_dir, dst_rel, dst_folder_id) = if to_reject {
         if loc.folder_is_reject {
             bail!("{} is already rejected", loc.rec.name);
@@ -562,7 +563,6 @@ fn move_one(state: &AppState, id: i64, to_reject: bool, batch: &str, undo_of: Op
         let rel: String = state.db.get()?.query_row("SELECT path FROM folders WHERE id=?1", [parent], |r| r.get(0))?;
         (scan::abs_dir(state, &rel), rel, parent)
     };
-    let names = files::companions(&src_dir, &loc.rec.name, &loc.rec.stem)?;
     files::move_group(&src_dir, &dst_dir, &names)?;
 
     // Keep photo ids (and their caches) by moving the index rows too.

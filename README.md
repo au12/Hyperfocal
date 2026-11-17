@@ -49,7 +49,7 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - exposure correction in ⅓ and 1 EV steps
 - **Clipping measured on the raw data,** before white balance, per channel. This is the same idea as FastRawViewer's RAW-based over/underexposure display. The RAW histogram is drawn in EV below clipping, with the percentage of clipped pixels per channel.
 - **Rate, label, pick, reject.** Ratings 0–5, colour labels, pick and reject flags.
-  - Rejecting moves the photo, its sidecar and its JPEG twin into a `_Rejected` sub-folder next to it, the way FastRawViewer does.
+  - Rejecting moves the photo, its sidecar and its JPEG/HEIF twin into a `_Rejected` sub-folder next to it, the way FastRawViewer does. A different photo that only shares the name (a TIFF saved as `IMG_1234.tif`, say) stays put.
   - Restore moves it back, and `Ctrl+Z` undoes anything.
 - **Fast navigation.**
   - The next photos are prefetched.
@@ -112,6 +112,7 @@ An end-to-end test runs every write path against a scratch library and compares 
 - bulk metadata edits
 - merging into an existing Excire sidecar while keeping its other fields
 - rejecting a RAW+JPEG+HEIF set
+- two different photos with the same name (RAW and TIFF, CR3 and DNG): edits, rejects and restores of one never touch the other's files or sidecar
 - a reject that would overwrite a file, which must be refused
 - restore
 - undo
@@ -191,6 +192,8 @@ Hyperfocal reads EXIF, embedded XMP and sidecar XMP, in that order, so sidecar v
 | Location | `exif:GPS*`, `photoshop:City/State/Country`, `Iptc4xmpCore:Location/CountryCode` | all of the above |
 
 Sidecars are named `IMG_1234.xmp`, the Adobe convention that Excire also uses. Darktable-style `IMG_1234.CR3.xmp` sidecars are read too.
+
+A RAW and a JPEG or HEIF with the same name in the same folder are one photo, shown once with a `CR3+JPG` badge, and share `IMG_1234.xmp`. Two *different* photos with the same name never share a sidecar: `IMG_1234.xmp` belongs to the RAW (a camera RAW before a DNG, then JPEG, HEIF, TIFF, PNG), and the other photo gets its own, such as `IMG_1234.TIF.xmp` for a TIFF saved under the RAW's name or `IMG_1234.DNG.xmp` for a DNG converted from a CR3. This holds while either one is in `_Rejected`, so a reject or restore never changes which sidecar a photo uses.
 
 **Excire Foto setup for two-way sync:**
 

@@ -16,8 +16,6 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::model::{RAW_EXTS, split_name};
-
 /// rename(2) that refuses to replace an existing destination.
 pub fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
     if std::fs::symlink_metadata(dst).is_ok() {
@@ -45,50 +43,6 @@ pub fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
         _ => Err(err),
     }
-}
-
-/// Files that belong to one photo: the file itself, its sidecars (`stem.xmp`,
-/// `name.xmp`, `name.pp3`, ...) and same-stem non-RAW companions (the JPEG of a
-/// RAW+JPEG pair). Other RAW files with the same stem are separate photos.
-pub fn companions(dir: &Path, name: &str, stem: &str) -> Result<Vec<String>> {
-    let stem_l = stem.to_lowercase();
-    let name_l = name.to_lowercase();
-    let mut out = Vec::new();
-    for ent in std::fs::read_dir(dir)?.flatten() {
-        let Some(n) = ent.file_name().to_str().map(|s| s.to_string()) else { continue };
-        let Ok(ft) = ent.file_type() else { continue };
-        if !ft.is_file() {
-            continue;
-        }
-        let l = n.to_lowercase();
-        if l == name_l {
-            out.push(n);
-            continue;
-        }
-        if !l.starts_with(&format!("{stem_l}.")) {
-            continue;
-        }
-        // Sidecars of this exact file (darktable/RawTherapee/DxO style) always belong.
-        if l.starts_with(&format!("{name_l}.")) {
-            out.push(n);
-            continue;
-        }
-        let rest = &l[stem_l.len() + 1..];
-        if rest.contains('.') {
-            // e.g. IMG_1.CR3.xmp when we are IMG_1.DNG: belongs to the other file.
-            continue;
-        }
-        let (_, ext) = split_name(&n);
-        if RAW_EXTS.contains(&ext.as_str()) {
-            continue; // another RAW with the same stem is its own photo
-        }
-        out.push(n);
-    }
-    if !out.iter().any(|n| n == name) {
-        bail!("{name} is no longer in its folder");
-    }
-    out.sort();
-    Ok(out)
 }
 
 /// Find an existing child directory matching `want` case-insensitively.
@@ -161,7 +115,8 @@ mod tests {
         for n in ["IMG_1.CR3", "IMG_1.JPG", "IMG_1.xmp", "IMG_1.CR3.pp3", "IMG_1.DNG", "IMG_1.DNG.xmp", "IMG_10.CR3", "other.txt"] {
             std::fs::write(d.join(n), n).unwrap();
         }
-        let g = companions(d, "IMG_1.CR3", "IMG_1").unwrap();
+        let l = crate::sets::Listing::read(d, false, &|n: &str| n.eq_ignore_ascii_case("_rejected")).unwrap();
+        let g = crate::sets::Plan::new(&l).move_set("IMG_1.CR3").unwrap();
         assert_eq!(g, vec!["IMG_1.CR3", "IMG_1.CR3.pp3", "IMG_1.JPG", "IMG_1.xmp"]);
         let rej = ensure_dir(d, "_Rejected").unwrap();
         move_group(d, &rej, &g).unwrap();

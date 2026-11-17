@@ -4,6 +4,7 @@
 use crate::meta;
 use crate::model::{Kind, PhotoRec, kind_of_ext, split_name};
 use crate::repo;
+use crate::sets::{self, Listing, Plan};
 use crate::state::{AppState, Event, ScanMsg};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -138,10 +139,11 @@ struct FileEntry {
     mtime: i64,
 }
 
-/// Look up the sidecar for an image: `stem.xmp` (Adobe, Excire, Capture One) first,
-/// then `name.ext.xmp` (darktable style).
-pub fn find_sidecar<'a>(sidecars: &'a HashMap<String, (String, i64)>, name: &str, stem: &str) -> Option<&'a (String, i64)> {
-    sidecars.get(&format!("{}.xmp", stem.to_lowercase())).or_else(|| sidecars.get(&format!("{}.xmp", name.to_lowercase())))
+/// The files of a library folder and of the folders it shares sidecars with (see
+/// `sets`), read fresh from disk.
+pub fn listing(state: &AppState, folder_path: &str, is_reject: bool) -> Result<Listing> {
+    let dir = abs_dir(state, folder_path);
+    Listing::read(&dir, is_reject, &|n: &str| is_reject_name(state, n)).with_context(|| format!("reading {}", dir.display()))
 }
 
 pub struct FolderScan {
@@ -157,22 +159,29 @@ pub fn scan_folder(state: &AppState, folder_id: i64, force: bool) -> Result<Fold
 
 fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<FolderScan> {
     let conn = state.db.get()?;
-    let rel: String = conn.query_row("SELECT path FROM folders WHERE id = ?1", [folder_id], |r| r.get(0))?;
+    let (rel, is_reject): (String, bool) =
+        conn.query_row("SELECT path, is_reject FROM folders WHERE id = ?1", [folder_id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)))?;
     drop(conn);
     let dir = abs_dir(state, &rel);
     let rd = std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?;
 
     let mut files: Vec<FileEntry> = Vec::new();
     let mut sidecars: HashMap<String, (String, i64)> = HashMap::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut rejects: Vec<PathBuf> = Vec::new();
     for ent in rd.flatten() {
         let Some(name) = ent.file_name().to_str().map(|s| s.to_string()) else { continue };
         if name.starts_with('.') {
             continue;
         }
         let Ok(md) = ent.metadata() else { continue };
+        if md.is_dir() && is_reject_name(state, &name) {
+            rejects.push(dir.join(&name));
+        }
         if !md.is_file() {
             continue;
         }
+        names.push(name.clone());
         let (stem, ext) = split_name(&name);
         if ext == "xmp" {
             sidecars.insert(name.to_lowercase(), (name.clone(), mtime_ms(&md)));
@@ -182,6 +191,14 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
             files.push(FileEntry { name, stem, ext, kind, size: md.len() as i64, mtime: mtime_ms(&md) });
         }
     }
+    // Which sidecar each photo reads depends on the photos with the same name here and
+    // in the reject (or home) folder.
+    let partners = sets::partner_names(&dir, is_reject, &rejects, &|n: &str| is_reject_name(state, n)).unwrap_or_else(|e| {
+        tracing::warn!("reading the folders next to {}: {e}", dir.display());
+        Vec::new()
+    });
+    let listing = Listing::new(names, partners);
+    let plan = Plan::new(&listing);
 
     let conn = state.db.get()?;
     let mut existing: HashMap<String, (i64, i64, i64, Option<String>, Option<i64>)> = HashMap::new();
@@ -200,7 +217,7 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
     let mut todo: Vec<(FileEntry, Option<(String, i64)>)> = Vec::new();
     let present: HashSet<String> = files.iter().map(|f| f.name.clone()).collect();
     for f in files {
-        let sc = find_sidecar(&sidecars, &f.name, &f.stem).cloned();
+        let sc = plan.read_sidecar(&f.name).and_then(|n| sidecars.get(&n.to_lowercase()).cloned());
         let unchanged = match existing.get(&f.name) {
             Some((_, size, mtime, sname, smtime)) => {
                 *size == f.size
@@ -271,8 +288,16 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
             state.images.queue_folder_thumbs(state, folder_id);
         }
     } else {
-        let conn = state.db.get()?;
-        conn.execute("UPDATE folders SET scanned_at = ?2 WHERE id = ?1 AND scanned_at = 0", params![folder_id, crate::db::now_ms()])?;
+        // Nothing changed on disk, but keep the pairs in step with the rules (an index
+        // written by an older version, or rows moved by a reject).
+        let mut conn = state.db.get()?;
+        let tx = conn.transaction()?;
+        let regrouped = repo::regroup(&tx, folder_id)?;
+        tx.execute("UPDATE folders SET scanned_at = ?2 WHERE id = ?1 AND scanned_at = 0", params![folder_id, crate::db::now_ms()])?;
+        tx.commit()?;
+        if regrouped {
+            state.emit(Event::Folder { id: folder_id });
+        }
     }
     Ok(FolderScan { changed, removed: removed.len(), total })
 }

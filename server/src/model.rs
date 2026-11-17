@@ -65,7 +65,6 @@ pub struct PhotoRec {
     pub mtime: i64,
     pub sidecar: Option<String>,
     pub sidecar_mtime: Option<i64>,
-    pub pair_of: Option<i64>,
     pub companion: Option<String>,
     pub width: Option<i64>,
     pub height: Option<i64>,

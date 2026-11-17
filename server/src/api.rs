@@ -343,6 +343,17 @@ fn order_by(q: &ListQuery) -> String {
     }
 }
 
+/// The file-type badge of a grid tile: `cr3`, or `cr3+jpg` / `cr3+jpg+hif` for a RAW
+/// with JPEG/HEIF files folded in (`companion` lists their names).
+fn file_label(ext: &str, companion: Option<&str>) -> String {
+    let mut label = ext.to_string();
+    for name in companion.unwrap_or_default().split(',').filter(|n| !n.is_empty()) {
+        label.push('+');
+        label.push_str(&crate::model::split_name(name).1);
+    }
+    label
+}
+
 async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<Json<Value>> {
     // First visit to a folder: index it right away; later visits re-check in the background.
     if let Some(fid) = q.folder {
@@ -364,7 +375,7 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
         let limit = q.limit.unwrap_or(100_000).min(250_000);
         let sql = format!(
             "SELECT p.id, p.name, p.width, p.height, p.orientation, p.taken, p.rating, p.lcolor, p.pick, p.kind, p.folder_id,
-                    p.lat IS NOT NULL, p.size, p.mtime, p.companion IS NOT NULL, p.ext
+                    p.lat IS NOT NULL, p.size, p.mtime, p.companion, p.ext
              FROM photos p JOIN folders f ON f.id = p.folder_id WHERE {wh} ORDER BY {} LIMIT {limit}",
             order_by(&q)
         );
@@ -389,7 +400,7 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
             cols[10].push(json!(r.get::<_, i64>(10)?));
             cols[11].push(json!(r.get::<_, bool>(11)? as u8));
             cols[12].push(json!(images::sig_str(&rec)));
-            cols[13].push(json!(if r.get::<_, bool>(14)? { format!("{}+", r.get::<_, String>(15)?) } else { r.get::<_, String>(15)? }));
+            cols[13].push(json!(file_label(&r.get::<_, String>(15)?, r.get::<_, Option<String>>(14)?.as_deref())));
         }
         let [id, n, w, h, o, t, r, lc, p, k, f, g, v, x] = cols;
         Ok(json!({ "id": id, "n": n, "w": w, "h": h, "o": o, "t": t, "r": r, "lc": lc, "p": p, "k": k, "f": f, "g": g, "v": v, "x": x }))
@@ -515,7 +526,18 @@ async fn photo_detail(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<V
     let loc = load(&state, id).await?;
     let r = &loc.rec;
     let dir = scan::abs_dir(&state, &loc.folder_path);
-    let companions = crate::files::companions(&dir, &r.name, &r.stem).unwrap_or_default();
+    // The files that make up this photo (and move with it).
+    let companions = {
+        let (st, folder, is_reject, name) = (state.clone(), loc.folder_path.clone(), loc.folder_is_reject, r.name.clone());
+        tokio::task::spawn_blocking(move || {
+            let listing = scan::listing(&st, &folder, is_reject).ok()?;
+            crate::sets::Plan::new(&listing).move_set(&name).ok()
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+    };
     let sidecar_info = r.sidecar.as_ref().and_then(|s| std::fs::metadata(dir.join(s)).ok().map(|m| (s.clone(), m.len())));
     Ok(Json(json!({
         "id": r.id, "folder_id": r.folder_id, "folder": loc.folder_path, "in_reject": loc.folder_is_reject,
@@ -710,4 +732,18 @@ async fn set_settings(State(state): St, Json(v): Json<Value>) -> ApiResult<Json<
     let c = state.db.get()?;
     crate::db::set_setting(&c, "ui", &v.to_string())?;
     Ok(Json(v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_label;
+
+    #[test]
+    fn badges() {
+        assert_eq!(file_label("cr3", None), "cr3");
+        assert_eq!(file_label("cr3", Some("IMG_1.JPG")), "cr3+jpg");
+        assert_eq!(file_label("cr3", Some("IMG_1.HIF")), "cr3+hif");
+        assert_eq!(file_label("cr2", Some("IMG_1.JPG,IMG_1.HIF")), "cr2+jpg+hif");
+        assert_eq!(file_label("dng", Some("")), "dng");
+    }
 }
