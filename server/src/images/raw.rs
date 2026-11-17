@@ -27,9 +27,7 @@ pub enum WbMode {
     Auto,
 }
 
-pub const MASK_R: u8 = 1;
-pub const MASK_G: u8 = 2;
-pub const MASK_B: u8 = 4;
+/// Clipping-mask bits: bit `c` (0 = R, 1 = G, 2 = B) is set when that channel clipped.
 pub const MASK_UNDER: u8 = 8;
 
 pub struct Developed {

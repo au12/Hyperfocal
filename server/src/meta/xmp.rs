@@ -381,17 +381,17 @@ mod tests {
 <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
 <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:xmpDM="http://ns.adobe.com/xmp/1.0/DynamicMedia/"
  xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
- xmp:Rating="4" xmp:Label="Rot" xmpDM:pick="1" exif:GPSLatitude="35,7.38N" exif:GPSLongitude="82,30.6W"
- photoshop:City="Asheville"/>
+ xmp:Rating="4" xmp:Label="Rot" xmpDM:pick="1" exif:GPSLatitude="38,43.338N" exif:GPSLongitude="9,8.358W"
+ photoshop:City="Lisbon"/>
 </rdf:RDF></x:xmpmeta>"#;
         let p = Xmp::parse(x);
         assert_eq!(p.rating, Some(4));
         assert_eq!(p.label.as_deref(), Some("Rot"));
         assert_eq!(label_color("Rot"), Some("red"));
         assert_eq!(p.pick, Some(1));
-        assert!((p.lat.unwrap() - 35.123).abs() < 1e-9);
-        assert!((p.lon.unwrap() + 82.51).abs() < 1e-9);
-        assert_eq!(p.city.as_deref(), Some("Asheville"));
+        assert!((p.lat.unwrap() - 38.7223).abs() < 1e-9);
+        assert!((p.lon.unwrap() + 9.1393).abs() < 1e-9);
+        assert_eq!(p.city.as_deref(), Some("Lisbon"));
     }
 
     #[test]
@@ -403,19 +403,19 @@ mod tests {
  <tiff:Orientation>6</tiff:Orientation>
  <exif:GPSAltitude>1234/10</exif:GPSAltitude>
  <exif:GPSAltitudeRef>1</exif:GPSAltitudeRef>
- <dc:title><rdf:Alt><rdf:li xml:lang="de">Titel</rdf:li><rdf:li xml:lang="x-default">Blue Ridge &amp; fog</rdf:li></rdf:Alt></dc:title>
+ <dc:title><rdf:Alt><rdf:li xml:lang="de">Titel</rdf:li><rdf:li xml:lang="x-default">Sintra &amp; fog</rdf:li></rdf:Alt></dc:title>
  <dc:subject><rdf:Bag><rdf:li>Mountains</rdf:li><rdf:li>Fog</rdf:li></rdf:Bag></dc:subject>
- <lr:hierarchicalSubject><rdf:Bag><rdf:li>Places|NC|Mountains</rdf:li></rdf:Bag></lr:hierarchicalSubject>
- <dc:creator><rdf:Seq><rdf:li>Adam</rdf:li></rdf:Seq></dc:creator>
+ <lr:hierarchicalSubject><rdf:Bag><rdf:li>Places|Portugal|Sintra</rdf:li></rdf:Bag></lr:hierarchicalSubject>
+ <dc:creator><rdf:Seq><rdf:li>Jane Doe</rdf:li></rdf:Seq></dc:creator>
  <exif:Flash rdf:parseType="Resource"><exif:Fired>False</exif:Fired></exif:Flash>
 </rdf:Description></rdf:RDF></x:xmpmeta>"#;
         let p = Xmp::parse(x.as_bytes());
         assert_eq!(p.rating, Some(2));
         assert_eq!(p.orientation, Some(6));
-        assert_eq!(p.title.as_deref(), Some("Blue Ridge & fog"));
+        assert_eq!(p.title.as_deref(), Some("Sintra & fog"));
         assert_eq!(p.subject, Some(vec!["Mountains".to_string(), "Fog".to_string()]));
-        assert_eq!(p.hsubject, Some(vec!["Places|NC|Mountains".to_string()]));
-        assert_eq!(p.creator.as_deref(), Some("Adam"));
+        assert_eq!(p.hsubject, Some(vec!["Places|Portugal|Sintra".to_string()]));
+        assert_eq!(p.creator.as_deref(), Some("Jane Doe"));
         assert!((p.alt.unwrap() + 123.4).abs() < 1e-9);
     }
 

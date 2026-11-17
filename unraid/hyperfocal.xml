@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Hyperfocal</Name>
+  <Repository>ghcr.io/au12/hyperfocal:latest</Repository>
+  <Registry>https://github.com/au12/Hyperfocal/pkgs/container/hyperfocal</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/au12/Hyperfocal/issues</Support>
+  <Project>https://github.com/au12/Hyperfocal</Project>
+  <Overview>Fast, self-hosted RAW photo culling and library manager. Browse your Year/Event folders, switch between the embedded JPEG and a true RAW render, check clipping with FastRawViewer-style view tools, then rate, label, pick and reject. Ratings, labels, keywords, captions and locations go to standard XMP sidecars that Excire Foto, Lightroom and Bridge read, and edits made there show up here. Rejects are moved (never copied, never deleted) into a _Rejected sub-folder. Hyperfocal never modifies or deletes your original image files.</Overview>
+  <Category>MediaApp:Photos Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/au12/Hyperfocal/main/unraid/hyperfocal.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/au12/Hyperfocal/main/assets/icon-512.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="WebUI port" Target="8080" Default="8080" Mode="tcp" Description="Port for the web UI. Put Nginx Proxy Manager (or another reverse proxy) in front of it; see the README for the recommended settings." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Photo library" Target="/photos" Default="/mnt/user/Photos" Mode="rw" Description="Your photo library (the folder that holds the Year folders). Read/Write is needed to write XMP sidecars and to move rejects into _Rejected. Set the access mode to Read Only to use Hyperfocal as a pure viewer; it detects that and disables every write." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/Photos</Config>
+  <Config Name="AppData" Target="/config" Default="/mnt/user/appdata/hyperfocal" Mode="rw" Description="Index database, thumbnail and preview cache, sidecar backups and the change journal. Keep it on a pool (cache SSD); /mnt/cache/appdata/hyperfocal is best if appdata is not an exclusive share." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/hyperfocal</Config>
+  <Config Name="Password" Target="HYPERFOCAL_PASSWORD" Default="" Mode="" Description="Optional password for the web UI. Leave empty when only your LAN (or an authenticating proxy) can reach it." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Read-only mode" Target="HYPERFOCAL_READONLY" Default="false|true" Mode="" Description="true = view and browse only: no sidecar writes and no moves, whatever the folder permissions." Type="Variable" Display="always" Required="false" Mask="false">false</Config>
+  <Config Name="Reject folder name" Target="HYPERFOCAL_REJECT_DIR" Default="_Rejected" Mode="" Description="Sub-folder that rejected photos are moved into, next to where they were. Folders called _rejected (any case) are always treated as reject folders." Type="Variable" Display="advanced" Required="false" Mask="false">_Rejected</Config>
+  <Config Name="Rescan interval (minutes)" Target="HYPERFOCAL_RESCAN_MINUTES" Default="15" Mode="" Description="How often to look for new photos and for metadata changed by other apps (e.g. Excire's Save Metadata). Opening a folder in the UI always rechecks that folder. 0 = only at start-up." Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
+  <Config Name="Pre-generate thumbnails" Target="HYPERFOCAL_PREGEN_THUMBS" Default="true|false" Mode="" Description="Build grid thumbnails in the background after indexing (about 30-60 KB per photo in AppData)." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="RAW memory cache (MB)" Target="HYPERFOCAL_RAW_CACHE_MB" Default="1536" Mode="" Description="RAM for developed RAW data, so view-tool switches (linear, shadows, highlights, clipping) are instant." Type="Variable" Display="advanced" Required="false" Mask="false">1536</Config>
+  <Config Name="Preview disk cache (MB)" Target="HYPERFOCAL_PREVIEW_CACHE_MB" Default="4096" Mode="" Description="Disk budget in AppData for screen-size previews. The oldest are evicted first." Type="Variable" Display="advanced" Required="false" Mask="false">4096</Config>
+  <Config Name="Index threads" Target="HYPERFOCAL_INDEX_THREADS" Default="" Mode="" Description="Parallel metadata readers while indexing. Empty = automatic (CPU cores, 2 to 8)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="RAW decode concurrency" Target="HYPERFOCAL_DECODE_CONCURRENCY" Default="" Mode="" Description="RAW files developed at the same time (each one already uses every core). Empty = automatic." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID that files are written as (99 = nobody on Unraid)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID that files are written as (100 = users on Unraid)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="000" Mode="" Description="000 matches Unraid's share permissions, so sidecars and _Rejected folders stay editable from Excire over SMB." Type="Variable" Display="advanced" Required="false" Mask="false">000</Config>
+</Container>

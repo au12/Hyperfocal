@@ -1,0 +1,10 @@
+.git
+.github
+**/node_modules
+web/dist
+server/target
+docs
+unraid
+assets
+*.log
+dev

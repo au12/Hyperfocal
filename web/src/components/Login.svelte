@@ -1,7 +1,6 @@
 <script lang="ts">
   import { store } from '../lib/store.svelte';
   import { api } from '../lib/api';
-  import Icon from './Icon.svelte';
 
   let pw = $state('');
   let err = $state('');
@@ -25,7 +24,7 @@
 
 <div class="wrap">
   <form class="card" onsubmit={submit}>
-    <span class="logo"><Icon name="aperture" size={28} /></span>
+    <img class="logo" src="./favicon.svg" alt="" width="56" height="56" />
     <h1>Hyperfocal</h1>
     <input class="field" type="password" bind:value={pw} placeholder="Password" autocomplete="current-password" />
     {#if err}<div class="err">{err}</div>{/if}
@@ -55,12 +54,7 @@
   .logo {
     width: 3.5rem;
     height: 3.5rem;
-    border-radius: 1rem;
     margin: 0 auto;
-    display: grid;
-    place-items: center;
-    color: #fff;
-    background: linear-gradient(135deg, #1d8cff, #0058c8);
   }
   h1 {
     margin: 0 0 0.5rem;

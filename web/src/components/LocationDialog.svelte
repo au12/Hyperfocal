@@ -55,7 +55,7 @@
 
   function setup() {
     if (!el) return;
-    map = L.map(el).setView([35.6, -82.55], 4);
+    map = L.map(el, { worldCopyJump: true }).setView([30, -40], 2);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',

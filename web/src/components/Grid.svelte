@@ -168,6 +168,8 @@
         {@const i = row.start + k}
         {@const id = store.list.id[i]}
         {@const _r = store.rev}
+        <!-- Keyboard culling is handled by the global key map (arrows, ratings, P/X…). -->
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
           class="tile"
           class:cursor={i === store.cursor}

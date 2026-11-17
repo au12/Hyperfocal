@@ -61,7 +61,7 @@
     <button class="btn ghost icon" onclick={() => (store.dialog = 'settings')} aria-label="Settings"><Icon name="settings" /></button>
   {:else}
     <div class="brand">
-      <span class="logo"><Icon name="aperture" size={20} /></span>
+      <img class="logo" src="./favicon.svg" alt="" width="32" height="32" />
       <span class="name">Hyperfocal</span>
     </div>
     <div class="search">
@@ -120,12 +120,8 @@
   .logo {
     width: 2rem;
     height: 2rem;
-    border-radius: 0.5rem;
-    display: grid;
-    place-items: center;
-    color: #fff;
-    background: linear-gradient(135deg, #1d8cff, #0058c8);
-    box-shadow: 0 2px 8px rgba(0, 112, 242, 0.35);
+    flex: none;
+    filter: drop-shadow(0 2px 6px rgba(0, 112, 242, 0.3));
   }
   .name {
     font-weight: 700;

@@ -32,8 +32,6 @@ pub struct Config {
     /// Optional single password protecting the UI.
     pub password: Option<String>,
     pub exiftool: String,
-    /// Watch the library with inotify in addition to periodic scans.
-    pub watch: bool,
 }
 
 fn env_str(key: &str) -> Option<String> {
@@ -79,7 +77,6 @@ impl Config {
             decode_concurrency: env_num("HYPERFOCAL_DECODE_CONCURRENCY", (cores / 4).clamp(1, 4)),
             password: env_str("HYPERFOCAL_PASSWORD"),
             exiftool: env_str("HYPERFOCAL_EXIFTOOL").unwrap_or_else(|| "exiftool".into()),
-            watch: env_bool("HYPERFOCAL_WATCH", false),
         }
     }
 }

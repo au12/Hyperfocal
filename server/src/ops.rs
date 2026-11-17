@@ -408,11 +408,15 @@ fn summarize(p: &Patch) -> String {
 
 /// Write a patch to the XMP sidecars of the given photos.
 pub async fn apply_meta(state: &Arc<AppState>, ids: &[i64], patch: &Patch, undo_of: Option<&str>) -> Result<BatchResult> {
+    apply_meta_in(state, ids, patch, undo_of, None).await
+}
+
+async fn apply_meta_in(state: &Arc<AppState>, ids: &[i64], patch: &Patch, undo_of: Option<&str>, batch: Option<String>) -> Result<BatchResult> {
     if state.is_readonly() {
         bail!("Hyperfocal is in read-only mode");
     }
     let _w = state.write_lock.lock().await;
-    let batch = new_batch();
+    let batch = batch.unwrap_or_else(new_batch);
     let summary = if undo_of.is_some() { format!("undo: {}", summarize(patch)) } else { summarize(patch) };
     let mut ok = Vec::new();
     let mut failed = Vec::new();
@@ -628,7 +632,7 @@ pub async fn undo(state: &Arc<AppState>, batch: &str) -> Result<BatchResult> {
             _ => {
                 let before = v.get("before").cloned().unwrap_or(Value::Null);
                 let after = v.get("after").cloned().unwrap_or(Value::Null);
-                apply_meta(state, &[pid], &patch_from_snapshots(&before, &after), Some(batch)).await
+                apply_meta_in(state, &[pid], &patch_from_snapshots(&before, &after), Some(batch), Some(new_batch.clone())).await
             }
         };
         match res {
@@ -678,10 +682,10 @@ mod tests {
     #[test]
     fn keywords() {
         let cur = PhotoRec { keywords: vec!["Dog".into(), "Beach".into()], hkeywords: vec!["Animals|Dog".into()], ..Default::default() };
-        let p = Patch { keywords_add: vec!["Places|NC|Asheville".into()], keywords_remove: vec!["Dog".into()], ..Default::default() };
+        let p = Patch { keywords_add: vec!["Places|Portugal|Lisbon".into()], keywords_remove: vec!["Dog".into()], ..Default::default() };
         let (s, h) = merge_keywords(&cur, &p);
-        assert_eq!(s, vec!["Beach", "Asheville"]);
-        assert_eq!(h, vec!["Places|NC|Asheville"]);
+        assert_eq!(s, vec!["Beach", "Lisbon"]);
+        assert_eq!(h, vec!["Places|Portugal|Lisbon"]);
     }
 
     #[test]

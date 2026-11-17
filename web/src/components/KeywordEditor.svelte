@@ -107,7 +107,7 @@
           oninput={onInput}
           onkeydown={onKey}
           onblur={() => setTimeout(() => (sugg = []), 150)}
-          placeholder={items.length ? 'Add…' : 'Add keyword (Places|NC|Asheville for a hierarchy)'}
+          placeholder={items.length ? 'Add…' : 'Add keyword (Places|Portugal|Lisbon for a hierarchy)'}
         />
         {#if sugg.length}
           <div class="sugg pop">

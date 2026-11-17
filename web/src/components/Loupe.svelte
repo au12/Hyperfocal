@@ -43,6 +43,10 @@
   const dispW = $derived((o >= 5 ? L.h[i] : L.w[i]) || 3);
   const dispH = $derived((o >= 5 ? L.w[i] : L.h[i]) || 2);
   const useRaw = $derived(isRaw && store.viewer.source === 'raw');
+  // Filmstrip: enough slots either side to fill the strip, current photo in the middle.
+  let filmW = $state(0);
+  const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  const filmHalf = $derived(Math.max(4, Math.ceil(filmW / (6.25 * remPx) / 2) + 1));
   const ev = $derived(store.viewer.evOn ? store.viewer.ev : 0);
   const fitScale = $derived(Math.min(cw / dispW, ch / dispH));
   const curScale = $derived(fit ? fitScale : scale);
@@ -622,15 +626,17 @@
       </div>
     </footer>
     {#if store.panels.filmstrip && !store.panels.hidden}
-      <div class="film">
-        {#each { length: Math.min(L.id.length, 25) } as _, k}
-          {@const j = Math.max(0, Math.min(L.id.length - 25, i - 12)) + k}
+      <div class="film" bind:clientWidth={filmW}>
+        {#each { length: filmHalf * 2 + 1 } as _, k}
+          {@const j = i - filmHalf + k}
           {#if j >= 0 && j < L.id.length}
             <button class="fthumb" class:cur={j === i} onclick={() => store.goTo(j)} title={L.n[j]}>
               <img src={urls.thumb(L.id[j], L.v[j])} alt="" loading="lazy" draggable="false" />
               {#if L.r[j] > 0}<span class="fs">{'★'.repeat(L.r[j])}</span>{/if}
               {#if L.lc[j]}<span class="flc label-{L.lc[j]}"></span>{/if}
             </button>
+          {:else}
+            <span class="fthumb ghost" aria-hidden="true"></span>
           {/if}
         {/each}
       </div>
@@ -960,6 +966,9 @@
   .fthumb.cur {
     border-color: var(--accent);
     opacity: 1;
+  }
+  .fthumb.ghost {
+    visibility: hidden;
   }
   .fthumb:hover {
     opacity: 1;

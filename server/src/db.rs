@@ -7,7 +7,6 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 pub type Pool = r2d2::Pool<SqliteConnectionManager>;
-pub type Conn = r2d2::PooledConnection<SqliteConnectionManager>;
 
 const SCHEMA_VERSION: i64 = 1;
 

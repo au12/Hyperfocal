@@ -63,6 +63,7 @@ type ApiResult<T> = Result<T, ApiError>;
 pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
         .route("/status", get(status))
+        .route("/health", get(|| async { "ok" }))
         .route("/events", get(events))
         .route("/tree", get(tree))
         .route("/photos", get(list_photos))
@@ -115,8 +116,10 @@ async fn auth(State(state): St, req: Request, next: Next) -> Response {
     if state.cfg.password.is_none() {
         return next.run(req).await;
     }
+    // Nested under /api; accept either form of the path.
     let path = req.uri().path();
-    if path.ends_with("/login") || path.ends_with("/status") || has_session(&state, req.headers()) {
+    let path = path.strip_prefix("/api").unwrap_or(path);
+    if matches!(path, "/login" | "/status" | "/health") || has_session(&state, req.headers()) {
         return next.run(req).await;
     }
     ApiError(StatusCode::UNAUTHORIZED, "login required".into()).into_response()
@@ -146,6 +149,11 @@ async fn logout() -> Response {
 // ---------------------------------------------------------------- status & events
 
 async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let logged_in = state.cfg.password.is_none() || has_session(&state, &headers);
+    if !logged_in {
+        // Before login, say only enough to show the login screen.
+        return Ok(Json(json!({"version": env!("CARGO_PKG_VERSION"), "auth": true, "logged_in": false})));
+    }
     let st = state.clone();
     let counts = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
         let c = st.db.get()?;
@@ -164,7 +172,7 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
         "counts": counts,
         "cache": state.images.cache_stats(),
         "auth": state.cfg.password.is_some(),
-        "logged_in": state.cfg.password.is_none() || has_session(&state, &headers),
+        "logged_in": true,
     })))
 }
 
@@ -174,7 +182,8 @@ async fn events(State(state): St) -> impl IntoResponse {
     let stream = first.chain(BroadcastStream::new(rx).filter_map(|e| async move { e.ok() })).map(|e| {
         Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(serde_json::to_string(&e).unwrap_or_default()))
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    // Reverse proxies (nginx / Nginx Proxy Manager) must not buffer the event stream.
+    ([(header::HeaderName::from_static("x-accel-buffering"), "no")], Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 // ---------------------------------------------------------------- library

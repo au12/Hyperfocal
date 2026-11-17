@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use rusqlite::{OptionalExtension, params};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -276,16 +276,6 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
     Ok(FolderScan { changed, removed: removed.len(), total })
 }
 
-/// Re-read a single photo (after a sidecar write).
-pub fn reindex_photo(state: &AppState, photo_id: i64) -> Result<()> {
-    let conn = state.db.get()?;
-    let Some(loc) = repo::load(&conn, photo_id)? else { return Ok(()) };
-    drop(conn);
-    let folder = loc.rec.folder_id;
-    scan_folder(state, folder, false)?;
-    Ok(())
-}
-
 fn full_scan(state: &AppState, rx: &std::sync::mpsc::Receiver<ScanMsg>) -> Result<()> {
     let started = Instant::now();
     {
@@ -329,6 +319,7 @@ fn full_scan(state: &AppState, rx: &std::sync::mpsc::Receiver<ScanMsg>) -> Resul
         p.folders_done = 0;
     }
     let mut last_emit = Instant::now();
+    let (mut photos, mut changed, mut removed) = (0usize, 0usize, 0usize);
     for (i, (id, path)) in folders.iter().enumerate() {
         // Interactive requests jump the queue.
         while let Ok(msg) = rx.try_recv() {
@@ -341,8 +332,13 @@ fn full_scan(state: &AppState, rx: &std::sync::mpsc::Receiver<ScanMsg>) -> Resul
             p.current = Some(path.clone());
             p.folders_done = i;
         }
-        if let Err(e) = scan_folder(state, *id, false) {
-            tracing::warn!("scan of {path} failed: {e:#}");
+        match scan_folder(state, *id, false) {
+            Ok(r) => {
+                photos += r.total;
+                changed += r.changed;
+                removed += r.removed;
+            }
+            Err(e) => tracing::warn!("scan of {path} failed: {e:#}"),
         }
         if last_emit.elapsed() > Duration::from_millis(500) {
             state.emit(Event::Progress(state.progress.read().clone()));
@@ -357,7 +353,11 @@ fn full_scan(state: &AppState, rx: &std::sync::mpsc::Receiver<ScanMsg>) -> Resul
         p.last_full_scan = Some(crate::db::now_ms());
     }
     state.emit(Event::Progress(state.progress.read().clone()));
-    tracing::info!("full scan of {} folders took {:.1}s", folders.len(), started.elapsed().as_secs_f64());
+    tracing::info!(
+        "full scan: {} folders, {photos} files, {changed} new or changed, {removed} gone from disk ({:.1}s)",
+        folders.len(),
+        started.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -370,7 +370,7 @@ pub fn spawn(state: Arc<AppState>) {
         .name("scanner".into())
         .spawn(move || {
             let interval = if state.cfg.rescan_minutes == 0 {
-                Duration::from_secs(u64::MAX / 4)
+                Duration::from_secs(10 * 365 * 86_400) // effectively never
             } else {
                 Duration::from_secs(state.cfg.rescan_minutes * 60)
             };
@@ -407,6 +407,3 @@ pub fn photo_path(state: &AppState, folder_path: &str, name: &str) -> PathBuf {
     abs_dir(state, folder_path).join(name)
 }
 
-pub fn file_exists(p: &Path) -> bool {
-    std::fs::symlink_metadata(p).is_ok()
-}
