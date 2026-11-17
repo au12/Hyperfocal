@@ -7,12 +7,24 @@
 //! half floats. Every view mode is then a cheap table lookup on that buffer.
 
 use super::tone::f16_bits;
+use crate::native::{self, LibrawRaw};
 use anyhow::{Result, anyhow};
 use flashraw::{CfaColor, DecodeOptions, Demosaic, FlashRaw, Highlights, OutputFormat, WhiteBalanceMode};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Instant;
+
+/// Runs a decoder call, turning a panic on a malformed file into an error (so one bad
+/// file cannot take down the indexer or the thumbnail worker).
+pub fn catch<T, E: std::fmt::Display>(f: impl FnOnce() -> std::result::Result<T, E>) -> std::result::Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(format!("{e:#}")),
+        Err(_) => Err("the decoder failed on this file".into()),
+    }
+}
 
 pub const HIST_BINS: usize = 224;
 pub const HIST_MIN_EV: f32 = -14.0;
@@ -48,6 +60,8 @@ pub struct Developed {
     pub develop_ms: f32,
     /// True when clipping/histogram come from processed (not raw) values.
     pub approximate: bool,
+    /// Which decoder read the sensor data.
+    pub decoder: &'static str,
     mask_png: OnceLock<Vec<u8>>,
 }
 
@@ -125,7 +139,45 @@ impl Acc {
     }
 }
 
-/// Develop a RAW file held in memory.
+/// Bayer sensor data ready for half-size development, from FlashRaw or LibRaw.
+pub struct BayerFrame<'a> {
+    pub data: &'a [u16],
+    /// Samples per row of `data`.
+    pub stride: usize,
+    pub rows: usize,
+    /// Visible area: x, y, width, height.
+    pub crop: [usize; 4],
+    /// Channel (0 R, 1 G, 2 B) of each 2x2 position, from the crop's top-left corner.
+    pub ch: [[usize; 2]; 2],
+    /// Black level of each 2x2 position, from the crop's top-left corner.
+    pub black: [[f32; 2]; 2],
+    /// Per-sample black level (frame coordinates), when it varies beyond 2x2.
+    pub black_at: Option<&'a (dyn Fn(usize, usize) -> f32 + Sync)>,
+    pub white: f32,
+    /// White balance multipliers (R, G, B), G = 1.
+    pub as_shot: Option<[f32; 3]>,
+    pub daylight: Option<[f32; 3]>,
+    /// White-balanced camera RGB to linear sRGB.
+    pub cam_to_srgb: [[f32; 3]; 3],
+    pub baseline_ev: f32,
+}
+
+/// Develops a RAW file: FlashRaw in-process, LibRaw (in the helper process) when
+/// FlashRaw cannot read it or `HYPERFOCAL_RAW_DECODER=libraw`.
+pub fn develop_path(path: &Path, wb_mode: WbMode, under_ev: f32) -> Result<Developed> {
+    if native::prefer_libraw() {
+        return develop_libraw(path, wb_mode, under_ev);
+    }
+    match catch(|| -> Result<Developed> { develop(std::fs::read(path)?, wb_mode, under_ev) }) {
+        Ok(d) => Ok(d),
+        Err(e) if native::LIBRAW => {
+            develop_libraw(path, wb_mode, under_ev).map_err(|e2| anyhow!("FlashRaw: {e}; LibRaw: {e2:#}"))
+        }
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+/// Develop a RAW file held in memory, with FlashRaw.
 pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Developed> {
     let t0 = Instant::now();
     let raw = FlashRaw::open(data).map_err(|e| anyhow!("{e}"))?;
@@ -136,31 +188,22 @@ pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Develope
     let decode_ms = t0.elapsed().as_secs_f32() * 1000.0;
 
     let bayer = match (&frame.cfa, frame.as_u16()) {
-        (Some(c), Some(_)) if c.is_bayer() && c.width() == 2 && c.height() == 2 && frame.cpp == 1 && !frame.white_balance_applied => Some(c.clone()),
+        (Some(c), Some(_)) if c.is_bayer() && c.width() == 2 && c.height() == 2 && frame.cpp == 1 && !frame.white_balance_applied => Some(*c),
         _ => None,
     };
     let Some(cfa) = bayer else {
         drop(frame);
         return develop_fallback(&raw, wb_mode, under_ev, baseline, t0);
     };
-    let data = frame.as_u16().unwrap();
-    let fw = frame.width as usize;
+    let data = frame.as_u16().expect("checked above");
     let crop = frame.crop;
     let (cx, cy) = (crop.x as usize, crop.y as usize);
-    let hw = crop.width as usize / 2;
-    let hh = crop.height as usize / 2;
-    if hw == 0 || hh == 0 || (cy + hh * 2) > frame.height as usize || (cx + hw * 2) > fw {
-        return Err(anyhow!("invalid crop"));
-    }
-
-    // Channel of each 2x2 position.
     let mut ch = [[0usize; 2]; 2];
     for (dy, row) in ch.iter_mut().enumerate() {
         for (dx, c) in row.iter_mut().enumerate() {
             *c = chan(cfa.color_at(cx + dx, cy + dy)).ok_or_else(|| anyhow!("unsupported CFA colour"))?;
         }
     }
-
     let bl = &frame.black_level;
     let simple_black = bl.row_deltas.is_empty() && bl.col_deltas.is_empty() && bl.rows <= 2 && bl.cols <= 2 && (bl.rows == 0 || 2 % bl.rows == 0) && (bl.cols == 0 || 2 % bl.cols == 0);
     let mut blk = [[0f32; 2]; 2];
@@ -169,9 +212,82 @@ pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Develope
             *b = bl.at(cx + dx, cy + dy, 0);
         }
     }
-    let blk_mean = (blk[0][0] + blk[0][1] + blk[1][0] + blk[1][1]) / 4.0;
-    let white = frame.white_level.values.first().copied().unwrap_or(65535).max(1) as f32;
+    let per_sample = |x: usize, y: usize| bl.at(x, y, 0);
+    let as_shot = frame.white_balance.as_ref().map(|w| {
+        let g = if w.coeffs[1] > 0.0 { w.coeffs[1] } else { 1.0 };
+        [w.coeffs[0] / g, 1.0, w.coeffs[2] / g]
+    });
+    let f = BayerFrame {
+        data,
+        stride: frame.width as usize,
+        rows: frame.height as usize,
+        crop: [cx, cy, crop.width as usize, crop.height as usize],
+        ch,
+        black: blk,
+        black_at: if simple_black { None } else { Some(&per_sample) },
+        white: frame.white_level.values.first().copied().unwrap_or(65535).max(1) as f32,
+        as_shot,
+        daylight: wb_from_matrix(&frame),
+        cam_to_srgb: flashraw::process::camera_to_srgb(&frame.color_matrices),
+        baseline_ev: baseline,
+    };
+    develop_bayer(&f, wb_mode, under_ev, t0, decode_ms, "FlashRaw")
+}
 
+/// Develop with LibRaw (in the helper process).
+pub fn develop_libraw(path: &Path, wb_mode: WbMode, under_ev: f32) -> Result<Developed> {
+    let t0 = Instant::now();
+    develop_libraw_data(native::libraw_raw(path, wb_mode)?, wb_mode, under_ev, t0)
+}
+
+pub fn develop_libraw_data(raw: LibrawRaw, wb_mode: WbMode, under_ev: f32, t0: Instant) -> Result<Developed> {
+    match raw {
+        LibrawRaw::Bayer(info, data) => {
+            let decode_ms = t0.elapsed().as_secs_f32() * 1000.0;
+            let (rows, cols) = (info.black_rows, info.black_cols);
+            let at = |x: usize, y: usize| info.black[(y % rows) * cols + (x % cols)];
+            let f = BayerFrame {
+                data: &data,
+                stride: info.w,
+                rows: info.h,
+                crop: [0, 0, info.w, info.h],
+                ch: info.ch.map(|r| r.map(|c| c as usize)),
+                black: [[at(0, 0), at(1, 0)], [at(0, 1), at(1, 1)]],
+                black_at: if rows == 2 && cols == 2 { None } else { Some(&at) },
+                white: info.white,
+                as_shot: info.as_shot,
+                daylight: info.daylight,
+                cam_to_srgb: info.cam_to_srgb,
+                baseline_ev: info.baseline_ev,
+            };
+            develop_bayer(&f, wb_mode, under_ev, t0, decode_ms, "LibRaw")
+        }
+        LibrawRaw::Rgb16(info, data) => {
+            let decode_ms = t0.elapsed().as_secs_f32() * 1000.0;
+            let rgb: Vec<u16> = data.par_iter().map(|v| f16_bits(*v as f32 / 65535.0)).collect();
+            Ok(finish_processed(rgb, info.w, info.h, under_ev, info.baseline_ev, t0, decode_ms, "LibRaw"))
+        }
+    }
+}
+
+/// One fused pass over a Bayer frame: 2x2 binning, raw clipping, histogram, white
+/// balance and the camera matrix.
+fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, decode_ms: f32, decoder: &'static str) -> Result<Developed> {
+    let data = f.data;
+    let fw = f.stride;
+    let [cx, cy, crop_w, crop_h] = f.crop;
+    let hw = crop_w / 2;
+    let hh = crop_h / 2;
+    if hw == 0 || hh == 0 || (cy + hh * 2) > f.rows || (cx + hw * 2) > fw || data.len() < fw * f.rows {
+        return Err(anyhow!("invalid crop"));
+    }
+    let ch = f.ch;
+    if ch.iter().flatten().any(|c| *c > 2) {
+        return Err(anyhow!("unsupported CFA colour"));
+    }
+    let blk = f.black;
+    let blk_mean = (blk[0][0] + blk[0][1] + blk[1][0] + blk[1][1]) / 4.0;
+    let white = f.white.max(1.0);
     // Saturation detection: some white levels are nominal; if many samples pile up at a
     // lower maximum, that is where the sensor actually clipped.
     let mut maxv = [0u16; 3];
@@ -219,18 +335,11 @@ pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Develope
     let inv: [f32; 3] = [1.0 / (sat[0] - blk_mean).max(1.0), 1.0 / (sat[1] - blk_mean).max(1.0), 1.0 / (sat[2] - blk_mean).max(1.0)];
 
     // White balance.
-    let as_shot = frame
-        .white_balance
-        .as_ref()
-        .map(|w| {
-            let g = if w.coeffs[1] > 0.0 { w.coeffs[1] } else { 1.0 };
-            [w.coeffs[0] / g, 1.0, w.coeffs[2] / g]
-        })
-        .filter(|w| w.iter().all(|v| v.is_finite() && *v > 0.0))
-        .unwrap_or([2.0, 1.0, 1.5]);
+    let valid = |w: &[f32; 3]| w.iter().all(|v| v.is_finite() && *v > 0.0);
+    let as_shot = f.as_shot.filter(valid).unwrap_or([2.0, 1.0, 1.5]);
     let mut wb = match wb_mode {
         WbMode::Asshot => as_shot,
-        WbMode::Daylight => wb_from_matrix(&frame).unwrap_or(as_shot),
+        WbMode::Daylight => f.daylight.filter(valid).unwrap_or(as_shot),
         WbMode::Auto => as_shot,
     };
     if wb_mode == WbMode::Auto {
@@ -263,7 +372,7 @@ pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Develope
         }
     }
 
-    let m = flashraw::process::camera_to_srgb(&frame.color_matrices);
+    let m = f.cam_to_srgb;
     let under_thr = 2f32.powf(-under_ev.abs());
 
     // Histogram bin of every possible raw value, per channel.
@@ -300,7 +409,10 @@ pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Develope
                     for dx in 0..2 {
                         let s = data[base + dx];
                         let c = ch[dy][dx];
-                        let b = if simple_black { blk[dy][dx] } else { bl.at(x0 + dx, y0 + dy, 0) };
+                        let b = match f.black_at {
+                            None => blk[dy][dx],
+                            Some(at) => at(x0 + dx, y0 + dy),
+                        };
                         v[c] += (s as f32 - b) * inv[c];
                         let sf = s as f32;
                         if sf >= thr[c] {
@@ -349,10 +461,11 @@ pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Develope
         over,
         under: acc.under as f32 / px,
         wb,
-        baseline_ev: baseline,
+        baseline_ev: f.baseline_ev,
         decode_ms,
         develop_ms: t0.elapsed().as_secs_f32() * 1000.0 - decode_ms,
         approximate: false,
+        decoder,
         mask_png: OnceLock::new(),
     })
 }
@@ -383,8 +496,17 @@ fn develop_fallback(raw: &FlashRaw, wb_mode: WbMode, under_ev: f32, baseline: f3
     };
     let decode_ms = t0.elapsed().as_secs_f32() * 1000.0;
     let bits = frame.as_f16_bits().ok_or_else(|| anyhow!("unexpected output"))?;
-    let (mut w, mut h) = (frame.width as usize, frame.height as usize);
-    let mut rgb: Vec<u16> = bits.to_vec();
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    if w == 0 || h == 0 || bits.len() < w * h * 3 {
+        return Err(anyhow!("unexpected output"));
+    }
+    Ok(finish_processed(bits[..w * h * 3].to_vec(), w, h, under_ev, baseline, t0, decode_ms, "FlashRaw"))
+}
+
+/// An image a decoder developed itself (linear sRGB, f16 bits): approximate clipping
+/// and histogram from the processed values.
+#[allow(clippy::too_many_arguments)]
+fn finish_processed(mut rgb: Vec<u16>, mut w: usize, mut h: usize, under_ev: f32, baseline: f32, t0: Instant, decode_ms: f32, decoder: &'static str) -> Developed {
     // Keep memory in check for full-resolution fallbacks.
     if w.max(h) > 4200 {
         let (nw, nh) = (w / 2, h / 2);
@@ -435,7 +557,7 @@ fn develop_fallback(raw: &FlashRaw, wb_mode: WbMode, under_ev: f32, baseline: f3
         mask[i] = clip;
     }
     let px = (w * h).max(1) as f32;
-    Ok(Developed {
+    Developed {
         w: w as u32,
         h: h as u32,
         rgb,
@@ -448,8 +570,9 @@ fn develop_fallback(raw: &FlashRaw, wb_mode: WbMode, under_ev: f32, baseline: f3
         decode_ms,
         develop_ms: t0.elapsed().as_secs_f32() * 1000.0 - decode_ms,
         approximate: true,
+        decoder,
         mask_png: OnceLock::new(),
-    })
+    }
 }
 
 /// f16 bits -> f32 for all 65536 patterns.

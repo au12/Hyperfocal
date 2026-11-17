@@ -6,6 +6,13 @@ license = "MIT"
 description = "Fast self-hosted RAW photo culling and library manager"
 publish = false
 
+[features]
+default = ["heic", "libraw"]
+# HEIC/HEIF (phones, Canon/Sony .HIF) through the system libheif and its libde265 plugin.
+heic = ["dep:libheif-rs"]
+# LibRaw as the fallback RAW decoder, through the system libraw_r (thread-safe build).
+libraw = ["dep:bindgen", "dep:pkg-config"]
+
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["macros"] }
@@ -37,6 +44,11 @@ hmac = "0.12"
 sha2 = "0.10"
 rand = "0.9"
 base64 = "0.22"
+libheif-rs = { version = "3", default-features = false, features = ["v1_17"], optional = true }
+
+[build-dependencies]
+bindgen = { version = "0.73", default-features = false, features = ["runtime"], optional = true }
+pkg-config = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

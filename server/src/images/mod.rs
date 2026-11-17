@@ -2,12 +2,15 @@
 //! with disk and memory caches. Everything here only *reads* the library; caches
 //! live in the cache directory.
 
+#[cfg(any(feature = "heic", test))]
+pub mod color;
 pub mod jpeg;
 pub mod raw;
 pub mod tone;
 
 use crate::config::Config;
 use crate::model::{Kind, PhotoRec};
+use crate::native;
 use crate::repo::{self, Located};
 use crate::scan;
 use crate::state::AppState;
@@ -168,36 +171,11 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Decoded display source for a photo, in sensor orientation, with a long edge of at
-/// least `min_long` where the file allows it.
+/// Decoded display source for a photo, in sensor orientation (HEIF: upright), with a
+/// long edge of at least `min_long` where the file allows it.
 pub fn load_display_rgb(path: &Path, kind: Kind, min_long: usize) -> Result<Rgb> {
     match kind {
-        Kind::Raw => {
-            let raw = flashraw::FlashRaw::open_path(path).map_err(|e| anyhow!("{e}"))?;
-            let mut jpegs: Vec<&flashraw::PreviewInfo> =
-                raw.previews().iter().filter(|p| p.encoding == flashraw::PreviewEncoding::Jpeg && p.width > 0).collect();
-            jpegs.sort_by_key(|p| p.width as u64 * p.height as u64);
-            let pick = jpegs
-                .iter()
-                .find(|p| (p.width.max(p.height) as usize) >= min_long)
-                .or(jpegs.last())
-                .copied();
-            if let Some(p) = pick {
-                if (p.width.max(p.height) as usize) >= min_long.min(1024) {
-                    if let Ok(bytes) = raw.preview_bytes(p) {
-                        if let Ok(img) = jpeg::decode_scaled(bytes, min_long) {
-                            return Ok(img);
-                        }
-                    }
-                }
-            }
-            // No usable embedded JPEG: develop the RAW data.
-            drop(raw);
-            let data = std::fs::read(path)?;
-            let dev = raw::develop(data, WbMode::Asshot, 10.0)?;
-            let lut = tone::build_lut(ToneMode::Normal, RENDER_BOOST_EV);
-            Ok(raw::render(&dev, &lut, min_long.max(1)))
-        }
+        Kind::Raw => load_raw_display(path, min_long),
         Kind::Jpeg => {
             let data = std::fs::read(path)?;
             jpeg::decode_scaled(&data, min_long)
@@ -207,7 +185,81 @@ pub fn load_display_rgb(path: &Path, kind: Kind, min_long: usize) -> Result<Rgb>
             let (w, h) = (img.width() as usize, img.height() as usize);
             Ok(Rgb { w, h, px: img.into_raw() })
         }
-        Kind::Heic => Err(anyhow!("HEIC previews are not supported yet")),
+        Kind::Heic => Ok(native::heic_decode(path, min_long)?.0),
+    }
+}
+
+/// An embedded preview at least this big (or `min_long`, if smaller) is good enough;
+/// otherwise the RAW data is developed.
+fn good_enough(long: usize, min_long: usize) -> bool {
+    long >= min_long.min(1024)
+}
+
+/// RAW: the smallest embedded JPEG that is big enough (FlashRaw, else LibRaw), else a
+/// development of the sensor data.
+fn load_raw_display(path: &Path, min_long: usize) -> Result<Rgb> {
+    let flash_ok = !native::prefer_libraw()
+        && match raw::catch(|| flash_preview(path, min_long)) {
+            Ok(Some(img)) => return Ok(img),
+            Ok(None) => true,
+            Err(_) => false,
+        };
+    // FlashRaw cannot read the file (or LibRaw is preferred): LibRaw's previews.
+    if !flash_ok && native::LIBRAW {
+        match native::libraw_preview(path, min_long) {
+            Ok(p) if good_enough(p.long_edge(), min_long) => match p {
+                native::Preview::Jpeg { data, .. } => return jpeg::decode_scaled(&data, min_long),
+                native::Preview::Rgb(img) => return Ok(img),
+            },
+            Ok(_) => {}
+            Err(e) => tracing::debug!("LibRaw preview of {}: {e:#}", path.display()),
+        }
+    }
+    let dev = raw::develop_path(path, WbMode::Asshot, 10.0)?;
+    let lut = tone::build_lut(ToneMode::Normal, RENDER_BOOST_EV);
+    Ok(raw::render(&dev, &lut, min_long.max(1)))
+}
+
+/// FlashRaw's embedded JPEG: Ok(None) when the file has none that is big enough.
+fn flash_preview(path: &Path, min_long: usize) -> Result<Option<Rgb>> {
+    let raw = flashraw::FlashRaw::open_path(path).map_err(|e| anyhow!("{e}"))?;
+    let mut jpegs: Vec<&flashraw::PreviewInfo> =
+        raw.previews().iter().filter(|p| p.encoding == flashraw::PreviewEncoding::Jpeg && p.width > 0).collect();
+    jpegs.sort_by_key(|p| p.width as u64 * p.height as u64);
+    let pick = jpegs.iter().find(|p| (p.width.max(p.height) as usize) >= min_long).or(jpegs.last()).copied();
+    if let Some(p) = pick
+        && good_enough(p.width.max(p.height) as usize, min_long)
+        && let Ok(bytes) = raw.preview_bytes(p)
+        && let Ok(img) = jpeg::decode_scaled(bytes, min_long)
+    {
+        return Ok(Some(img));
+    }
+    Ok(None)
+}
+
+/// The largest embedded JPEG of a RAW file, if it is at least 1000 pixels wide.
+fn full_embedded_jpeg(path: &Path) -> Option<Vec<u8>> {
+    if !native::prefer_libraw() {
+        match raw::catch(|| flashraw::FlashRaw::open_path(path)) {
+            Ok(raw) => {
+                let best = raw
+                    .previews()
+                    .iter()
+                    .filter(|p| p.encoding == flashraw::PreviewEncoding::Jpeg)
+                    .max_by_key(|p| p.width as u64 * p.height as u64)
+                    .cloned()?;
+                if best.width < 1000 {
+                    return None;
+                }
+                return raw.preview_bytes(&best).ok().map(jpeg::strip_exif);
+            }
+            Err(_) if !native::LIBRAW => return None,
+            Err(_) => {}
+        }
+    }
+    match native::libraw_preview(path, usize::MAX) {
+        Ok(native::Preview::Jpeg { data, w, h }) if w.max(h) >= 1000 => Some(jpeg::strip_exif(&data)),
+        _ => None,
     }
 }
 
@@ -291,38 +343,29 @@ impl Images {
         Ok(path)
     }
 
-    /// The largest embedded JPEG (or the JPEG itself) without EXIF, sensor orientation.
+    /// The full-size view as JPEG: the largest embedded JPEG of a RAW file (or the JPEG
+    /// itself) without EXIF, in sensor orientation; other formats at up to 4096 pixels,
+    /// disk cached.
     pub async fn full_jpeg(&self, state: &AppState, loc: &Located) -> Result<Vec<u8>> {
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         let kind = Kind::from_i32(loc.rec.kind);
-        tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
-            match kind {
-                Kind::Raw => {
-                    let raw = flashraw::FlashRaw::open_path(&src).map_err(|e| anyhow!("{e}"))?;
-                    let best = raw
-                        .previews()
-                        .iter()
-                        .filter(|p| p.encoding == flashraw::PreviewEncoding::Jpeg)
-                        .max_by_key(|p| p.width as u64 * p.height as u64)
-                        .cloned();
-                    if let Some(p) = best {
-                        if p.width >= 1000 {
-                            let b = raw.preview_bytes(&p).map_err(|e| anyhow!("{e}"))?;
-                            return Ok(jpeg::strip_exif(b));
-                        }
+        match kind {
+            Kind::Raw => {
+                tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+                    if let Some(b) = full_embedded_jpeg(&src) {
+                        return Ok(b);
                     }
-                    drop(raw);
                     let img = load_display_rgb(&src, kind, 4096)?;
                     jpeg::encode(&img, 88, false)
-                }
-                Kind::Jpeg => Ok(jpeg::strip_exif(&std::fs::read(&src)?)),
-                _ => {
-                    let img = load_display_rgb(&src, kind, 4096)?;
-                    jpeg::encode(&jpeg::fit_long(img, 4096)?, 88, false)
-                }
+                })
+                .await?
             }
-        })
-        .await?
+            Kind::Jpeg => Ok(tokio::task::spawn_blocking(move || -> Result<Vec<u8>> { Ok(jpeg::strip_exif(&std::fs::read(&src)?)) }).await??),
+            Kind::Heic | Kind::Tiff | Kind::Png => {
+                let path = self.preview(state, loc, 4096).await?;
+                Ok(tokio::fs::read(path).await?)
+            }
+        }
     }
 
     /// Developed RAW data (single-flight, memory cached).
@@ -347,10 +390,7 @@ impl Images {
         }
         let _permit = self.gate.acquire(high).await;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
-        let res = tokio::task::spawn_blocking(move || -> Result<Developed> {
-            let data = std::fs::read(&src)?;
-            raw::develop(data, wb, 8.0)
-        })
+        let res = tokio::task::spawn_blocking(move || -> Result<Developed> { raw::develop_path(&src, wb, 8.0) })
         .await
         .map_err(|e| anyhow!("{e}"))
         .and_then(|r| r);
@@ -455,8 +495,8 @@ impl Images {
                         continue;
                     }
                     let src = scan::photo_path(&st, &loc.folder_path, &loc.rec.name);
-                    if let Err(e) = make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, &out) {
-                        tracing::debug!("thumbnail for {} failed: {e:#}", src.display());
+                    if let Err(e) = raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, &out)) {
+                        tracing::debug!("thumbnail for {} failed: {e}", src.display());
                     }
                 }
             })

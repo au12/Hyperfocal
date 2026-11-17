@@ -2,6 +2,7 @@
 //! this module ever opens a file for writing.
 
 pub mod exiftool;
+pub mod heif;
 pub mod xmp;
 
 use crate::model::{Kind, PhotoRec, taken_to_secs};
@@ -11,7 +12,7 @@ use std::path::Path;
 use xmp::{Xmp, label_color};
 
 /// Metadata found inside the image file itself.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct FileMeta {
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -30,6 +31,7 @@ pub struct FileMeta {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub alt: Option<f64>,
+    #[serde(skip)]
     pub xmp: Option<Xmp>,
 }
 
@@ -48,11 +50,52 @@ pub fn read_file_meta(path: &Path, kind: Kind) -> Result<FileMeta, String> {
     match kind {
         Kind::Raw => read_raw_meta(path),
         Kind::Jpeg => read_jpeg_meta(path),
+        Kind::Heic => read_heif_meta(path),
         _ => read_container_meta(path),
     }
 }
 
+/// FlashRaw first (in-process, fast), LibRaw when FlashRaw cannot read the file.
 fn read_raw_meta(path: &Path) -> Result<FileMeta, String> {
+    if crate::native::prefer_libraw() {
+        return read_raw_meta_libraw(path);
+    }
+    match crate::images::raw::catch(|| read_raw_meta_flashraw(path)) {
+        Ok(m) => Ok(m),
+        Err(e) => read_raw_meta_libraw(path).map_err(|e2| format!("{e}; LibRaw: {e2}")),
+    }
+}
+
+pub fn read_raw_meta_libraw(path: &Path) -> Result<FileMeta, String> {
+    let m = crate::native::libraw_meta(path).map_err(|e| format!("{e:#}"))?;
+    let mut out = FileMeta {
+        width: Some(m.width).filter(|w| *w > 0),
+        height: Some(m.height).filter(|h| *h > 0),
+        orientation: m.orientation,
+        taken: m.taken,
+        make: m.make,
+        model: m.model,
+        lens: m.lens,
+        focal: m.focal,
+        fnum: m.fnum,
+        exposure: m.exposure,
+        iso: m.iso,
+        creator: m.artist,
+        lat: m.lat,
+        lon: m.lon,
+        alt: m.alt,
+        ..Default::default()
+    };
+    if let Some(x) = m.xmp {
+        let p = Xmp::parse(&x);
+        if !p.is_empty() {
+            out.xmp = Some(p);
+        }
+    }
+    Ok(out)
+}
+
+pub fn read_raw_meta_flashraw(path: &Path) -> Result<FileMeta, String> {
     let raw = flashraw::FlashRaw::open_path(path).map_err(|e| e.to_string())?;
     let m = raw.metadata();
     let mut out = FileMeta {
@@ -171,6 +214,29 @@ fn read_jpeg_meta(path: &Path) -> Result<FileMeta, String> {
     }
     if let Some(x) = h.xmp {
         let p = Xmp::parse(&x);
+        if !p.is_empty() {
+            out.xmp = Some(p);
+        }
+    }
+    Ok(out)
+}
+
+/// HEIC/HEIF: read in pure Rust. The decoder shows the image upright (the container's
+/// rotation and mirroring applied), so an EXIF or embedded-XMP orientation must not
+/// rotate it again: the file's own orientation is always 1. A sidecar orientation
+/// (a rotation made in Hyperfocal or another app) still applies on top.
+fn read_heif_meta(path: &Path) -> Result<FileMeta, String> {
+    let h = heif::read(path)?;
+    let mut out = FileMeta { orientation: 1, width: h.width, height: h.height, ..Default::default() };
+    if let Some(ex) = h.exif {
+        if let Ok(e) = exif::Reader::new().read_raw(ex) {
+            apply_exif(&e, &mut out);
+        }
+    }
+    out.orientation = 1;
+    if let Some(x) = h.xmp {
+        let mut p = Xmp::parse(&x);
+        p.orientation = None;
         if !p.is_empty() {
             out.xmp = Some(p);
         }

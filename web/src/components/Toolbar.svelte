@@ -109,7 +109,8 @@
             <button class:on={!f.kinds.length} onclick={() => store.setFilter('kinds', [])}>All</button>
             <button class:on={f.kinds.length === 1 && f.kinds[0] === 1} onclick={() => store.setFilter('kinds', [1])}>RAW</button>
             <button class:on={f.kinds.length === 1 && f.kinds[0] === 2} onclick={() => store.setFilter('kinds', [2])}>JPEG</button>
-            <button class:on={f.kinds.length > 1} onclick={() => store.setFilter('kinds', [3, 4, 5])}>Other</button>
+            <button class:on={f.kinds.length === 1 && f.kinds[0] === 5} onclick={() => store.setFilter('kinds', [5])}>HEIC</button>
+            <button class:on={f.kinds.length > 1} onclick={() => store.setFilter('kinds', [3, 4])}>Other</button>
           </div>
           <div class="fl">Location</div>
           <div class="seg small">

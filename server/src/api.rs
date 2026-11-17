@@ -171,6 +171,7 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
         "progress": *state.progress.read(),
         "counts": counts,
         "cache": state.images.cache_stats(),
+        "decoders": state.decoders,
         "auth": state.cfg.password.is_some(),
         "logged_in": true,
     })))
@@ -606,7 +607,7 @@ async fn raw_info(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuer
     let v = json!({
         "w": dev.w, "h": dev.h, "hist": dev.hist, "hist_min_ev": images::raw::HIST_MIN_EV, "hist_per_ev": images::raw::HIST_PER_EV,
         "over": dev.over, "under": dev.under, "wb": dev.wb, "baseline_ev": dev.baseline_ev, "boost_ev": images::RENDER_BOOST_EV,
-        "decode_ms": dev.decode_ms, "develop_ms": dev.develop_ms, "approximate": dev.approximate,
+        "decode_ms": dev.decode_ms, "develop_ms": dev.develop_ms, "approximate": dev.approximate, "decoder": dev.decoder,
     });
     let mut resp = Json(v).into_response();
     if q.v.is_some() {

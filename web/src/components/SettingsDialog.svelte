@@ -92,6 +92,14 @@
       {#if st}
         <dl>
           <dt>Version</dt><dd>{st.version}</dd>
+          {#if st.decoders}
+            {@const d = st.decoders}
+            <dt>Decoders</dt>
+            <dd>
+              {d.raw === 'libraw' ? 'LibRaw ' + (d.libraw ?? '') + ' for all RAW files' : 'FlashRaw ' + d.flashraw + (d.libraw ? ', LibRaw ' + d.libraw + ' as fallback' : '')}
+              · {d.libheif ? 'libheif ' + d.libheif : 'no HEIC support'}
+            </dd>
+          {/if}
           <dt>Photos</dt><dd class="tnum">{st.counts.photos.toLocaleString()} in {st.counts.folders.toLocaleString()} folders · {st.counts.geotagged.toLocaleString()} with GPS</dd>
           <dt>Writes</dt><dd>{st.readonly ? 'Read-only — nothing is written' : 'XMP sidecars and moves to ' + st.reject_dir + ' only; originals are never changed'}</dd>
           <dt>Index</dt><dd>{st.progress.phase}{#if st.progress.last_full_scan} · last full scan {new Date(st.progress.last_full_scan).toLocaleString()}{/if}</dd>

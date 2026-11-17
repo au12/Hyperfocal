@@ -40,6 +40,8 @@
   const v = $derived(L.v[i]);
   const o = $derived(L.o[i] ?? 1);
   const isRaw = $derived(L.k[i] === 1);
+  /** Name of the non-RAW source shown: the RAW's embedded JPEG, or the file's own format. */
+  const fileLabel = $derived(({ 3: 'TIFF', 4: 'PNG', 5: 'HEIC' } as Record<number, string>)[L.k[i]] ?? 'JPEG');
   const dispW = $derived((o >= 5 ? L.h[i] : L.w[i]) || 3);
   const dispH = $derived((o >= 5 ? L.w[i] : L.h[i]) || 2);
   const useRaw = $derived(isRaw && store.viewer.source === 'raw');
@@ -579,7 +581,7 @@
       {/if}
 
       <div class="chips">
-        <span class="chip src" class:raw={shownKind === 'raw'}>{shownKind === 'raw' ? 'RAW' : 'JPEG'}{#if shownKind === 'thumb'} · loading{/if}</span>
+        <span class="chip src" class:raw={shownKind === 'raw'}>{shownKind === 'raw' ? 'RAW' : fileLabel}{#if shownKind === 'thumb'} · loading{/if}</span>
         {#if halfRes}<span class="chip" title="RAW view is rendered at half resolution; switch to JPEG (J) for full-resolution focus checks">RAW ½ res</span>{/if}
         {#if toneLabel[store.viewer.tone] && useRaw}<span class="chip">{toneLabel[store.viewer.tone]}</span>{/if}
         {#if wbLabel[store.viewer.wb] && useRaw}<span class="chip">{wbLabel[store.viewer.wb]}</span>{/if}
@@ -649,7 +651,7 @@
       </button>
       <button class="mb" class:pick={L.p[i] === 1} onclick={() => store.togglePick(1)}><Icon name="flag" size={22} fill={L.p[i] === 1} /><span>Pick</span></button>
       <button class="mb" onclick={() => isRaw && store.setViewer('source', useRaw ? 'jpeg' : 'raw')} disabled={!isRaw}>
-        <span class="srcbadge" class:raw={useRaw}>{useRaw ? 'RAW' : 'JPG'}</span><span>Source</span>
+        <span class="srcbadge" class:raw={useRaw}>{useRaw ? 'RAW' : fileLabel === 'JPEG' ? 'JPG' : fileLabel}</span><span>Source</span>
       </button>
       <button class="mb" class:on={sheet === 'tools'} onclick={() => (sheet = sheet === 'tools' ? null : 'tools')}><Icon name="sliders" size={22} /><span>Tools</span></button>
     </footer>

@@ -35,6 +35,7 @@ fn test_config(root: &Path) -> Config {
         decode_concurrency: 1,
         password: None,
         exiftool: "exiftool".into(),
+        raw_decoder_libraw: false,
     }
 }
 
@@ -139,17 +140,18 @@ async fn originals_survive_every_write_path() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let lib = tmp.path().join("photos");
-    // A RAW+JPEG pair, a RAW with an existing Excire sidecar, a DNG, another year,
-    // and a decoy already sitting in _Rejected under the DNG's name.
+    // A RAW+JPEG+HEIF set (cameras that shoot RAW+HEIF), a RAW with an existing Excire
+    // sidecar, a DNG, another year, and a decoy already in _Rejected under the DNG's name.
     write_bytes(&lib.join("2024/Trip/IMG_0001.CR2"), 300_000, 1);
     write_bytes(&lib.join("2024/Trip/IMG_0001.JPG"), 40_000, 2);
+    write_bytes(&lib.join("2024/Trip/IMG_0001.HIF"), 30_000, 7);
     write_bytes(&lib.join("2024/Trip/IMG_0002.CR3"), 250_000, 3);
     std::fs::write(lib.join("2024/Trip/IMG_0002.xmp"), EXCIRE_SIDECAR).unwrap();
     write_bytes(&lib.join("2024/Trip/R0000001.DNG"), 200_000, 4);
     write_bytes(&lib.join("2024/Trip/_Rejected/R0000001.DNG"), 1_000, 5);
     write_bytes(&lib.join("2023/Other/IMG_9999.CR3"), 100_000, 6);
     let before = originals(&lib);
-    assert_eq!(before.len(), 6);
+    assert_eq!(before.len(), 7);
 
     let state = crate::build_state(test_config(tmp.path())).await.unwrap();
     assert!(!state.is_readonly());
@@ -186,10 +188,10 @@ async fn originals_survive_every_write_path() {
     assert!(sidecar(&lib, "2024/Trip/IMG_0002.xmp").subject.unwrap().contains(&"FromExcire".to_string()));
     assert_eq!(originals(&lib), before, "a metadata write changed an original");
 
-    // 2. Reject the RAW+JPEG pair: the group (and its sidecar) moves together.
+    // 2. Reject the RAW+JPEG+HEIF set: the group (and its sidecar) moves together.
     let rej = ops::reject(&state, &[p1]).await.unwrap();
     assert!(rej.failed.is_empty(), "{:?}", rej.failed);
-    for n in ["IMG_0001.CR2", "IMG_0001.JPG", "IMG_0001.xmp"] {
+    for n in ["IMG_0001.CR2", "IMG_0001.JPG", "IMG_0001.HIF", "IMG_0001.xmp"] {
         assert!(lib.join("2024/Trip/_Rejected").join(n).is_file(), "{n} not in _Rejected");
         assert!(!lib.join("2024/Trip").join(n).exists(), "{n} still in the event folder");
     }

@@ -14,12 +14,13 @@ RUN npm run build
 # ---------------------------------------------------------------- server
 FROM rust:1-trixie AS server
 # cmake + nasm: libjpeg-turbo is built from source with its SIMD code paths.
+# libheif / LibRaw headers and libclang: HEIC support and the LibRaw bindings.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cmake nasm \
+ && apt-get install -y --no-install-recommends cmake nasm pkg-config libclang-dev libheif-dev libraw-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 # Dependencies first, in their own layer, so source edits rebuild in seconds.
-COPY server/Cargo.toml server/Cargo.lock ./
+COPY server/Cargo.toml server/Cargo.lock server/build.rs ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
  && cargo build --release --locked \
  && rm -rf src
@@ -30,14 +31,18 @@ RUN touch src/main.rs && cargo build --release --locked \
 
 # ---------------------------------------------------------------- runtime
 FROM debian:trixie-slim
-# exiftool writes XMP sidecars (and nothing else); tini reaps its child processes.
+# exiftool writes XMP sidecars (and nothing else); tini reaps child processes;
+# libheif (with its HEVC plugin) and LibRaw run only inside the decoder helper process.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libimage-exiftool-perl tini util-linux \
+      libheif1 libheif-plugin-libde265 libraw23t64 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=server /src/target/release/hyperfocal /usr/local/bin/hyperfocal
 COPY --from=web /web/dist /app/web
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+# Fails the build if the native decoders cannot load in the runtime image.
+RUN hyperfocal native version | grep -q libraw
 
 ENV HYPERFOCAL_PHOTOS=/photos \
     HYPERFOCAL_CONFIG=/config \

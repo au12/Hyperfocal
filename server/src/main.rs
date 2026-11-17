@@ -6,8 +6,10 @@ mod config;
 mod db;
 mod files;
 mod images;
+mod inspect;
 mod meta;
 mod model;
+mod native;
 mod ops;
 mod repo;
 mod scan;
@@ -92,7 +94,11 @@ async fn static_cache(req: Request<axum::body::Body>, next: Next) -> Response {
 }
 
 fn main() -> std::process::ExitCode {
-    match std::env::args().nth(1).as_deref() {
+    // args_os: the native helper receives file names, which need not be UTF-8.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    match args.get(1).and_then(|a| a.to_str()) {
+        Some("native") => return native::helper::main(&args[2..]),
+        Some("inspect") => return inspect::main(&args[2..]),
         Some("healthcheck") => return healthcheck(),
         Some("--version" | "-V") => {
             println!("hyperfocal {}", env!("CARGO_PKG_VERSION"));
@@ -119,6 +125,8 @@ pub(crate) async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
     let pool = db::open(&cfg.config_dir.join("hyperfocal.db"))?;
     let exiftool = meta::exiftool::ExifTool::new(&cfg.exiftool, &cfg.config_dir)?;
     let images = images::Images::new(&cfg)?;
+    native::set_prefer_libraw(cfg.raw_decoder_libraw);
+    let decoders = tokio::task::spawn_blocking(native::Decoders::detect).await?;
     let (events, _) = tokio::sync::broadcast::channel(512);
     let session_key = load_session_key(&cfg.config_dir);
     let state = Arc::new(AppState {
@@ -134,6 +142,7 @@ pub(crate) async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         images,
         readonly: AtomicBool::new(readonly),
         session_key,
+        decoders,
     });
     if !readonly {
         match state.exiftool.lock().await.version().await {
@@ -159,6 +168,14 @@ async fn run() -> Result<()> {
     if state.is_readonly() {
         tracing::warn!("read-only mode: the photo library will not be written to");
     }
+    let d = &state.decoders;
+    tracing::info!(
+        "decoders: FlashRaw {}{}, LibRaw {}, libheif {}",
+        d.flashraw,
+        if d.raw == "libraw" { " (not used: HYPERFOCAL_RAW_DECODER=libraw)" } else { "" },
+        d.libraw.as_deref().unwrap_or("unavailable"),
+        d.libheif.as_deref().unwrap_or("unavailable (no HEIC support)"),
+    );
 
     scan::spawn(state.clone());
     images::Images::spawn_workers(state.clone());

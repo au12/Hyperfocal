@@ -5,6 +5,10 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  # Weekly rebuild, so security fixes in Debian's packages (libheif, LibRaw, the base
+  # image) reach the published image without a code change.
+  schedule:
+    - cron: '23 5 * * 1'
   workflow_dispatch:
 
 concurrency:
@@ -17,8 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install exiftool and nasm
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl nasm
+      - name: Install exiftool, nasm, libheif and LibRaw
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libimage-exiftool-perl nasm pkg-config libclang-dev \
+            libheif-dev libheif-plugin-libde265 libraw-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -61,7 +68,7 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/hyperfocal
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short
+            type=sha,format=short,enable=${{ github.event_name != 'schedule' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=pr
@@ -72,5 +79,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Always start from the newest base images. The weekly run also skips the
+          # layer cache, so apt installs the current Debian packages.
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

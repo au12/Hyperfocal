@@ -52,6 +52,8 @@ pub struct AppState {
     pub images: Images,
     pub readonly: AtomicBool,
     pub session_key: [u8; 32],
+    /// RAW and HEIC decoders available to this build.
+    pub decoders: crate::native::Decoders,
 }
 
 impl AppState {

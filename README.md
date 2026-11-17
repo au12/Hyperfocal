@@ -11,7 +11,7 @@
 
 ![Hyperfocal library view](docs/screenshots/desktop-library.jpg)
 
-Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, DNG, NEF, ARW, RAF, RW2, PEF and more) and lets you browse, check and cull it from any browser on your LAN, including your phone. It never modifies or deletes an original image file. Ratings, labels, picks, keywords, captions and locations go into standard XMP sidecars, and rejected photos are moved into a `_Rejected` sub-folder.
+Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, DNG, NEF, ARW, RAF, RW2, PEF and more), JPEG and HEIC/HEIF, and lets you browse, check and cull it from any browser on your LAN, including your phone. It never modifies or deletes an original image file. Ratings, labels, picks, keywords, captions and locations go into standard XMP sidecars, and rejected photos are moved into a `_Rejected` sub-folder.
 
 ## Contents
 
@@ -26,14 +26,18 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 - [Configuration](#configuration)
 - [Performance](#performance)
 - [Limitations](#limitations)
+- [Troubleshooting a file](#troubleshooting-a-file)
 - [Development](#development)
+- [Roadmap](ROADMAP.md)
 - [Credits](#credits)
 
 ## Features
 
 ### Viewing and culling (FastRawViewer-style)
 
-- **Embedded JPEG or real RAW, on one key (`J`).** The camera JPEG appears instantly. The RAW view is developed from the sensor data (FlashRaw decoder), so what you judge is the real file, not the camera's rendering.
+- **Embedded JPEG or real RAW, on one key (`J`).** The camera JPEG appears instantly. The RAW view is developed from the sensor data, so what you judge is the real file, not the camera's rendering.
+- **Two RAW decoders.** FlashRaw reads RAW files first, in-process. When it cannot read a file (a camera newer than it, or a damaged file), LibRaw takes over. A RAW view drawn by LibRaw says so on its histogram.
+- **HEIC/HEIF** from phones and from cameras that shoot `.HIF`. Colours are converted properly: Display P3 to sRGB, and HDR (PQ/HLG) tone-mapped to SDR. RAW+HEIF pairs are grouped like RAW+JPEG.
 - **View tools that never touch the file.** Every tool only changes what you see:
   - two levels of screen sharpening
   - focus peaking
@@ -97,13 +101,17 @@ Hyperfocal was written for an archive that must not be damaged. These rules are 
    - A move is never turned into copy-then-delete. A move that would cross file systems is refused.
 5. **Metadata writes re-read the sidecar first and change only the fields you edited.** Edits you made in Excire or Lightroom in the meantime are kept, and undo restores only the fields Hyperfocal changed.
 6. **The library is never chowned or chmodded.** The container only takes ownership of its own `/config` folder.
-7. **Read-only mode** turns every write off. It is used automatically when the library is mounted read-only or ExifTool is unavailable, and can be forced with `HYPERFOCAL_READONLY=true`.
+7. **The C decoders run outside the server.**
+   - libheif (HEIC) and LibRaw run only in a short-lived helper process that reads one file and exits. It is killed if it takes longer than three minutes.
+   - If one of them crashes or hangs on a damaged file, only that request fails: the server, the indexer and your files are unaffected. These libraries do get security fixes from time to time, which is why they are kept at arm's length.
+   - FlashRaw, the JPEG code and the HEIF metadata reader are memory-safe Rust and run in-process. A decoder that panics on a malformed file is caught too.
+8. **Read-only mode** turns every write off. It is used automatically when the library is mounted read-only or ExifTool is unavailable, and can be forced with `HYPERFOCAL_READONLY=true`.
 
 An end-to-end test runs every write path against a scratch library and compares every original byte for byte afterwards. It runs in CI on every push. The write paths it covers:
 
 - bulk metadata edits
 - merging into an existing Excire sidecar while keeping its other fields
-- rejecting a RAW+JPEG pair
+- rejecting a RAW+JPEG+HEIF set
 - a reject that would overwrite a file, which must be refused
 - restore
 - undo
@@ -136,7 +144,7 @@ Mobile: grid, single view with the culling bar, view tools:
 
 The first scan indexes metadata only and reads very little of each file. Thumbnails are built in the background, newest years first. Any folder you open is indexed immediately, ahead of the queue.
 
-The image is `ghcr.io/au12/hyperfocal:latest` (amd64). It is rebuilt on every push to `main`, and tags `vX.Y.Z` are published as versioned images.
+The image is `ghcr.io/au12/hyperfocal:latest` (amd64). It is rebuilt on every push to `main` and once a week, so security fixes in Debian's packages (including libheif and LibRaw) reach it without a code change. Tags `vX.Y.Z` are published as versioned images. In a public repository, GitHub pauses scheduled workflows after 60 days without activity; if that happens, re-enable the **Docker** workflow in the **Actions** tab.
 
 The container package has the same visibility as the repository. If the repository is private, the image is private too. In that case, either make the package public (GitHub → Packages → hyperfocal → Package settings) or run `docker login ghcr.io` on the server with a token that has `read:packages`.
 
@@ -234,6 +242,7 @@ The FastRawViewer preset is the default. Press `?` in the app for the full list.
 | `HYPERFOCAL_PREVIEW_CACHE_MB` | `4096` | Disk budget for screen-size previews |
 | `HYPERFOCAL_INDEX_THREADS` | cores, 2–8 | Parallel metadata readers |
 | `HYPERFOCAL_DECODE_CONCURRENCY` | cores ÷ 4, 1–4 | RAW files developed at once |
+| `HYPERFOCAL_RAW_DECODER` | `auto` | `auto`: FlashRaw, with LibRaw when FlashRaw cannot read a file. `libraw`: LibRaw for every RAW file. |
 | `PUID` / `PGID` | `99` / `100` | User and group the app runs as (Unraid `nobody:users`) |
 | `UMASK` | `000` | `000` matches Unraid share permissions, so Excire can still edit sidecars over SMB |
 
@@ -251,19 +260,33 @@ These numbers are from a 2-vCPU test VM; an Unraid server will be faster.
 | Switching between view tools | 30–70 ms |
 | Clipping mask | 4 ms |
 
-The server is a single Rust binary (axum, SQLite in WAL mode, FlashRaw, libjpeg-turbo with SIMD). The UI is about 70 KB of compressed Svelte 5; the map loads only when you use it. The image is Debian slim plus ExifTool, which is used only to write sidecars.
+The server is a single Rust binary (axum, SQLite in WAL mode, FlashRaw, libjpeg-turbo with SIMD). The UI is about 70 KB of compressed Svelte 5; the map loads only when you use it. The image is Debian slim plus ExifTool, which is used only to write sidecars, and libheif and LibRaw for the helper process.
+
+On the same VM, the LibRaw helper starts in a few milliseconds, and a LibRaw development takes 0.1–2 s depending on sensor size. A HEIC thumbnail or preview costs one HEVC decode, about 0.5 s for a 12-megapixel photo; after that it is cached like everything else.
 
 ## Limitations
 
 - The RAW view is developed at half resolution (a 2×2 Bayer quad per pixel). That is plenty for judging exposure and focus at screen size. For pixel-level checks at 100 %, the embedded JPEG view shows the camera JPEG at full resolution.
 - Fujifilm X-Trans, monochrome and linear DNG files use an approximate development path, about 0.6–0.9 s.
-- HEIC is not supported yet.
+- HEIC/HEIF files get the image view, metadata and every culling feature, but none of the RAW tools: they hold no sensor data.
+- LibRaw 0.21, the version in the Docker image, has no colour data for some cameras released after 2022. FlashRaw handles those, but if LibRaw has to take over for one, its RAW view can look flat in colour.
 - Hyperfocal does no AI tagging, face recognition, similarity search or duplicate detection. Keep Excire for those for now.
+
+## Troubleshooting a file
+
+`hyperfocal inspect` shows what every decoder makes of a file: metadata from FlashRaw and LibRaw, both developments with timings and clipping, the embedded previews, and for HEIC the decoded size and colour space. It only reads the file.
+
+```bash
+docker exec hyperfocal hyperfocal inspect "/photos/2024/Trip/IMG_0001.CR3"
+# add --render /config/inspect to also save the RAW developments as JPEGs
+```
 
 ## Development
 
 ```bash
-# server (Rust 1.85+, cmake and nasm for libjpeg-turbo, exiftool at runtime)
+# server (Rust 1.85+; cmake, nasm, pkg-config, libclang, libheif-dev, libraw-dev; exiftool at runtime)
+#   Debian/Ubuntu: apt install cmake nasm pkg-config libclang-dev libheif-dev libheif-plugin-libde265 libraw-dev libimage-exiftool-perl
+#   without libheif/LibRaw: cargo build --no-default-features (or --features heic / --features libraw)
 cd server && cargo test && cargo run --release
 #   env: HYPERFOCAL_PHOTOS=/path/to/library HYPERFOCAL_CONFIG=./dev HYPERFOCAL_WEB=../web/dist HYPERFOCAL_PORT=8099
 
@@ -275,11 +298,13 @@ npm run check && npm run build      # type check and production build (precompre
 docker build -t hyperfocal .
 ```
 
-The GitHub Action in `.github/workflows/docker.yml` runs the tests, builds the image and publishes it to GHCR.
+The GitHub Action in `.github/workflows/docker.yml` runs the tests, builds the image and publishes it to GHCR. The HEIC and DNG test fixtures are generated by `server/tests/fixtures/make_fixtures.py`.
 
 ## Credits
 
 - [FlashRaw](https://crates.io/crates/flashraw): RAW decoding
+- [LibRaw](https://www.libraw.org/) (LGPL-2.1 / CDDL): fallback RAW decoding
+- [libheif](https://github.com/strukturag/libheif) and [libde265](https://github.com/strukturag/libde265) (LGPL-3.0): HEIC/HEIF decoding
 - [libjpeg-turbo](https://libjpeg-turbo.org/): JPEG decoding and encoding
 - [ExifTool](https://exiftool.org/) by Phil Harvey: sidecar writing
 - [Leaflet](https://leafletjs.com/) and [OpenStreetMap](https://www.openstreetmap.org/copyright): maps
@@ -291,4 +316,4 @@ The GitHub Action in `.github/workflows/docker.yml` runs the tests, builds the i
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The Docker image also contains LibRaw, libheif and libde265, used as unmodified shared system libraries under their own licenses.

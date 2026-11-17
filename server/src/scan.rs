@@ -236,7 +236,8 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
                     ..Default::default()
                 };
                 let sidecar_xmp = sc.as_ref().and_then(|s| meta::read_sidecar(&dir.join(&s.0)));
-                match meta::read_file_meta(&path, f.kind) {
+                // A parser that panics on one malformed file must not stop the scanner.
+                match crate::images::raw::catch(|| meta::read_file_meta(&path, f.kind)) {
                     Ok(fm) => meta::merge_into(&mut rec, &fm, sidecar_xmp.as_ref()),
                     Err(e) => {
                         rec.meta_err = Some(e);

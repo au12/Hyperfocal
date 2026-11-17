@@ -24,6 +24,7 @@ export interface Status {
   progress: Progress;
   counts: { photos: number; folders: number; geotagged: number };
   cache: Record<string, number>;
+  decoders?: { flashraw: string; libraw: string | null; libheif: string | null; raw: 'flashraw' | 'libraw' };
   auth: boolean;
   logged_in: boolean;
 }
@@ -126,6 +127,8 @@ export interface RawInfo {
   decode_ms: number;
   develop_ms: number;
   approximate: boolean;
+  /** Which decoder read the sensor data: "FlashRaw" or "LibRaw". */
+  decoder?: string;
 }
 
 export interface Patch {

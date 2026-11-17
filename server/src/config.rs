@@ -32,6 +32,8 @@ pub struct Config {
     /// Optional single password protecting the UI.
     pub password: Option<String>,
     pub exiftool: String,
+    /// `libraw`: decode every RAW file with LibRaw instead of only when FlashRaw cannot.
+    pub raw_decoder_libraw: bool,
 }
 
 fn env_str(key: &str) -> Option<String> {
@@ -77,6 +79,7 @@ impl Config {
             decode_concurrency: env_num("HYPERFOCAL_DECODE_CONCURRENCY", (cores / 4).clamp(1, 4)),
             password: env_str("HYPERFOCAL_PASSWORD"),
             exiftool: env_str("HYPERFOCAL_EXIFTOOL").unwrap_or_else(|| "exiftool".into()),
+            raw_decoder_libraw: env_str("HYPERFOCAL_RAW_DECODER").is_some_and(|v| v.eq_ignore_ascii_case("libraw")),
         }
     }
 }
