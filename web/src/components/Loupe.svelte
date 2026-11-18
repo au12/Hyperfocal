@@ -604,21 +604,21 @@
 
     {#if !store.mobile}
       <div class="tools">
-        <div class="seg" title="Switch RAW / embedded JPEG (J)">
+        <div class="seg" title={'Switch RAW / embedded JPEG' + store.keyHint('source')}>
           <button class:on={!useRaw} onclick={() => store.setViewer('source', 'jpeg')}>JPEG</button>
           <button class:on={useRaw} disabled={!isRaw} onclick={() => store.setViewer('source', 'raw')}>RAW</button>
         </div>
-        <button class="btn sm icon" class:on={store.viewer.sharpen > 0} onclick={() => store.setViewer('sharpen', ((store.viewer.sharpen + 1) % 3) as 0 | 1 | 2)} title="Screen sharpening (S)">
+        <button class="btn sm icon" class:on={store.viewer.sharpen > 0} onclick={() => store.setViewer('sharpen', ((store.viewer.sharpen + 1) % 3) as 0 | 1 | 2)} title={'Screen sharpening' + store.keyHint('sharpen')}>
           <Icon name="sharpen" />{#if store.viewer.sharpen}<sup>{store.viewer.sharpen}</sup>{/if}
         </button>
-        <button class="btn sm icon" class:on={store.viewer.peaking > 0} onclick={() => store.setViewer('peaking', ((store.viewer.peaking + 1) % 4) as 0 | 1 | 2 | 3)} title="Focus peaking (P)"><Icon name="peaking" /></button>
-        <button class="btn sm" class:on={store.viewer.over} onclick={() => store.setViewer('over', !store.viewer.over)} title="Overexposed areas (O)">OE</button>
-        <button class="btn sm" class:on={store.viewer.under} onclick={() => store.setViewer('under', !store.viewer.under)} title="Underexposed areas (U)">UE</button>
+        <button class="btn sm icon" class:on={store.viewer.peaking > 0} onclick={() => store.setViewer('peaking', ((store.viewer.peaking + 1) % 4) as 0 | 1 | 2 | 3)} title={'Focus peaking' + store.keyHint('peaking')}><Icon name="peaking" /></button>
+        <button class="btn sm" class:on={store.viewer.over} onclick={() => store.setViewer('over', !store.viewer.over)} title={'Overexposed areas' + store.keyHint('over')}>OE</button>
+        <button class="btn sm" class:on={store.viewer.under} onclick={() => store.setViewer('under', !store.viewer.under)} title={'Underexposed areas' + store.keyHint('under')}>UE</button>
         <span class="vsep"></span>
-        <button class="btn sm icon" class:on={store.viewer.tone === 'shadows'} onclick={() => store.toggleTone('shadows')} title="Shadow boost (Shift+S)"><Icon name="shadows" /></button>
-        <button class="btn sm icon" class:on={store.viewer.tone === 'highlights'} onclick={() => store.toggleTone('highlights')} title="Highlight inspection (Shift+H)"><Icon name="highlights" /></button>
-        <button class="btn sm icon" class:on={store.viewer.tone === 'linear'} onclick={() => store.toggleTone('linear')} title="Linear (Shift+L)"><Icon name="linear" /></button>
-        <button class="btn sm icon" class:on={store.viewer.invert} onclick={() => store.setViewer('invert', !store.viewer.invert)} title="Invert colours (Shift+I)"><Icon name="invert" /></button>
+        <button class="btn sm icon" class:on={store.viewer.tone === 'shadows'} onclick={() => store.toggleTone('shadows')} title={'Shadow boost' + store.keyHint('shadows')}><Icon name="shadows" /></button>
+        <button class="btn sm icon" class:on={store.viewer.tone === 'highlights'} onclick={() => store.toggleTone('highlights')} title={'Highlight inspection' + store.keyHint('highlights')}><Icon name="highlights" /></button>
+        <button class="btn sm icon" class:on={store.viewer.tone === 'linear'} onclick={() => store.toggleTone('linear')} title={'Linear' + store.keyHint('linear')}><Icon name="linear" /></button>
+        <button class="btn sm icon" class:on={store.viewer.invert} onclick={() => store.setViewer('invert', !store.viewer.invert)} title={'Invert colours' + store.keyHint('invert')}><Icon name="invert" /></button>
         <button class="btn sm" class:on={store.viewer.ev !== 0 && store.viewer.evOn} onclick={() => store.setViewer('evOn', !store.viewer.evOn)} title="Exposure correction (A, Alt+= / Alt+−)">
           {store.viewer.ev > 0 ? '+' : ''}{store.viewer.ev.toFixed(1)} EV
         </button>
@@ -628,14 +628,14 @@
     <div class="right">
       {#if !store.mobile}
         <button class="btn sm icon" class:on={store.panels.histogram} onclick={() => { store.panels.histogram = !store.panels.histogram; store.persist(); }} title="Histogram (F2 / H)"><Icon name="histogram" /></button>
-        <button class="btn sm icon" onclick={() => store.rotate(-90)} title="Rotate left (Ctrl+[)"><Icon name="rotate-ccw" /></button>
-        <button class="btn sm icon" onclick={() => store.rotate(90)} title="Rotate right (Ctrl+])"><Icon name="rotate-cw" /></button>
-        <button class="btn sm icon" onclick={() => store.openLocation()} title="Set location (L)"><Icon name="pin" /></button>
+        <button class="btn sm icon" onclick={() => store.rotate(-90)} title={'Rotate left' + store.keyHint('rotateCcw')}><Icon name="rotate-ccw" /></button>
+        <button class="btn sm icon" onclick={() => store.rotate(90)} title={'Rotate right' + store.keyHint('rotateCw')}><Icon name="rotate-cw" /></button>
+        <button class="btn sm icon" onclick={() => store.openLocation()} title={'Set location' + store.keyHint('location')}><Icon name="pin" /></button>
         <button class="btn sm {inReject ? '' : 'danger'}" onclick={() => store.reject()} title={inReject ? 'Restore from reject folder' : 'Move to reject folder (Del / Ctrl+Shift+Del)'}>
           <Icon name={inReject ? 'restore' : 'reject'} /> {inReject ? 'Restore' : 'Reject'}
         </button>
         <button class="btn sm icon" class:on={store.panels.info} onclick={() => { store.panels.info = !store.panels.info; store.persist(); }} title="Info (I / F3)"><Icon name="info" /></button>
-        <button class="btn sm icon" onclick={toggleFullscreen} title="Full screen (F)"><Icon name="fullscreen" /></button>
+        <button class="btn sm icon" onclick={toggleFullscreen} title={'Full screen' + store.keyHint('fullscreen')}><Icon name="fullscreen" /></button>
       {:else}
         <button class="btn ghost icon" class:on={store.panels.histogram} onclick={() => (store.panels.histogram = !store.panels.histogram)} aria-label="Histogram"><Icon name="histogram" /></button>
         <button class="btn ghost icon" onclick={() => (sheet = sheet === 'info' ? null : 'info')} aria-label="Info"><Icon name="info" /></button>
@@ -670,7 +670,7 @@
 
       <div class="chips">
         <span class="chip src" class:raw={shownKind === 'raw'}>{shownKind === 'raw' ? 'RAW' : fileLabel}{#if shownKind === 'thumb'} · loading{/if}</span>
-        {#if halfRes}<span class="chip" title={fullResAhead ? 'RAW view at half resolution: zoom in to 75% or more for the full sensor resolution' : 'RAW view is rendered at half resolution; switch to JPEG (J) for full-resolution focus checks'}>RAW ½ res</span>{/if}
+        {#if halfRes}<span class="chip" title={fullResAhead ? 'RAW view at half resolution: zoom in to 75% or more for the full sensor resolution' : 'RAW view is rendered at half resolution; switch to JPEG' + store.keyHint('source') + ' for full-resolution focus checks'}>RAW ½ res</span>{/if}
         {#if toneLabel[store.viewer.tone] && useRaw}<span class="chip">{toneLabel[store.viewer.tone]}</span>{/if}
         {#if wbLabel[store.viewer.wb] && useRaw}<span class="chip">{wbLabel[store.viewer.wb]}</span>{/if}
         {#if store.viewer.sharpen}<span class="chip">Sharpen {store.viewer.sharpen}</span>{/if}
@@ -706,14 +706,14 @@
           <button class="lbl" class:on={L.lc[i] === l.color} onclick={() => store.label(l.color)} title={`${l.name}${l.key ? ` (${l.key})` : ''}`}><span class="label-dot label-{l.color}"></span></button>
         {/each}
       </div>
-      <button class="btn sm" class:pick={L.p[i] === 1} onclick={() => store.togglePick(1)} title="Pick (Alt+P)"><Icon name="flag" fill={L.p[i] === 1} />{L.p[i] === 1 ? 'Picked' : 'Pick'}</button>
+      <button class="btn sm" class:pick={L.p[i] === 1} onclick={() => store.togglePick(1)} title={'Pick' + store.keyHint('pick')}><Icon name="flag" fill={L.p[i] === 1} />{L.p[i] === 1 ? 'Picked' : 'Pick'}</button>
       <div class="exif ellipsis dim tnum">
         {#if exif}
           {[cameraName(exif.make, exif.model), exif.lens, fmtSettings(exif)].filter(Boolean).join(' · ')}
         {/if}
       </div>
       <div class="zoom tnum">
-        <button class="btn sm ghost" onclick={() => (fit ? zoomTo(1) : setFit())} title="Fit / 100% (Z)">{fit ? 'Fit' : `${zoomPct}%`}</button>
+        <button class="btn sm ghost" onclick={() => (fit ? zoomTo(1) : setFit())} title={'Fit / 100%' + store.keyHint('zoomToggle')}>{fit ? 'Fit' : `${zoomPct}%`}</button>
       </div>
     </footer>
     {#if store.panels.filmstrip && !store.panels.hidden}

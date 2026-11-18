@@ -56,6 +56,10 @@
         </div>
       </div>
       <div class="opt">
+        <span>Your own shortcuts{#if Object.keys(store.keyOverrides()).length}{` (${Object.keys(store.keyOverrides()).length} changed)`}{/if}</span>
+        <button class="btn sm" onclick={() => (store.dialog = 'help')}><Icon name="keyboard" />Customize…</button>
+      </div>
+      <div class="opt">
         <span>Single view opens as</span>
         <div class="seg">
           <button class:on={s.defaultSource === 'jpeg'} onclick={() => { set('defaultSource', 'jpeg'); store.setViewer('source', 'jpeg'); }}>Embedded JPEG</button>

@@ -572,7 +572,7 @@
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
   }
   .chip {
-    font-size: var(--fs-xs);
+    font-size: 0.6875rem;
     padding: 0.0625rem 0.4375rem;
     border-radius: 1rem;
     background: rgba(14, 18, 22, 0.75);

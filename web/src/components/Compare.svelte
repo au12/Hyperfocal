@@ -61,12 +61,12 @@
   // Pane layout: side by side (stacked in portrait), 2 x 2 for four.
   const cols = $derived(n === 4 ? 2 : portrait ? 1 : n);
   const rows = $derived(n === 4 ? 2 : portrait ? n : 1);
-  const k = (a: Parameters<typeof keysFor>[0]) => keysFor(a, store.settings.keymap).slice(0, 1).map(prettyKey).join('');
+  const k = (a: Parameters<typeof keysFor>[0]) => keysFor(a, store.settings.keymap, store.keyOverrides()).slice(0, 1).map(prettyKey).join('');
 </script>
 
 <div class="compare" role="dialog" aria-label="Compare photos">
   <header class="top">
-    <button class="btn ghost icon" onclick={() => store.closeCompare()} title="Back to the grid (Esc)" aria-label="Back"><Icon name="arrow-left" /></button>
+    <button class="btn ghost icon" onclick={() => store.closeCompare()} title={'Back to the grid' + store.keyHint('escape')} aria-label="Back"><Icon name="arrow-left" /></button>
     <div class="title">
       <div class="fname">Compare</div>
       <div class="sub dim">{n} photos{#if !store.mobile}{` · ${k('next')} ${k('prev')} active photo · ↑ ↓ step it through the folder`}{/if}</div>
@@ -80,12 +80,12 @@
       <button class="btn sm" class:on={sync} onclick={toggleSync} aria-pressed={sync} title="Zoom and pan all photos together">
         <Icon name="link" />{store.mobile ? '' : 'Sync'}
       </button>
-      <button class="btn sm ghost" onclick={fitAll} title="Fit (Ctrl+0)">Fit</button>
-      <button class="btn sm ghost" onclick={() => active()?.zoomToggle()} title="100% ({k('zoomToggle')})">100%</button>
+      <button class="btn sm ghost" onclick={fitAll} title={'Fit' + store.keyHint('fit')}>Fit</button>
+      <button class="btn sm ghost" onclick={() => active()?.zoomToggle()} title={'100%' + store.keyHint('zoomToggle')}>100%</button>
     </div>
     <div class="right">
       {#if !store.mobile}
-        <button class="btn ghost icon" onclick={toggleFullscreen} title="Full screen (F)" aria-label="Full screen"><Icon name="fullscreen" /></button>
+        <button class="btn ghost icon" onclick={toggleFullscreen} title={'Full screen' + store.keyHint('fullscreen')} aria-label="Full screen"><Icon name="fullscreen" /></button>
       {/if}
     </div>
   </header>

@@ -21,6 +21,7 @@ import {
   type ToneMode,
   type WbMode,
 } from './api';
+import { keysFor, prettyKey, type Action, type KeyOverrides, type Preset } from './keys';
 
 export const LABELS: { color: LabelColor; name: string; key: string }[] = [
   { color: 'red', name: 'Red', key: '6' },
@@ -194,6 +195,8 @@ export interface Settings {
   /** Full-resolution RAW view when zoomed in: demosaiced on this device's GPU, on the
    * server, either (auto: the GPU on desktops, the server on phones and tablets), or off. */
   rawDetail: 'auto' | 'gpu' | 'server' | 'off';
+  /** The user's own shortcuts, per layout: the full key list of each action changed. */
+  keyOverrides: Partial<Record<Preset, KeyOverrides>>;
 }
 
 /** Screen sharpening radius of levels 1 and 2, in device pixels. Radii and the default
@@ -217,6 +220,7 @@ const DEFAULT_SETTINGS: Settings = {
   underColor: '#2f6fff',
   bgGray: false,
   rawDetail: 'auto',
+  keyOverrides: {},
 };
 
 /** Saved settings still holding the previous, uncalibrated sharpening defaults get the new ones. */
@@ -348,6 +352,20 @@ class Store {
       window.addEventListener('hf-auth', () => (this.needLogin = true));
     }
   }
+
+  /** The user's shortcut changes for the current layout. */
+  keyOverrides = (): KeyOverrides => this.settings.keyOverrides?.[this.settings.keymap] ?? {};
+
+  setKeyOverrides = (ov: KeyOverrides) => {
+    this.settings.keyOverrides = { ...(this.settings.keyOverrides ?? {}), [this.settings.keymap]: ov };
+    this.persist();
+  };
+
+  /** " (key)" for a tooltip: the first key of an action in the current bindings. */
+  keyHint = (a: Action): string => {
+    const k = keysFor(a, this.settings.keymap, this.keyOverrides())[0];
+    return k ? ` (${prettyKey(k)})` : '';
+  };
 
   persist = () => {
     saveLocal('hf.settings', this.settings);

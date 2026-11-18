@@ -104,7 +104,7 @@
       {#if problems}
         <button class="btn ghost icon alarm" onclick={() => (store.dialog = 'integrity')} title="Archive integrity: {problemText}"><Icon name="shield-alert" /><span class="dot">{problems > 99 ? '99+' : problems}</span></button>
       {/if}
-      <button class="btn ghost icon" onclick={() => (store.dialog = 'journal')} title="History & undo (Ctrl+Z)"><Icon name="history" /></button>
+      <button class="btn ghost icon" onclick={() => (store.dialog = 'journal')} title={'History & undo' + store.keyHint('undo')}><Icon name="history" /></button>
       <Popover align="right">
         {#snippet trigger(toggle, open)}
           <button class="btn ghost icon" class:on={open} onclick={toggle} title="Library tools"><Icon name="wrench" /></button>
@@ -116,7 +116,7 @@
         {/snippet}
       </Popover>
       <button class="btn ghost icon" onclick={toggleTheme} title="Light / dark"><Icon name={store.settings.theme === 'light' ? 'moon' : 'sun'} /></button>
-      <button class="btn ghost icon" onclick={() => (store.dialog = 'help')} title="Keyboard shortcuts (F1)"><Icon name="keyboard" /></button>
+      <button class="btn ghost icon" onclick={() => (store.dialog = 'help')} title={'Keyboard shortcuts' + store.keyHint('help')}><Icon name="keyboard" /></button>
       <button class="btn ghost icon" onclick={() => (store.dialog = 'settings')} title="Settings"><Icon name="settings" /></button>
     </div>
   {/if}

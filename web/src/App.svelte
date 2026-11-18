@@ -189,7 +189,7 @@
       return;
     }
     if (store.needLogin) return;
-    const a = actionFor(e, store.settings.keymap);
+    const a = actionFor(e, store.settings.keymap, store.keyOverrides());
     if (!a) return;
     if (run(a, e)) e.preventDefault();
   }
