@@ -24,7 +24,7 @@
 
 <div class="wrap">
   <form class="card" onsubmit={submit}>
-    <img class="logo" src="./favicon.svg" alt="" width="56" height="56" />
+    <img class="logo" src="./logo.png" alt="" width="56" height="56" />
     <h1>Hyperfocal</h1>
     <input class="field" type="password" bind:value={pw} placeholder="Password" autocomplete="current-password" />
     {#if err}<div class="err">{err}</div>{/if}

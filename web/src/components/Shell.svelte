@@ -61,7 +61,7 @@
     <button class="btn ghost icon" onclick={() => (store.dialog = 'settings')} aria-label="Settings"><Icon name="settings" /></button>
   {:else}
     <div class="brand">
-      <img class="logo" src="./favicon.svg" alt="" width="32" height="32" />
+      <img class="logo" src="./logo.png" alt="" width="32" height="32" />
       <span class="name">Hyperfocal</span>
     </div>
     <div class="search">
