@@ -4,7 +4,7 @@
 
 export type Action =
   | 'next' | 'prev' | 'first' | 'last' | 'next2' | 'prev2' | 'next3' | 'prev3' | 'pageDown' | 'pageUp' | 'up' | 'down'
-  | 'open' | 'escape' | 'toggleGrid' | 'zoomToggle' | 'fit' | 'zoomIn' | 'zoomOut' | 'fullscreen'
+  | 'open' | 'escape' | 'toggleGrid' | 'compare' | 'zoomToggle' | 'fit' | 'zoomIn' | 'zoomOut' | 'fullscreen'
   | 'source' | 'peaking' | 'sharpen' | 'shadows' | 'highlights' | 'linear' | 'invert' | 'over' | 'under' | 'wb'
   | 'evToggle' | 'evUp' | 'evDown' | 'evUpBig' | 'evDownBig' | 'evReset'
   | 'rate0' | 'rate1' | 'rate2' | 'rate3' | 'rate4' | 'rate5' | 'rateReject' | 'rateUp' | 'rateDown'
@@ -32,6 +32,7 @@ const FRV: Bindings = {
   open: ['Enter'],
   escape: ['Escape'],
   toggleGrid: ['G'],
+  compare: ['C', 'N'],
   zoomToggle: ['Z'],
   fit: ['Ctrl+0'],
   zoomIn: ['Ctrl+Equal', 'Ctrl+Shift+Equal', 'Ctrl+NumpadAdd'],
@@ -108,7 +109,7 @@ export const PRESETS = { frv: FRV, lr: LR };
 export const ACTION_LABELS: [string, [Action, string][]][] = [
   ['Navigation', [
     ['next', 'Next photo'], ['prev', 'Previous photo'], ['first', 'First photo'], ['last', 'Last photo'],
-    ['next2', 'Jump +2'], ['next3', 'Jump +3'], ['toggleGrid', 'Grid / single view'], ['open', 'Open photo'],
+    ['next2', 'Jump +2'], ['next3', 'Jump +3'], ['toggleGrid', 'Grid / single view'], ['compare', 'Compare the selected photos (2–4)'], ['open', 'Open photo'],
     ['escape', 'Back / exit fullscreen'], ['fullscreen', 'Full screen'],
   ]],
   ['View', [

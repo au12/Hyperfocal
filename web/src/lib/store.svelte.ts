@@ -309,6 +309,9 @@ class Store {
   // Single view
   loupe = $state(false);
   current = $state(0);
+  /** Compare view: 2-4 photos side by side (ids, in pane order) and the active pane. */
+  compare = $state<number[] | null>(null);
+  compareActive = $state(0);
   detail = $state<PhotoDetail | null>(null);
   private detailAbort: AbortController | null = null;
   viewer = $state<ViewerState>(
@@ -601,6 +604,7 @@ class Store {
     if (f && f.count === 0 && f.children.length > 0) this.recursive = true;
     else if (f && f.count > 0 && fromUser) this.recursive = false;
     this.loupe = false;
+    this.compare = null;
     this.selected.clear();
     await this.reload();
     this.cursor = 0;
@@ -619,6 +623,7 @@ class Store {
     this.folderId = root;
     this.recursive = true;
     this.loupe = false;
+    this.compare = null;
     this.selected.clear();
     try {
       localStorage.setItem('hf.folder', String(root));
@@ -659,6 +664,7 @@ class Store {
     this.folderId = this.roots[0]?.id ?? null;
     this.recursive = true;
     this.loupe = false;
+    this.compare = null;
     this.selected.clear();
     await this.reload();
     this.cursor = 0;
@@ -689,6 +695,7 @@ class Store {
     this.folderId = fid ?? root;
     this.recursive = sp.rec ?? true;
     this.loupe = false;
+    this.compare = null;
     this.selected.clear();
     await this.reload();
     this.cursor = 0;
@@ -829,6 +836,7 @@ class Store {
       if (keepCursor != null && idx.has(keepCursor)) this.cursor = idx.get(keepCursor)!;
       else if (this.cursor >= list.id.length) this.cursor = Math.max(0, list.id.length - 1);
       if (this.loupe && list.id.length === 0) this.loupe = false;
+      this.pruneCompare();
       this.rev++;
     } catch (e) {
       if ((e as Error).name !== 'AbortError') this.listError = (e as Error).message;
@@ -846,12 +854,17 @@ class Store {
   search = (q: string) => {
     this.query = q;
     this.loupe = false;
+    this.compare = null;
     this.reload();
     this.writeHash();
   };
 
   // ------------------------------------------------------------ selection
   targets = (): number[] => {
+    if (this.compare) {
+      const id = this.compare[this.compareActive];
+      return id != null ? [id] : [];
+    }
     if (this.loupe) {
       const id = this.list.id[this.current];
       return id != null ? [id] : [];
@@ -906,6 +919,90 @@ class Store {
     this.writeHash();
   };
 
+  // ------------------------------------------------------------ compare view
+  /** Compares the selected photos (2-4; the first 4 of more), or else the photo at the
+   * cursor (or in the single view) and the next one. */
+  openCompare = () => {
+    const L = this.list;
+    let ids = [...this.selected].filter((id) => this.index.has(id)).sort((a, b) => this.index.get(a)! - this.index.get(b)!);
+    if (ids.length > 4) {
+      this.toast(`Comparing the first 4 of ${ids.length} selected photos`, 'info');
+      ids = ids.slice(0, 4);
+    }
+    if (ids.length < 2) {
+      const from = this.loupe ? this.current : this.cursor;
+      ids = [L.id[from], L.id[from + 1] ?? L.id[from - 1]].filter((x) => x != null);
+    }
+    if (ids.length < 2) {
+      this.toast('Select 2 to 4 photos to compare', 'info');
+      return;
+    }
+    this.compare = ids;
+    this.compareActive = 0;
+    this.loupe = false;
+    this.cursor = this.index.get(ids[0]) ?? this.cursor;
+    this.loadDetail();
+  };
+
+  closeCompare = () => {
+    const id = this.compare?.[this.compareActive];
+    this.compare = null;
+    const i = id != null ? this.index.get(id) : undefined;
+    if (i != null) this.cursor = i;
+    this.loadDetail();
+  };
+
+  setCompareActive = (k: number) => {
+    if (!this.compare || k < 0 || k >= this.compare.length) return;
+    this.compareActive = k;
+    const i = this.index.get(this.compare[k]);
+    if (i != null) this.cursor = i;
+    this.loadDetail();
+  };
+
+  /** The active pane shows the next (d = 1) or previous photo of the list that is not
+   * already compared: stepping a candidate through a burst against a keeper. */
+  compareStep = (d: 1 | -1) => {
+    const c = this.compare;
+    if (!c) return;
+    const from = this.index.get(c[this.compareActive]);
+    if (from == null) return;
+    for (let i = from + d; i >= 0 && i < this.list.id.length; i += d) {
+      const id = this.list.id[i];
+      if (!c.includes(id)) {
+        const next = [...c];
+        next[this.compareActive] = id;
+        this.compare = next;
+        this.cursor = i;
+        this.loadDetail();
+        return;
+      }
+    }
+  };
+
+  compareRemove = (k: number) => {
+    const c = this.compare;
+    if (!c) return;
+    const next = c.filter((_, j) => j !== k);
+    if (next.length < 2) return this.closeCompare();
+    this.compare = next;
+    this.setCompareActive(Math.min(this.compareActive, next.length - 1));
+  };
+
+  /** Drops compared photos that left the list; closes the view below two. */
+  private pruneCompare() {
+    const c = this.compare;
+    if (!c) return;
+    const next = c.filter((id) => this.index.has(id));
+    if (next.length === c.length) return;
+    if (next.length < 2) {
+      this.compare = null;
+      return;
+    }
+    this.compare = next;
+    this.compareActive = Math.min(this.compareActive, next.length - 1);
+  }
+
   go = (delta: number) => {
     const n = this.list.id.length;
     if (!n) return;
@@ -925,7 +1022,7 @@ class Store {
   goTo = (i: number) => this.go(i - (this.loupe ? this.current : this.cursor));
 
   loadDetail = async () => {
-    const id = this.list.id[this.loupe ? this.current : this.cursor];
+    const id = this.focusId();
     if (id == null) {
       this.detail = null;
       return;
@@ -941,8 +1038,9 @@ class Store {
     }
   };
 
-  /** Detail for the photo the info panel should show (grid cursor or loupe). */
-  focusId = (): number | undefined => this.list.id[this.loupe ? this.current : this.cursor];
+  /** Detail for the photo the info panel should show (grid cursor, loupe or the active
+   * compare pane). */
+  focusId = (): number | undefined => (this.compare ? this.compare[this.compareActive] : this.list.id[this.loupe ? this.current : this.cursor]);
 
   // ------------------------------------------------------------ edits
   private optimistic(ids: number[], patch: Patch): () => void {
@@ -1013,7 +1111,7 @@ class Store {
     const cur = this.list.r[this.index.get(ids[0]) ?? -1];
     const value = ids.length === 1 && cur === r && r > 0 ? 0 : r;
     this.patch(ids, { rating: value }, ids.length > 1 ? `Rated ${ids.length} photos ${value}★` : undefined);
-    if (this.settings.advanceAfterRate && ids.length === 1) this.go(1);
+    if (this.settings.advanceAfterRate && ids.length === 1 && !this.compare) this.go(1);
   };
 
   bumpRating = (d: number) => {
@@ -1029,7 +1127,7 @@ class Store {
     const name = color ? LABELS.find((l) => l.color === color)!.name : null;
     const value = ids.length === 1 && cur === color ? null : name;
     this.patch(ids, { label: value }, ids.length > 1 ? `Labelled ${ids.length} photos` : undefined);
-    if (this.settings.advanceAfterRate && ids.length === 1) this.go(1);
+    if (this.settings.advanceAfterRate && ids.length === 1 && !this.compare) this.go(1);
   };
 
   togglePick = (v = 1) => {
@@ -1037,7 +1135,7 @@ class Store {
     const cur = this.list.p[this.index.get(ids[0]) ?? -1];
     const value = ids.length === 1 && cur === v ? 0 : v;
     this.patch(ids, { pick: value }, ids.length > 1 ? `${value ? 'Picked' : 'Unflagged'} ${ids.length} photos` : undefined);
-    if (this.settings.advanceAfterRate && ids.length === 1 && value) this.go(1);
+    if (this.settings.advanceAfterRate && ids.length === 1 && value && !this.compare) this.go(1);
   };
 
   rotate = (deg: number) => {
@@ -1101,8 +1199,9 @@ class Store {
         this.cursor = Math.min(this.cursor, Math.max(0, next.id.length - 1));
         if (!this.settings.advanceAfterReject && this.current > 0 && ids.length === 1) this.current--;
         if (next.id.length === 0) this.loupe = false;
+        this.pruneCompare();
         this.rev++;
-        if (this.loupe) this.loadDetail();
+        if (this.loupe || this.compare) this.loadDetail();
       } else {
         this.reload(true);
       }

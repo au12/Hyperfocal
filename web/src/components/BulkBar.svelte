@@ -6,7 +6,7 @@
   const anyRejected = $derived([...store.selected].some((id) => store.folders.get(store.list.f[store.index.get(id) ?? -1])?.isReject));
 </script>
 
-{#if n > 0 && !store.loupe}
+{#if n > 0 && !store.loupe && !store.compare}
   <div class="bulk" role="toolbar" aria-label="Selection actions">
     <span class="count tnum"><b>{n}</b> selected</span>
     <div class="stars">
@@ -15,6 +15,9 @@
     <div class="labels">
       {#each LABELS as l}<button onclick={() => store.label(l.color)} title={l.name}><span class="label-dot label-{l.color}"></span></button>{/each}
     </div>
+    {#if n >= 2}
+      <button class="btn sm" onclick={() => store.openCompare()} title={n > 4 ? 'Compare the first 4 (C)' : 'Compare side by side (C)'}><Icon name={n >= 4 ? 'compare-4' : 'compare'} />{store.mobile ? '' : 'Compare'}</button>
+    {/if}
     <button class="btn sm" onclick={() => store.togglePick(1)} title="Pick"><Icon name="flag" />{store.mobile ? '' : 'Pick'}</button>
     <button class="btn sm" onclick={() => store.openLocation()} title="Set location"><Icon name="pin" />{store.mobile ? '' : 'Location'}</button>
     <button class="btn sm {anyRejected ? '' : 'danger'}" onclick={() => (anyRejected ? store.restore() : store.reject())}>

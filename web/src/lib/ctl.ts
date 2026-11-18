@@ -5,6 +5,13 @@ export const viewerCtl = {
   zoomIn: () => {},
   zoomOut: () => {},
 };
+/** The compare view's zoom commands (the active pane, or all when synced). */
+export const compareCtl = {
+  zoomToggle: () => {},
+  fit: () => {},
+  zoomIn: () => {},
+  zoomOut: () => {},
+};
 export const gridCtl = {
   vertical: (_d: number) => {},
   page: (_d: number) => {},

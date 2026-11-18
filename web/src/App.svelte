@@ -2,12 +2,13 @@
   import { onMount } from 'svelte';
   import { store, LABELS } from './lib/store.svelte';
   import { actionFor, type Action } from './lib/keys';
-  import { gridCtl, uiCtl, viewerCtl, toggleFullscreen } from './lib/ctl';
+  import { gridCtl, uiCtl, viewerCtl, compareCtl, toggleFullscreen } from './lib/ctl';
   import Shell from './components/Shell.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import Toolbar from './components/Toolbar.svelte';
   import Grid from './components/Grid.svelte';
   import Loupe from './components/Loupe.svelte';
+  import Compare from './components/Compare.svelte';
   import InfoPanel from './components/InfoPanel.svelte';
   import MapView from './components/MapView.svelte';
   import Toasts from './components/Toasts.svelte';
@@ -42,9 +43,45 @@
 
   const EV_STEP = 1 / 3;
 
+  /** Keys in the compare view: arrows pick the active pane or step its photo, zoom keys
+   * zoom, rating and flag keys apply to the active photo (via store.targets()). */
+  function runCompare(a: Action): boolean | null {
+    const c = store.compare!;
+    switch (a) {
+      case 'next': store.setCompareActive((store.compareActive + 1) % c.length); return true;
+      case 'prev': store.setCompareActive((store.compareActive + c.length - 1) % c.length); return true;
+      case 'down': store.compareStep(1); return true;
+      case 'up': store.compareStep(-1); return true;
+      case 'escape':
+        if (document.fullscreenElement) toggleFullscreen();
+        else store.closeCompare();
+        return true;
+      case 'compare': case 'toggleGrid': store.closeCompare(); return true;
+      case 'open': {
+        const i = store.index.get(c[store.compareActive]);
+        store.closeCompare();
+        if (i != null) store.openLoupe(i);
+        return true;
+      }
+      case 'zoomToggle': compareCtl.zoomToggle(); return true;
+      case 'fit': compareCtl.fit(); return true;
+      case 'zoomIn': compareCtl.zoomIn(); return true;
+      case 'zoomOut': compareCtl.zoomOut(); return true;
+      // Moving through the folder, selection and side panels do not apply here.
+      case 'next2': case 'prev2': case 'next3': case 'prev3': case 'first': case 'last': case 'pageDown': case 'pageUp':
+      case 'selectToggle': case 'selectNext': case 'selectPrev': case 'selectAll': case 'selectNone': case 'selectInvert': case 'map':
+        return true;
+    }
+    return null;
+  }
+
   function run(a: Action, e: KeyboardEvent): boolean {
     const v = store.viewer;
     const inLoupe = store.loupe;
+    if (store.compare) {
+      const r = runCompare(a);
+      if (r != null) return r;
+    }
     switch (a) {
       case 'next': store.go(1); break;
       case 'prev': store.go(-1); break;
@@ -66,6 +103,7 @@
         else if (store.query) store.search('');
         break;
       case 'toggleGrid': inLoupe ? store.closeLoupe() : store.openLoupe(store.cursor); break;
+      case 'compare': store.openCompare(); break;
       case 'zoomToggle': if (!inLoupe) store.openLoupe(store.cursor); else viewerCtl.zoomToggle(); break;
       case 'fit': viewerCtl.fit(); break;
       case 'zoomIn': viewerCtl.zoomIn(); break;
@@ -198,7 +236,9 @@
     </div>
   {/if}
 
-  {#if store.loupe}
+  {#if store.compare}
+    <Compare />
+  {:else if store.loupe}
     <Loupe />
   {/if}
 
