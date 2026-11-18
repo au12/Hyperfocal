@@ -64,6 +64,7 @@
       <div class="title grow ellipsis">{folderName}</div>
       <button class="btn ghost icon" onclick={() => uiCtl.focusSearch()} aria-label="Search"><Icon name="search" /></button>
     {/if}
+    {#if store.offline}<span class="ro" title="The server cannot be reached: showing the copies saved in this browser"><Icon name="cloud-off" size={14} /></span>{/if}
     {#if problems}<button class="btn ghost icon alarm" onclick={() => (store.dialog = 'integrity')} aria-label="Archive integrity: {problemText}"><Icon name="shield-alert" /><span class="dot">{problems > 99 ? '99+' : problems}</span></button>{/if}
     <button class="btn ghost icon" onclick={() => (store.dialog = 'settings')} aria-label="Settings"><Icon name="settings" /></button>
   {:else}
@@ -92,6 +93,9 @@
       {/if}
       {#if store.status?.readonly}
         <span class="ro" title="The photo library is mounted read-only or HYPERFOCAL_READONLY is set"><Icon name="lock" size={14} /> Read-only</span>
+      {/if}
+      {#if store.offline}
+        <span class="ro" title="The server cannot be reached: showing the copies saved in this browser"><Icon name="cloud-off" size={14} /> Offline</span>
       {/if}
       {#if running.length}
         {@const j = running[0]}

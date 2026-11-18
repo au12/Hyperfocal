@@ -1,6 +1,7 @@
 <script lang="ts">
   import { store, applyTheme } from '../lib/store.svelte';
   import { api } from '../lib/api';
+  import { offlineSupported, setOffline, clearOffline, offlineUsage } from '../lib/offline';
   import Icon from './Icon.svelte';
 
   const s = store.settings;
@@ -21,8 +22,28 @@
 
   async function logout() {
     await api.logout().catch(() => {});
+    // Offline copies are this user's photos: not left behind on a shared device.
+    await clearOffline().catch(() => {});
     location.reload();
   }
+
+  let usage = $state<number | null>(null);
+  const refreshUsage = () => offlineUsage().then((u) => (usage = u));
+  refreshUsage();
+
+  async function toggleOffline(on: boolean) {
+    set('offlineCache', on);
+    await setOffline(on);
+    refreshUsage();
+  }
+
+  async function clearCopies() {
+    await clearOffline();
+    store.toast('Offline copies cleared', 'ok');
+    refreshUsage();
+  }
+
+  const mb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
 
   const st = $derived(store.status);
 </script>
@@ -110,6 +131,18 @@
       <p class="note dim">Zoomed in to 75% or more, the RAW view shows the full sensor resolution, demosaiced (RCD) tile by tile: on this device's graphics chip (more data over the network, instant tone changes) or on the server (smaller JPEG tiles). Auto uses the graphics chip on computers and the server on phones and tablets.</p>
       <p class="note dim">Per channel, as in FastRawViewer. Overexposed: cyan = red clipped, magenta = green, yellow = blue, black = all channels. Underexposed: red, green or blue for that channel, mixed when several are (magenta = red and blue), white = all. In RAW view both are measured on the raw data, before white balance: clipped within 0.05 EV of the sensor's saturation, underexposed 7.7 EV below it. Sharpening levels 1 and 2 use a 1 and 2 pixel radius.</p>
 
+      <h3>Offline</h3>
+      {#if offlineSupported}
+        <label class="opt"><span>Keep thumbnails, previews and folder lists for offline use</span><span class="switch"><input type="checkbox" checked={s.offlineCache} onchange={(e) => toggleOffline((e.target as HTMLInputElement).checked)} /><span></span></span></label>
+        <div class="opt">
+          <span>Saved in this browser{usage != null ? `: ${mb(usage)}` : ''}</span>
+          <button class="btn sm" onclick={clearCopies} disabled={!s.offlineCache}><Icon name="x" />Clear</button>
+        </div>
+        <p class="note dim">Photos looked at stay viewable when the server cannot be reached (up to a few thousand thumbnails and previews; the oldest go first). Changes need the server. Signing out clears them.</p>
+      {:else}
+        <p class="note dim">Offline copies need a secure connection: open Hyperfocal over HTTPS (for example through your reverse proxy) to keep thumbnails and previews for offline use.</p>
+      {/if}
+
       <h3>Library</h3>
       {#if st}
         <dl>
@@ -124,7 +157,7 @@
           {/if}
           <dt>Photos</dt><dd class="tnum">{st.counts.photos.toLocaleString()} in {st.counts.folders.toLocaleString()} folders · {st.counts.geotagged.toLocaleString()} with GPS</dd>
           <dt>Writes</dt><dd>{st.readonly ? 'Read-only — nothing is written' : 'XMP sidecars and moves to ' + st.reject_dir + ' only; originals are never changed'}</dd>
-          <dt>Index</dt><dd>{st.progress.phase}{#if st.progress.last_full_scan} · last full scan {new Date(st.progress.last_full_scan).toLocaleString()}{/if}</dd>
+          <dt>Index</dt><dd>{st.progress.phase}{#if st.progress.last_full_scan}{` · last full scan ${new Date(st.progress.last_full_scan).toLocaleString()}`}{/if}</dd>
         </dl>
       {/if}
       <div class="row wrap">

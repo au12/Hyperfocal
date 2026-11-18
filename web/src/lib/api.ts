@@ -354,14 +354,30 @@ export function apiUrl(path: string, params?: Record<string, unknown>): string {
   return u;
 }
 
+/** Whether the last answer came from the offline copies (service worker) or the
+ * server could not be reached; the store shows it. */
+let offline = false;
+function setNet(o: boolean) {
+  if (o === offline) return;
+  offline = o;
+  window.dispatchEvent(new CustomEvent('hf-net', { detail: o }));
+}
+
 async function req<T>(method: string, path: string, body?: unknown, params?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(apiUrl(path, params), {
-    method,
-    headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    credentials: 'same-origin',
-    signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(apiUrl(path, params), {
+      method,
+      headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      credentials: 'same-origin',
+      signal,
+    });
+  } catch (e) {
+    if (e instanceof TypeError) setNet(true);
+    throw e;
+  }
+  setNet(res.headers.has('x-hf-offline'));
   if (!res.ok) {
     let msg = res.statusText;
     try {

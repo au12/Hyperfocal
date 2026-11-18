@@ -22,6 +22,7 @@ import {
   type WbMode,
 } from './api';
 import { keysFor, prettyKey, type Action, type KeyOverrides, type Preset } from './keys';
+import { setOffline } from './offline';
 
 export const LABELS: { color: LabelColor; name: string; key: string }[] = [
   { color: 'red', name: 'Red', key: '6' },
@@ -197,6 +198,8 @@ export interface Settings {
   rawDetail: 'auto' | 'gpu' | 'server' | 'off';
   /** The user's own shortcuts, per layout: the full key list of each action changed. */
   keyOverrides: Partial<Record<Preset, KeyOverrides>>;
+  /** Keep thumbnails, previews and folder lists for offline use (needs HTTPS). */
+  offlineCache: boolean;
 }
 
 /** Screen sharpening radius of levels 1 and 2, in device pixels. Radii and the default
@@ -221,6 +224,7 @@ const DEFAULT_SETTINGS: Settings = {
   bgGray: false,
   rawDetail: 'auto',
   keyOverrides: {},
+  offlineCache: true,
 };
 
 /** Saved settings still holding the previous, uncalibrated sharpening defaults get the new ones. */
@@ -339,6 +343,8 @@ class Store {
   integrity = $state<IntegrityCounts>({ changed: 0, missing: 0, unreadable: 0 });
   mobile = $state(false);
   busy = $state(0);
+  /** Showing offline copies: the server could not be reached. */
+  offline = $state(false);
 
   private es: EventSource | null = null;
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -350,6 +356,7 @@ class Store {
       mq.addEventListener('change', (e) => (this.mobile = e.matches));
       if (!localStorage.getItem('hf.viewer')) this.viewer.source = this.settings.defaultSource;
       window.addEventListener('hf-auth', () => (this.needLogin = true));
+      window.addEventListener('hf-net', (e) => (this.offline = (e as CustomEvent<boolean>).detail));
     }
   }
 
@@ -385,6 +392,7 @@ class Store {
   // ------------------------------------------------------------ boot
   init = async () => {
     applyTheme(this.settings.theme);
+    setOffline(this.settings.offlineCache);
     try {
       this.status = await api.status();
       if (this.status.auth && !this.status.logged_in) {
