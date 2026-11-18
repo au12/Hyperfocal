@@ -270,43 +270,66 @@ pub fn develop_libraw_data(raw: LibrawRaw, wb_mode: WbMode, under_ev: f32, t0: I
     }
 }
 
-/// The raw value where one channel clipped, from a histogram of its samples: the
-/// highest narrow pile of at least 0.03% of samples (min. 48) that stands well above the
-/// density just below it. Looking for a pile rather than the maximum keeps a few hot
-/// pixels or stray samples above the plateau from hiding it; requiring the pile to be
-/// much denser than its neighbourhood keeps the smooth tail of an unclipped highlight
-/// from being mistaken for one. Returns the top of the pile.
-fn clip_plateau(hist: &[u32], maxv: u16, tol: f32, floor: f32) -> Option<u16> {
+/// Where one channel clipped when that is below the nominal white level: the highest
+/// pile of at least 0.03% of samples (min. 48) within 1% of the range that is at least
+/// 4x denser than the values below it. A pile rather than the maximum, so a few hot
+/// pixels or stray samples above the plateau cannot hide it; denser than its
+/// neighbourhood, so the smooth tail of an unclipped highlight is not mistaken for one.
+/// `None` when the channel reaches the nominal white level itself (then that is where it
+/// clipped) or nothing piles up. Returns the (lowest, highest) value of the pile.
+fn clip_plateau(hist: &[u32], maxv: u16, white: f32, black: f32, tol: f32) -> Option<(u16, u16)> {
     let total: u64 = hist.iter().map(|&n| n as u64).sum();
-    let need = (total as f64 * 0.0003).max(48.0) as u64;
-    let w = tol.ceil().max(1.0) as usize;
-    let below = w * 8;
+    let sum = |a: usize, b: usize| hist[a..=b].iter().map(|&n| n as u64).sum::<u64>();
     let top = maxv as usize;
-    let lo = (floor.max(0.0) as usize).max(below + w);
+    let near_white = ((white - tol).max(0.0) as usize).min(hist.len() - 1);
+    if top >= near_white && sum(near_white, top) as f64 >= (total as f64 * 0.00002).max(3.0) {
+        return None;
+    }
+    let need = (total as f64 * 0.0003).max(48.0) as u64;
+    let lo = (black + (white - black) * 0.25).max(0.0) as usize;
+    // An exact plateau first (e.g. Canon's digital pull), then one spread over 1%.
+    let (mut low, mut high) = find_pile(hist, top, lo, tol.ceil().max(1.0) as usize, need)
+        .or_else(|| find_pile(hist, top, lo, ((white - black) * 0.01).max(tol).ceil() as usize, need))?;
+    // Grow to the whole plateau: neighbouring values at >= 5% of its peak count.
+    let peak = hist[low as usize..=high as usize].iter().copied().max().unwrap_or(0) as u64;
+    while (high as usize) < top && hist[high as usize + 1] as u64 * 20 >= peak {
+        high += 1;
+    }
+    while low as usize > lo && hist[low as usize - 1] as u64 * 20 >= peak {
+        low -= 1;
+    }
+    Some((low, high))
+}
+
+/// Highest window [v - w, v] (v from `top` down to `lo`) holding at least `need`
+/// samples at 4x the density of the 8w values below it; (lowest, highest) of its pile.
+fn find_pile(hist: &[u32], top: usize, lo: usize, w: usize, need: u64) -> Option<(u16, u16)> {
+    let below = w * 8;
+    let lo = lo.max(below + w);
     if top < lo {
         return None;
     }
     let sum = |a: usize, b: usize| hist[a..=b].iter().map(|&n| n as u64).sum::<u64>();
-    // Window [v - w, v], sliding down from the top.
-    let mut pile = sum(top.saturating_sub(w), top);
+    let mut pile = sum(top - w, top);
     let mut v = top;
-    while v >= lo {
+    loop {
         if pile >= need {
             let under = sum(v - w - below, v - w - 1);
-            // Pile density at least 4x the density of the `below` values under it.
             if pile * below as u64 >= 4 * under * (w as u64 + 1) {
-                let p = (v - w..=v).rev().find(|&x| hist[x] > 0).unwrap_or(v);
-                return Some(p as u16);
+                let win = v - w..=v;
+                let peak = win.clone().map(|x| hist[x]).max().unwrap_or(0);
+                let high = win.clone().rev().find(|&x| hist[x] > 0).unwrap_or(v);
+                let low = win.clone().find(|&x| hist[x] as u64 * 20 >= peak as u64).unwrap_or(high);
+                return Some((low as u16, high as u16));
             }
         }
         if v == lo {
-            break;
+            return None;
         }
         pile -= hist[v] as u64;
         v -= 1;
         pile += hist[v - w] as u64;
     }
-    None
 }
 
 /// One fused pass over a Bayer frame: 2x2 binning, raw clipping, histogram, white
@@ -347,14 +370,15 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
         }
     }
     let mut sat = [white; 3];
+    let mut thr = [white - tol; 3];
     for c in 0..3 {
-        if let Some(p) = clip_plateau(&hist[c], maxv[c], tol, blk_mean + (white - blk_mean) * 0.25)
-            && (p as f32) < white - tol
+        if let Some((low, high)) = clip_plateau(&hist[c], maxv[c], white, blk_mean, tol)
+            && (high as f32) < white - tol
         {
-            sat[c] = p as f32;
+            sat[c] = high as f32;
+            thr[c] = (low as f32).min(sat[c] - tol);
         }
     }
-    let thr: [f32; 3] = [sat[0] - tol, sat[1] - tol, sat[2] - tol];
     let inv: [f32; 3] = [1.0 / (sat[0] - blk_mean).max(1.0), 1.0 / (sat[1] - blk_mean).max(1.0), 1.0 / (sat[2] - blk_mean).max(1.0)];
 
     // White balance.
@@ -653,33 +677,51 @@ mod tests {
         (h, m)
     }
 
-    /// Smooth, unclipped distribution: 0..12000 with density falling towards the top.
+    /// Smooth, unclipped distribution up to ~12500, density falling towards the top.
     fn smooth() -> impl Iterator<Item = u16> {
+        (0..200_000u32).map(|i| (12000.0 * ((i as f32 + 0.5) / 200_000.0).powi(2)) as u16 + 512)
+    }
+
+    /// Unclipped but densest right at its top end (an adversarial highlight).
+    fn ramp() -> impl Iterator<Item = u16> {
         (0..200_000u32).map(|i| (12000.0 * ((i as f32 + 0.5) / 200_000.0).sqrt()) as u16 + 512)
     }
 
+    const WHITE: f32 = 16383.0;
+    const BLACK: f32 = 512.0;
+    const TOL: f32 = 31.7;
+
     #[test]
-    fn plateau_below_nominal_white_despite_hot_pixels() {
-        let (h, m) = hist_of(smooth().chain(std::iter::repeat_n(13050, 5000)).chain([16383, 16383, 15000]));
-        assert_eq!(clip_plateau(&h, m, 31.7, 4480.0), Some(13050));
+    fn plateau_below_nominal_white_despite_stray_samples() {
+        let (h, m) = hist_of(smooth().chain(std::iter::repeat_n(13050, 5000)).chain([16383, 15000]));
+        assert_eq!(clip_plateau(&h, m, WHITE, BLACK, TOL), Some((13050, 13050)));
     }
 
     #[test]
-    fn plateau_spread_over_a_few_values() {
-        let (h, m) = hist_of(smooth().chain((0..6000).map(|i| 13040 + (i % 7) as u16)));
-        assert_eq!(clip_plateau(&h, m, 31.7, 4480.0), Some(13046));
+    fn plateau_spread_over_many_values() {
+        let (h, m) = hist_of(smooth().chain((0..9000).map(|i| 12990 + (i % 120) as u16)));
+        assert_eq!(clip_plateau(&h, m, WHITE, BLACK, TOL), Some((12990, 13109)));
+    }
+
+    #[test]
+    fn clipping_at_nominal_white_wins() {
+        // A real pile at white (here a handful of samples) means the channel clipped there.
+        let (h, m) = hist_of(smooth().chain(std::iter::repeat_n(13050, 5000)).chain(std::iter::repeat_n(16383, 10)));
+        assert_eq!(clip_plateau(&h, m, WHITE, BLACK, TOL), None);
     }
 
     #[test]
     fn no_plateau_in_a_smooth_tail() {
         let (h, m) = hist_of(smooth().chain([16383]));
-        assert_eq!(clip_plateau(&h, m, 31.7, 4480.0), None);
+        assert_eq!(clip_plateau(&h, m, WHITE, BLACK, TOL), None);
+        let (h, m) = hist_of(ramp().chain([16383]));
+        assert_eq!(clip_plateau(&h, m, WHITE, BLACK, TOL), None);
     }
 
     #[test]
     fn too_few_samples_is_not_a_plateau() {
         let (h, m) = hist_of(smooth().chain(std::iter::repeat_n(13050, 20)));
-        assert_eq!(clip_plateau(&h, m, 31.7, 4480.0), None);
+        assert_eq!(clip_plateau(&h, m, WHITE, BLACK, TOL), None);
     }
 
     /// A pulled-ISO frame: the sky clips at 13050 in every channel, the nominal white
