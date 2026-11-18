@@ -119,8 +119,9 @@ export interface RawInfo {
   hist: number[][];
   hist_min_ev: number;
   hist_per_ev: number;
+  /** Fractions of clipped / underexposed samples per channel (R, G, B), then of pixels with any. */
   over: [number, number, number, number];
-  under: number;
+  under: [number, number, number, number];
   wb: [number, number, number];
   baseline_ev: number;
   boost_ev: number;

@@ -51,6 +51,7 @@ export interface ViewerState {
   peaking: 0 | 1 | 2 | 3;
   over: boolean;
   under: boolean;
+  invert: boolean;
 }
 
 export interface Settings {
@@ -62,13 +63,19 @@ export interface Settings {
   showNames: boolean;
   advanceAfterRate: boolean;
   advanceAfterReject: boolean;
+  /** Screen sharpening amounts (unsharp mask, radius 1 / 2 device px). */
   sharpen1: number;
   sharpen2: number;
   peakColor: string;
   overColor: 'channels' | 'red';
+  underDisplay: 'channels' | 'solid';
   underColor: string;
   bgGray: boolean;
 }
+
+/** Screen sharpening radius of levels 1 and 2, in device pixels. Radii and the default
+ * amounts are fitted to FastRawViewer's screen sharpening (unsharp mask on display values). */
+export const SHARPEN_SIGMA = [0, 1.0, 2.0] as const;
 
 const DEFAULT_SETTINGS: Settings = {
   theme: 'dark',
@@ -79,13 +86,23 @@ const DEFAULT_SETTINGS: Settings = {
   showNames: false,
   advanceAfterRate: false,
   advanceAfterReject: true,
-  sharpen1: 0.55,
-  sharpen2: 1.2,
+  sharpen1: 1.05,
+  sharpen2: 1.03,
   peakColor: '#ff3b30',
   overColor: 'channels',
+  underDisplay: 'channels',
   underColor: '#2f6fff',
   bgGray: false,
 };
+
+/** Saved settings still holding the previous, uncalibrated sharpening defaults get the new ones. */
+function migrateSettings(s: Settings): Settings {
+  if (s.sharpen1 === 0.55 && s.sharpen2 === 1.2) {
+    s.sharpen1 = DEFAULT_SETTINGS.sharpen1;
+    s.sharpen2 = DEFAULT_SETTINGS.sharpen2;
+  }
+  return s;
+}
 
 export interface Toast {
   id: number;
@@ -176,11 +193,11 @@ class Store {
   detail = $state<PhotoDetail | null>(null);
   private detailAbort: AbortController | null = null;
   viewer = $state<ViewerState>(
-    loadLocal('hf.viewer', { source: 'jpeg', tone: 'normal', wb: 'asshot', ev: 0, evOn: true, sharpen: 0, peaking: 0, over: false, under: false } as ViewerState),
+    loadLocal('hf.viewer', { source: 'jpeg', tone: 'normal', wb: 'asshot', ev: 0, evOn: true, sharpen: 0, peaking: 0, over: false, under: false, invert: false } as ViewerState),
   );
   panels = $state(loadLocal('hf.panels', { sidebar: true, info: true, histogram: false, filmstrip: true, hidden: false }));
 
-  settings = $state<Settings>(loadLocal('hf.settings', DEFAULT_SETTINGS));
+  settings = $state<Settings>(migrateSettings(loadLocal('hf.settings', DEFAULT_SETTINGS)));
   toasts = $state<Toast[]>([]);
   dialog = $state<null | 'settings' | 'help' | 'journal' | 'location' | 'keywords'>(null);
   locationTargets = $state.raw<number[]>([]);

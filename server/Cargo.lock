@@ -802,6 +802,8 @@ dependencies = [
  "bindgen",
  "fast_image_resize",
  "flashraw",
+ "flashraw-core",
+ "flashraw-formats",
  "futures-util",
  "half",
  "hmac",

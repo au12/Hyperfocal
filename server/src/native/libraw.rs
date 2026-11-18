@@ -345,6 +345,14 @@ fn bayer_layout(raw: &Raw) -> Option<BayerInfo> {
     if m.iter().flatten().any(|v| !v.is_finite()) || m.iter().flatten().all(|v| *v == 0.0) {
         m = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     }
+    // linear_max: the maker note's saturation level (Canon SpecularWhiteLevel), when known;
+    // the header maximum overstates it at Canon's pulled ISOs.
+    let maximum = if c.maximum > 0 { c.maximum as f32 } else { 65535.0 };
+    let blk = black.iter().sum::<f32>() / black.len().max(1) as f32;
+    let linear = c.linear_max.iter().filter(|&&v| v > 0).map(|&v| v as f32).fold(f32::INFINITY, f32::min);
+    let white_exact = linear <= maximum && linear > blk + (maximum - blk) * 0.5;
+    let white = if white_exact { linear } else { maximum };
+    let render_white = d.makernotes.canon.NormalWhiteLevel.max(0) as f32;
     Some(BayerInfo {
         w,
         h,
@@ -352,7 +360,9 @@ fn bayer_layout(raw: &Raw) -> Option<BayerInfo> {
         black_rows: rows,
         black_cols: cols,
         black,
-        white: if c.maximum > 0 { c.maximum as f32 } else { 65535.0 },
+        white,
+        white_exact,
+        render_white,
         as_shot: wb(c.cam_mul),
         daylight: wb(c.pre_mul),
         cam_to_srgb: m,

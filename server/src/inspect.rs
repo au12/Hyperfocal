@@ -105,11 +105,11 @@ fn inspect(path: &Path, render: Option<&Path>) -> Value {
             let t = Instant::now();
             v["libraw"] = meta_json(meta::read_raw_meta_libraw(path), t);
             let t = Instant::now();
-            let fr = raw::catch(|| -> anyhow::Result<raw::Developed> { raw::develop(std::fs::read(path)?, raw::WbMode::Asshot, 8.0) })
+            let fr = raw::catch(|| -> anyhow::Result<raw::Developed> { raw::develop(std::fs::read(path)?, raw::WbMode::Asshot, raw::UE_EV) })
                 .map_err(|e| anyhow::anyhow!(e));
             v["develop_flashraw"] = dev_json(fr, t, &stem, render);
             let t = Instant::now();
-            v["develop_libraw"] = dev_json(raw::develop_libraw(path, raw::WbMode::Asshot, 8.0), t, &stem, render);
+            v["develop_libraw"] = dev_json(raw::develop_libraw(path, raw::WbMode::Asshot, raw::UE_EV), t, &stem, render);
             let t = Instant::now();
             v["preview"] = match native::libraw_preview(path, 1024) {
                 Ok(p) => json!({"libraw_long_edge": p.long_edge(), "ms": ms(t)}),

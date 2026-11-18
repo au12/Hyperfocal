@@ -39,8 +39,19 @@ pub enum WbMode {
     Auto,
 }
 
-/// Clipping-mask bits: bit `c` (0 = R, 1 = G, 2 = B) is set when that channel clipped.
-pub const MASK_UNDER: u8 = 8;
+/// Clipping-mask bits: bit `c` (0 = R, 1 = G, 2 = B) is set when that channel clipped,
+/// bit `MASK_UNDER_SHIFT + c` when that channel is underexposed.
+pub const MASK_UNDER_SHIFT: u8 = 3;
+
+/// Samples within this many EV of saturation count as clipped. Photosites saturate over a
+/// narrow band just below the white level, and FastRawViewer flags the same band (measured
+/// on its exposure stats: an R6 at ISO 1250 reads 0.105% green clipped, -0.048 EV).
+pub const OE_MARGIN_EV: f32 = 0.05;
+
+/// Samples more than this many EV below saturation count as underexposed: FastRawViewer's
+/// default limit, measured on its exposure stats (the same R6 file: R 1.36%, G 0.269%,
+/// B 4.10%, every channel below the same raw level, before white balance).
+pub const UE_EV: f32 = 7.7;
 
 pub struct Developed {
     /// Half-size dimensions (cropped, sensor orientation).
@@ -53,7 +64,8 @@ pub struct Developed {
     pub hist: [Vec<u32>; 3],
     /// Fraction of clipped samples per channel and of pixels with any clipped channel.
     pub over: [f32; 4],
-    pub under: f32,
+    /// Fraction of underexposed samples per channel and of pixels with any such channel.
+    pub under: [f32; 4],
     pub wb: [f32; 3],
     pub baseline_ev: f32,
     pub decode_ms: f32,
@@ -118,12 +130,13 @@ struct Acc {
     clipped: [u64; 3],
     samples: [u64; 3],
     any: u64,
-    under: u64,
+    under: [u64; 3],
+    under_any: u64,
 }
 
 impl Acc {
     fn new() -> Acc {
-        Acc { hist: [vec![0; HIST_BINS], vec![0; HIST_BINS], vec![0; HIST_BINS]], clipped: [0; 3], samples: [0; 3], any: 0, under: 0 }
+        Acc { hist: [vec![0; HIST_BINS], vec![0; HIST_BINS], vec![0; HIST_BINS]], clipped: [0; 3], samples: [0; 3], any: 0, under: [0; 3], under_any: 0 }
     }
     fn merge(mut self, o: Acc) -> Acc {
         for c in 0..3 {
@@ -132,9 +145,10 @@ impl Acc {
             }
             self.clipped[c] += o.clipped[c];
             self.samples[c] += o.samples[c];
+            self.under[c] += o.under[c];
         }
         self.any += o.any;
-        self.under += o.under;
+        self.under_any += o.under_any;
         self
     }
 }
@@ -154,6 +168,12 @@ pub struct BayerFrame<'a> {
     /// Per-sample black level (frame coordinates), when it varies beyond 2x2.
     pub black_at: Option<&'a (dyn Fn(usize, usize) -> f32 + Sync)>,
     pub white: f32,
+    /// `white` is the sensor's actual saturation level from the maker note, so there is no
+    /// need to look for a lower clipping plateau in the data.
+    pub white_exact: bool,
+    /// The level that renders as white when it is below saturation (Canon's
+    /// NormalWhiteLevel); `None`: saturation itself renders white.
+    pub render_white: Option<f32>,
     /// White balance multipliers (R, G, B), G = 1.
     pub as_shot: Option<[f32; 3]>,
     pub daylight: Option<[f32; 3]>,
@@ -180,6 +200,7 @@ pub fn develop_path(path: &Path, wb_mode: WbMode, under_ev: f32) -> Result<Devel
 /// Develop a RAW file held in memory, with FlashRaw.
 pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Developed> {
     let t0 = Instant::now();
+    let canon = super::canon::white_levels(&data).unwrap_or_default();
     let raw = FlashRaw::open(data).map_err(|e| anyhow!("{e}"))?;
     let baseline = raw.metadata().dng.as_ref().and_then(|d| d.baseline_exposure).unwrap_or(0.0) as f32;
     let frame = raw
@@ -217,6 +238,7 @@ pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Develope
         let g = if w.coeffs[1] > 0.0 { w.coeffs[1] } else { 1.0 };
         [w.coeffs[0] / g, 1.0, w.coeffs[2] / g]
     });
+    let (white, white_exact) = saturation(frame.white_level.values.first().copied().unwrap_or(65535).max(1) as f32, canon.specular.map(f32::from), &blk);
     let f = BayerFrame {
         data,
         stride: frame.width as usize,
@@ -225,13 +247,26 @@ pub fn develop(data: Vec<u8>, wb_mode: WbMode, under_ev: f32) -> Result<Develope
         ch,
         black: blk,
         black_at: if simple_black { None } else { Some(&per_sample) },
-        white: frame.white_level.values.first().copied().unwrap_or(65535).max(1) as f32,
+        white,
+        white_exact,
+        render_white: canon.normal.map(f32::from),
         as_shot,
         daylight: wb_from_matrix(&frame),
         cam_to_srgb: flashraw::process::camera_to_srgb(&frame.color_matrices),
         baseline_ev: baseline,
     };
     develop_bayer(&f, wb_mode, under_ev, t0, decode_ms, "FlashRaw")
+}
+
+/// The white level to develop with: the maker note's own saturation level (Canon's
+/// SpecularWhiteLevel, LibRaw's `linear_max`) when it is plausible, else the header's;
+/// and whether it came from the maker note.
+fn saturation(header: f32, vendor: Option<f32>, black: &[[f32; 2]; 2]) -> (f32, bool) {
+    let blk = (black[0][0] + black[0][1] + black[1][0] + black[1][1]) / 4.0;
+    match vendor {
+        Some(v) if v <= header && v > blk + (header - blk) * 0.5 => (v, true),
+        _ => (header, false),
+    }
 }
 
 /// Develop with LibRaw (in the helper process).
@@ -255,6 +290,8 @@ pub fn develop_libraw_data(raw: LibrawRaw, wb_mode: WbMode, under_ev: f32, t0: I
                 black: [[at(0, 0), at(1, 0)], [at(0, 1), at(1, 1)]],
                 black_at: if rows == 2 && cols == 2 { None } else { Some(&at) },
                 white: info.white,
+                white_exact: info.white_exact,
+                render_white: (info.render_white > 0.0).then_some(info.render_white),
                 as_shot: info.as_shot,
                 daylight: info.daylight,
                 cam_to_srgb: info.cam_to_srgb,
@@ -286,7 +323,8 @@ fn clip_plateau(hist: &[u32], maxv: u16, white: f32, black: f32, tol: f32) -> Op
         return None;
     }
     let need = (total as f64 * 0.0003).max(48.0) as u64;
-    let lo = (black + (white - black) * 0.25).max(0.0) as usize;
+    // Pulled ISOs clip around 80% of the nominal range; a pile lower than 60% is image content.
+    let lo = (black + (white - black) * 0.6).max(0.0) as usize;
     // An exact plateau first (e.g. Canon's digital pull), then one spread over 1%.
     let (mut low, mut high) = find_pile(hist, top, lo, tol.ceil().max(1.0) as usize, need)
         .or_else(|| find_pile(hist, top, lo, ((white - black) * 0.01).max(tol).ceil() as usize, need))?;
@@ -369,17 +407,27 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
             }
         }
     }
+    let margin = 2f32.powf(-OE_MARGIN_EV);
     let mut sat = [white; 3];
-    let mut thr = [white - tol; 3];
+    let mut thr = [blk_mean + (white - blk_mean) * margin; 3];
     for c in 0..3 {
-        if let Some((low, high)) = clip_plateau(&hist[c], maxv[c], white, blk_mean, tol)
+        if !f.white_exact
+            && let Some((low, high)) = clip_plateau(&hist[c], maxv[c], white, blk_mean, tol)
             && (high as f32) < white - tol
         {
             sat[c] = high as f32;
-            thr[c] = (low as f32).min(sat[c] - tol);
+            thr[c] = (low as f32).min(blk_mean + (sat[c] - blk_mean) * margin);
         }
     }
     let inv: [f32; 3] = [1.0 / (sat[0] - blk_mean).max(1.0), 1.0 / (sat[1] - blk_mean).max(1.0), 1.0 / (sat[2] - blk_mean).max(1.0)];
+    // Rendering scale: Canon's own rendering and FastRawViewer map NormalWhiteLevel to white
+    // (FastRawViewer's linear mode is exactly that signal at gamma 2.2); values between it
+    // and saturation render white. Clipping, histogram and underexposure stay relative
+    // to saturation.
+    let rscale: [f32; 3] = match f.render_white {
+        Some(w) if w <= white && w > blk_mean + (white - blk_mean) * 0.5 => [0, 1, 2].map(|c| (sat[c] - blk_mean) / (w - blk_mean)),
+        _ => [1.0; 3],
+    };
 
     // White balance.
     let valid = |w: &[f32; 3]| w.iter().all(|v| v.is_finite() && *v > 0.0);
@@ -460,11 +508,14 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
                             None => blk[dy][dx],
                             Some(at) => at(x0 + dx, y0 + dy),
                         };
-                        v[c] += (s as f32 - b) * inv[c];
-                        let sf = s as f32;
-                        if sf >= thr[c] {
+                        let n = (s as f32 - b) * inv[c];
+                        v[c] += n;
+                        if s as f32 >= thr[c] {
                             clip |= 1 << c;
                             acc.clipped[c] += 1;
+                        }
+                        if n < under_thr {
+                            acc.under[c] += 1;
                         }
                         acc.samples[c] += 1;
                         let bin = bin_lut.get(s as usize).map(|b| b[c]).unwrap_or((HIST_BINS - 1) as u8);
@@ -472,16 +523,20 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
                     }
                 }
                 v[1] *= 0.5;
-                if v[0].max(v[1]).max(v[2]) < under_thr {
-                    clip |= MASK_UNDER;
-                    acc.under += 1;
+                for (c, &x) in v.iter().enumerate() {
+                    if x < under_thr {
+                        clip |= 1 << (MASK_UNDER_SHIFT as usize + c);
+                    }
                 }
                 if clip & 7 != 0 {
                     acc.any += 1;
                 }
-                let r = (v[0] * wb[0]).clamp(0.0, 1.0);
-                let g = v[1].clamp(0.0, 1.0);
-                let b = (v[2] * wb[2]).clamp(0.0, 1.0);
+                if clip >> MASK_UNDER_SHIFT != 0 {
+                    acc.under_any += 1;
+                }
+                let r = (v[0] * rscale[0] * wb[0]).clamp(0.0, 1.0);
+                let g = (v[1] * rscale[1]).clamp(0.0, 1.0);
+                let b = (v[2] * rscale[2] * wb[2]).clamp(0.0, 1.0);
                 let o = bx * 3;
                 rgb_row[o] = f16_bits(m[0][0] * r + m[0][1] * g + m[0][2] * b);
                 rgb_row[o + 1] = f16_bits(m[1][0] * r + m[1][1] * g + m[1][2] * b);
@@ -506,7 +561,12 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
         mask,
         hist: acc.hist,
         over,
-        under: acc.under as f32 / px,
+        under: [
+            acc.under[0] as f32 / acc.samples[0].max(1) as f32,
+            acc.under[1] as f32 / acc.samples[1].max(1) as f32,
+            acc.under[2] as f32 / acc.samples[2].max(1) as f32,
+            acc.under_any as f32 / px,
+        ],
         wb,
         baseline_ev: f.baseline_ev,
         decode_ms,
@@ -580,26 +640,28 @@ fn finish_processed(mut rgb: Vec<u16>, mut w: usize, mut h: usize, under_ev: f32
     let mut hist = [vec![0u32; HIST_BINS], vec![0u32; HIST_BINS], vec![0u32; HIST_BINS]];
     let mut clipped = [0u64; 3];
     let mut any = 0u64;
-    let mut under = 0u64;
+    let mut under = [0u64; 3];
+    let mut under_any = 0u64;
     for i in 0..w * h {
         let mut clip = 0u8;
-        let mut mx = 0f32;
         for c in 0..3 {
             let v = half::f16::from_bits(rgb[i * 3 + c]).to_f32();
-            mx = mx.max(v);
             if v >= 0.998 {
                 clip |= 1 << c;
                 clipped[c] += 1;
             }
+            if v < under_thr {
+                clip |= 1 << (MASK_UNDER_SHIFT as usize + c);
+                under[c] += 1;
+            }
             let bin = if v <= 0.0 { 0.0 } else { ((v.log2() - HIST_MIN_EV) * HIST_PER_EV).clamp(0.0, (HIST_BINS - 1) as f32) };
             hist[c][bin as usize] += 1;
         }
-        if mx < under_thr {
-            clip |= MASK_UNDER;
-            under += 1;
-        }
         if clip & 7 != 0 {
             any += 1;
+        }
+        if clip >> MASK_UNDER_SHIFT != 0 {
+            under_any += 1;
         }
         mask[i] = clip;
     }
@@ -611,7 +673,7 @@ fn finish_processed(mut rgb: Vec<u16>, mut w: usize, mut h: usize, under_ev: f32
         mask,
         hist,
         over: [clipped[0] as f32 / px, clipped[1] as f32 / px, clipped[2] as f32 / px, any as f32 / px],
-        under: under as f32 / px,
+        under: [under[0] as f32 / px, under[1] as f32 / px, under[2] as f32 / px, under_any as f32 / px],
         wb: [1.0, 1.0, 1.0],
         baseline_ev: baseline,
         decode_ms,
@@ -724,6 +786,82 @@ mod tests {
         assert_eq!(clip_plateau(&h, m, WHITE, BLACK, TOL), None);
     }
 
+    /// Canon R6 at ISO 1250: black 2048, the sensor saturates at 14888 (SpecularWhiteLevel)
+    /// and renders white at 13535 (NormalWhiteLevel). Four bands of two rows.
+    #[test]
+    fn canon_levels_render_scale_and_exposure_bands() {
+        let (w, h) = (64usize, 8usize);
+        let bands: [u16; 4] = [2048 + 11487 / 2, 14500, 13700, 2100];
+        let mut data = vec![0u16; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                data[y * w + x] = bands[y / 2];
+            }
+        }
+        let f = BayerFrame {
+            data: &data,
+            stride: w,
+            rows: h,
+            crop: [0, 0, w, h],
+            ch: [[0, 1], [1, 2]],
+            black: [[2048.0; 2]; 2],
+            black_at: None,
+            white: 14888.0,
+            white_exact: true,
+            render_white: Some(13535.0),
+            as_shot: Some([1.0, 1.0, 1.0]),
+            daylight: None,
+            cam_to_srgb: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            baseline_ev: 0.0,
+        };
+        let d = develop_bayer(&f, WbMode::Asshot, UE_EV, Instant::now(), 0.0, "test").unwrap();
+        let hw = w / 2;
+        let px = |band: usize| [0, 1, 2].map(|c| half::f16::from_bits(d.rgb[band * hw * 3 + c]).to_f32());
+        // Half the normal-white range renders at half; between normal white and saturation renders white.
+        assert!(px(0).iter().all(|v| (v - 0.5).abs() < 0.005), "{:?}", px(0));
+        assert!(px(2).iter().all(|v| (v - 1.0).abs() < 1e-3), "{:?}", px(2));
+        // 14500 is within 0.05 EV of saturation: clipped; 13700 is not. 2100 is 7.9 EV down: underexposed.
+        assert_eq!(d.mask[hw] & 7, 7);
+        assert_eq!(d.mask[2 * hw] & 7, 0);
+        assert_eq!(d.mask[3 * hw] >> MASK_UNDER_SHIFT, 7);
+        assert_eq!(d.mask[0], 0);
+        for c in 0..3 {
+            assert!((d.over[c] - 0.25).abs() < 1e-6 && (d.under[c] - 0.25).abs() < 1e-6, "{:?} {:?}", d.over, d.under);
+        }
+    }
+
+    /// One channel underexposed: only its bit is set.
+    #[test]
+    fn underexposure_is_per_channel() {
+        let (w, h) = (16usize, 4usize);
+        // R and both greens well exposed, blue 9 EV below saturation.
+        let mut data = vec![0u16; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                data[y * w + x] = if y % 2 == 1 && x % 2 == 1 { 512 + 30 } else { 8000 };
+            }
+        }
+        let f = BayerFrame {
+            data: &data,
+            stride: w,
+            rows: h,
+            crop: [0, 0, w, h],
+            ch: [[0, 1], [1, 2]],
+            black: [[512.0; 2]; 2],
+            black_at: None,
+            white: 16383.0,
+            white_exact: false,
+            render_white: None,
+            as_shot: Some([2.0, 1.0, 1.5]),
+            daylight: None,
+            cam_to_srgb: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            baseline_ev: 0.0,
+        };
+        let d = develop_bayer(&f, WbMode::Asshot, UE_EV, Instant::now(), 0.0, "test").unwrap();
+        assert!(d.mask.iter().all(|&m| m == 1 << (MASK_UNDER_SHIFT + 2)), "{:?}", &d.mask[..4]);
+        assert_eq!((d.under[0], d.under[1], d.under[2], d.under[3]), (0.0, 0.0, 1.0, 1.0));
+    }
+
     /// A pulled-ISO frame: the sky clips at 13050 in every channel, the nominal white
     /// level is 16383 and one hot pixel reads 16383. The sky must be flagged.
     #[test]
@@ -745,6 +883,8 @@ mod tests {
             black: [[512.0; 2]; 2],
             black_at: None,
             white: 16383.0,
+            white_exact: false,
+            render_white: None,
             as_shot: Some([2.0, 1.0, 1.5]),
             daylight: None,
             cam_to_srgb: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],

@@ -2,6 +2,7 @@
 //! with disk and memory caches. Everything here only *reads* the library; caches
 //! live in the cache directory.
 
+pub mod canon;
 #[cfg(any(feature = "heic", test))]
 pub mod color;
 pub mod jpeg;
@@ -27,10 +28,10 @@ use std::time::Duration;
 use tone::ToneMode;
 
 pub const THUMB_LONG: usize = 512;
-/// Exposure added to every RAW render so mid-tones land close to the camera JPEG
-/// (calibrated on Canon CR2/CR3 and Ricoh GR III DNG files; DNG BaselineExposure is
-/// reported but not applied, since it is tuned for Adobe's own tone curve).
-pub const RENDER_BOOST_EV: f32 = 0.9;
+/// Exposure added to every RAW render: none. The tone curves (`tone`) are calibrated on
+/// FastRawViewer's output, and the developed data already renders Canon's NormalWhiteLevel
+/// as white (see `raw::BayerFrame::render_white`). Kept for the API's `boost_ev`.
+pub const RENDER_BOOST_EV: f32 = 0.0;
 
 /// Byte-weighted LRU (small number of large entries).
 pub struct Lru<K, V> {
@@ -390,7 +391,7 @@ impl Images {
         }
         let _permit = self.gate.acquire(high).await;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
-        let res = tokio::task::spawn_blocking(move || -> Result<Developed> { raw::develop_path(&src, wb, 8.0) })
+        let res = tokio::task::spawn_blocking(move || -> Result<Developed> { raw::develop_path(&src, wb, raw::UE_EV) })
         .await
         .map_err(|e| anyhow!("{e}"))
         .and_then(|r| r);

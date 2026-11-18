@@ -71,7 +71,7 @@
       </label>
 
       <h3>View tools</h3>
-      <label class="opt"><span>Screen sharpening level 1 / 2</span>
+      <label class="opt"><span>Screen sharpening amount, level 1 / 2</span>
         <span class="row">
           <input class="field small" type="number" min="0" max="3" step="0.05" value={s.sharpen1} onchange={(e) => set('sharpen1', +(e.target as HTMLInputElement).value)} />
           <input class="field small" type="number" min="0" max="4" step="0.05" value={s.sharpen2} onchange={(e) => set('sharpen2', +(e.target as HTMLInputElement).value)} />
@@ -85,8 +85,17 @@
           <button class:on={s.overColor === 'red'} onclick={() => set('overColor', 'red')}>Solid red</button>
         </div>
       </div>
-      <label class="opt"><span>Underexposure colour</span><input type="color" value={s.underColor} onchange={(e) => set('underColor', (e.target as HTMLInputElement).value)} /></label>
-      <p class="note dim">Per channel: cyan = red clipped, magenta = green clipped, yellow = blue clipped, black = all channels clipped. In RAW view clipping is measured on the raw data, before white balance.</p>
+      <div class="opt">
+        <span>Underexposure display</span>
+        <span class="row">
+          <div class="seg">
+            <button class:on={s.underDisplay === 'channels'} onclick={() => set('underDisplay', 'channels')}>Per channel</button>
+            <button class:on={s.underDisplay === 'solid'} onclick={() => set('underDisplay', 'solid')}>Solid</button>
+          </div>
+          {#if s.underDisplay === 'solid'}<input type="color" value={s.underColor} onchange={(e) => set('underColor', (e.target as HTMLInputElement).value)} />{/if}
+        </span>
+      </div>
+      <p class="note dim">Per channel, as in FastRawViewer. Overexposed: cyan = red clipped, magenta = green, yellow = blue, black = all channels. Underexposed: red, green or blue for that channel, mixed when several are (magenta = red and blue), white = all. In RAW view both are measured on the raw data, before white balance: clipped within 0.05 EV of the sensor's saturation, underexposed 7.7 EV below it. Sharpening levels 1 and 2 use a 1 and 2 pixel radius.</p>
 
       <h3>Library</h3>
       {#if st}

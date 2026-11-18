@@ -45,9 +45,15 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - shadow boost
   - highlight inspection
   - linear mode
+  - inverted colours
   - white balance (as shot, daylight or auto)
   - exposure correction in ⅓ and 1 EV steps
-- **Clipping measured on the raw data,** before white balance, per channel. This is the same idea as FastRawViewer's RAW-based over/underexposure display. The RAW histogram is drawn in EV below clipping, with the percentage of clipped pixels per channel.
+- **Calibrated against FastRawViewer.** The RAW rendering in every mode (normal, linear, shadow boost, highlight inspection), both sharpening levels and the exposure statistics were matched to FastRawViewer screenshots and stats of the same file.
+- **Clipping measured on the raw data,** before white balance, per channel. This is the same idea as FastRawViewer's RAW-based over/underexposure display.
+  - Canon's own white levels are read from the maker note, so pulled ISOs (160, 320, 640, 1250 …) clip where the sensor really does, not at the nominal 14-bit maximum.
+  - Overexposed means within 0.05 EV of saturation. Underexposed means more than 7.7 EV below it.
+  - Overlays are per channel: cyan, magenta or yellow for a clipped channel, red, green or blue for an underexposed one.
+  - The RAW histogram is drawn in EV below clipping, with the share of clipped and underexposed samples per channel.
 - **Rate, label, pick, reject.** Ratings 0–5, colour labels, pick and reject flags.
   - Rejecting moves the photo, its sidecar and its JPEG/HEIF twin into a `_Rejected` sub-folder next to it, the way FastRawViewer does. A different photo that only shares the name (a TIFF saved as `IMG_1234.tif`, say) stays put.
   - Restore moves it back, and `Ctrl+Z` undoes anything.
@@ -217,6 +223,7 @@ The FastRawViewer preset is the default. Press `?` in the app for the full list.
 | Focus peaking | `P` | `Shift+P` |
 | Overexposure / underexposure | `O` / `U` | `O` / `Shift+U` |
 | Shadow boost / highlight inspection / linear | `Shift+S` / `Shift+H` / `Shift+L` | same |
+| Invert colours | `Shift+I` | same |
 | Exposure ±⅓ EV, ±1 EV, on/off | `Alt+=` `Alt+-`, `Ctrl+Alt+=` `Ctrl+Alt+-`, `A` | same |
 | Histogram / info panel | `H` / `I` | same |
 | Rating | `0`–`5` | `0`–`5` |
@@ -250,7 +257,7 @@ The FastRawViewer preset is the default. Press `?` in the app for the full list.
 | `PUID` / `PGID` | `99` / `100` | User and group the app runs as (Unraid `nobody:users`) |
 | `UMASK` | `000` | `000` matches Unraid share permissions, so Excire can still edit sidecars over SMB |
 
-Viewer and culling preferences are set per browser in the app's Settings dialog. They include the theme, shortcut preset, whether single view opens as JPEG or RAW, auto-advance, prefetch depth, sharpening strengths, the peaking colour and the overexposure style.
+Viewer and culling preferences are set per browser in the app's Settings dialog. They include the theme, shortcut preset, whether single view opens as JPEG or RAW, auto-advance, prefetch depth, sharpening strengths, the peaking colour and the over- and underexposure styles.
 
 ## Performance
 

@@ -5,7 +5,7 @@
 export type Action =
   | 'next' | 'prev' | 'first' | 'last' | 'next2' | 'prev2' | 'next3' | 'prev3' | 'pageDown' | 'pageUp' | 'up' | 'down'
   | 'open' | 'escape' | 'toggleGrid' | 'zoomToggle' | 'fit' | 'zoomIn' | 'zoomOut' | 'fullscreen'
-  | 'source' | 'peaking' | 'sharpen' | 'shadows' | 'highlights' | 'linear' | 'over' | 'under' | 'wb'
+  | 'source' | 'peaking' | 'sharpen' | 'shadows' | 'highlights' | 'linear' | 'invert' | 'over' | 'under' | 'wb'
   | 'evToggle' | 'evUp' | 'evDown' | 'evUpBig' | 'evDownBig' | 'evReset'
   | 'rate0' | 'rate1' | 'rate2' | 'rate3' | 'rate4' | 'rate5' | 'rateReject' | 'rateUp' | 'rateDown'
   | 'labelRed' | 'labelYellow' | 'labelGreen' | 'labelBlue' | 'labelPurple'
@@ -43,6 +43,8 @@ const FRV: Bindings = {
   shadows: ['Shift+S'],
   highlights: ['Shift+H'],
   linear: ['Shift+L'],
+  // FastRawViewer has no default key for "Invert image colors".
+  invert: ['Shift+I'],
   over: ['O'],
   under: ['U'],
   wb: ['W'],
@@ -113,7 +115,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['source', 'Switch RAW / embedded JPEG'], ['zoomToggle', 'Fit / 100%'], ['fit', 'Fit to window'], ['zoomIn', 'Zoom in'], ['zoomOut', 'Zoom out'],
     ['sharpen', 'Screen sharpening (off / 1 / 2)'], ['peaking', 'Focus peaking (edges / details / both)'],
     ['over', 'Show overexposed areas'], ['under', 'Show underexposed areas'],
-    ['shadows', 'Shadow boost'], ['highlights', 'Highlight inspection'], ['linear', 'Linear mode'],
+    ['shadows', 'Shadow boost'], ['highlights', 'Highlight inspection'], ['linear', 'Linear mode'], ['invert', 'Invert colours'],
     ['wb', 'White balance (as shot / daylight / auto)'], ['evToggle', 'Exposure correction on/off'],
     ['evUp', 'Exposure +⅓ EV'], ['evDown', 'Exposure −⅓ EV'], ['evUpBig', 'Exposure +1 EV'], ['evDownBig', 'Exposure −1 EV'], ['evReset', 'Reset exposure'],
     ['histogram', 'Histogram'], ['info', 'Info & metadata panel'], ['filmstrip', 'Filmstrip'], ['folders', 'Folders panel'], ['hidePanels', 'Hide all panels'],

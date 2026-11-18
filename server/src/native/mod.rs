@@ -332,6 +332,12 @@ pub struct BayerInfo {
     pub black_cols: usize,
     pub black: Vec<f32>,
     pub white: f32,
+    /// `white` is the maker note's saturation level (LibRaw `linear_max`).
+    #[serde(default)]
+    pub white_exact: bool,
+    /// The level that renders white when below saturation (Canon NormalWhiteLevel), else 0.
+    #[serde(default)]
+    pub render_white: f32,
     /// White balance multipliers (R, G, B), G = 1.
     pub as_shot: Option<[f32; 3]>,
     pub daylight: Option<[f32; 3]>,

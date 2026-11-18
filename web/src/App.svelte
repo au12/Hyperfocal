@@ -74,6 +74,7 @@
       case 'shadows': store.toggleTone('shadows'); break;
       case 'highlights': store.toggleTone('highlights'); break;
       case 'linear': store.toggleTone('linear'); break;
+      case 'invert': store.setViewer('invert', !v.invert); break;
       case 'over': store.setViewer('over', !v.over); break;
       case 'under': store.setViewer('under', !v.under); break;
       case 'wb': {

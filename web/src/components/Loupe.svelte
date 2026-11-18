@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { store, LABELS, fmtSettings, cameraName } from '../lib/store.svelte';
+  import { store, LABELS, fmtSettings, cameraName, SHARPEN_SIGMA } from '../lib/store.svelte';
   import { api, urls, type RawInfo } from '../lib/api';
   import { GLView, hexToRgb } from '../lib/viewer/gl';
   import { ImageCache, type Decoded } from '../lib/viewer/loader';
@@ -254,12 +254,15 @@
       cx,
       cy,
       sharpen: store.viewer.sharpen === 1 ? s.sharpen1 : store.viewer.sharpen === 2 ? s.sharpen2 : 0,
+      sharpenSigma: SHARPEN_SIGMA[store.viewer.sharpen],
+      invert: store.viewer.invert,
       peaking: store.viewer.peaking,
       peakColor: hexToRgb(s.peakColor),
       over: store.viewer.over,
       under: store.viewer.under,
       maskOnly: useRaw && maskShown !== '',
       overSolid: s.overColor === 'red',
+      underSolid: s.underDisplay === 'solid',
       underColor: hexToRgb(s.underColor),
       bg: s.bgGray ? [0.36, 0.36, 0.36] : [0.055, 0.07, 0.086],
     });
@@ -391,10 +394,16 @@
 
   $effect(() => {
     void store.viewer.sharpen;
+    void store.viewer.invert;
     void store.viewer.peaking;
     void store.viewer.over;
     void store.viewer.under;
     void store.settings.bgGray;
+    void store.settings.overColor;
+    void store.settings.underDisplay;
+    void store.settings.underColor;
+    void store.settings.sharpen1;
+    void store.settings.sharpen2;
     void o;
     requestDraw();
   });
@@ -541,6 +550,7 @@
         <button class="btn sm icon" class:on={store.viewer.tone === 'shadows'} onclick={() => store.toggleTone('shadows')} title="Shadow boost (Shift+S)"><Icon name="shadows" /></button>
         <button class="btn sm icon" class:on={store.viewer.tone === 'highlights'} onclick={() => store.toggleTone('highlights')} title="Highlight inspection (Shift+H)"><Icon name="highlights" /></button>
         <button class="btn sm icon" class:on={store.viewer.tone === 'linear'} onclick={() => store.toggleTone('linear')} title="Linear (Shift+L)"><Icon name="linear" /></button>
+        <button class="btn sm icon" class:on={store.viewer.invert} onclick={() => store.setViewer('invert', !store.viewer.invert)} title="Invert colours (Shift+I)"><Icon name="invert" /></button>
         <button class="btn sm" class:on={store.viewer.ev !== 0 && store.viewer.evOn} onclick={() => store.setViewer('evOn', !store.viewer.evOn)} title="Exposure correction (A, Alt+= / Alt+−)">
           {store.viewer.ev > 0 ? '+' : ''}{store.viewer.ev.toFixed(1)} EV
         </button>
@@ -596,6 +606,7 @@
         {#if toneLabel[store.viewer.tone] && useRaw}<span class="chip">{toneLabel[store.viewer.tone]}</span>{/if}
         {#if wbLabel[store.viewer.wb] && useRaw}<span class="chip">{wbLabel[store.viewer.wb]}</span>{/if}
         {#if store.viewer.sharpen}<span class="chip">Sharpen {store.viewer.sharpen}</span>{/if}
+        {#if store.viewer.invert}<span class="chip">Inverted</span>{/if}
         {#if store.viewer.peaking}<span class="chip">{peakLabel[store.viewer.peaking]}</span>{/if}
         {#if store.viewer.over}<span class="chip">OE{#if !useRaw} (JPEG){/if}</span>{/if}
         {#if store.viewer.under}<span class="chip">UE{#if !useRaw} (JPEG){/if}</span>{/if}
@@ -692,6 +703,7 @@
             <button class="tool" class:on={store.viewer.tone === 'shadows'} onclick={() => store.toggleTone('shadows')}><Icon name="shadows" /><span>Shadow boost</span></button>
             <button class="tool" class:on={store.viewer.tone === 'highlights'} onclick={() => store.toggleTone('highlights')}><Icon name="highlights" /><span>Highlights</span></button>
             <button class="tool" class:on={store.viewer.tone === 'linear'} onclick={() => store.toggleTone('linear')}><Icon name="linear" /><span>Linear</span></button>
+            <button class="tool" class:on={store.viewer.invert} onclick={() => store.setViewer('invert', !store.viewer.invert)}><Icon name="invert" /><span>Invert</span></button>
             <button class="tool" onclick={() => { const order = ['asshot', 'daylight', 'auto'] as const; store.setViewer('wb', order[(order.indexOf(store.viewer.wb) + 1) % 3]); store.setViewer('source', 'raw'); }}><Icon name="wb" /><span>WB {({ asshot: 'as shot', daylight: 'daylight', auto: 'auto' })[store.viewer.wb]}</span></button>
             <button class="tool" onclick={() => store.rotate(90)}><Icon name="rotate-cw" /><span>Rotate</span></button>
             <button class="tool" onclick={() => { sheet = null; store.openLocation(); }}><Icon name="pin" /><span>Location</span></button>
