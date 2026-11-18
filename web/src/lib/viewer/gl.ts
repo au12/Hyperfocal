@@ -12,6 +12,7 @@ uniform sampler2D u_img;
 uniform sampler2D u_mask;
 uniform bool u_hasImg;
 uniform bool u_hasMask;
+uniform bool u_maskOnly;    // RAW view: clipping comes from the RAW mask only
 uniform vec2 u_canvas;      // device px
 uniform vec2 u_disp;        // displayed (oriented) image size in image px
 uniform vec2 u_center;      // view centre in displayed image px
@@ -89,7 +90,7 @@ void main() {
       } else if (u_under && (bits & 8) != 0) {
         c = u_underColor;
       }
-    } else {
+    } else if (!u_maskOnly) {
       vec3 cl = step(vec3(0.996), texture(u_img, st).rgb);
       if (u_over && (cl.r + cl.g + cl.b) > 0.0) c = u_overSolid ? vec3(1.0, 0.0, 0.0) : (vec3(1.0) - cl);
       else if (u_under && max(c.r, max(c.g, c.b)) < 0.008) c = u_underColor;
@@ -110,6 +111,8 @@ export interface ViewParams {
   peakColor: [number, number, number];
   over: boolean;
   under: boolean;
+  /** Over/under come from the RAW mask only; never approximate them from the shown image. */
+  maskOnly: boolean;
   overSolid: boolean;
   underColor: [number, number, number];
   bg: [number, number, number];
@@ -158,7 +161,7 @@ export class GLView {
     const loc = gl.getAttribLocation(p, 'p');
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    for (const n of ['u_img', 'u_mask', 'u_hasImg', 'u_hasMask', 'u_canvas', 'u_disp', 'u_center', 'u_scale', 'u_orient', 'u_texel', 'u_sharpen', 'u_peak', 'u_peakColor', 'u_over', 'u_under', 'u_overSolid', 'u_underColor', 'u_bg']) {
+    for (const n of ['u_img', 'u_mask', 'u_hasImg', 'u_hasMask', 'u_maskOnly', 'u_canvas', 'u_disp', 'u_center', 'u_scale', 'u_orient', 'u_texel', 'u_sharpen', 'u_peak', 'u_peakColor', 'u_over', 'u_under', 'u_overSolid', 'u_underColor', 'u_bg']) {
       this.u[n] = gl.getUniformLocation(p, n);
     }
     this.tex = gl.createTexture()!;
@@ -232,6 +235,7 @@ export class GLView {
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.uniform1i(u.u_hasImg, this.hasImg ? 1 : 0);
     gl.uniform1i(u.u_hasMask, this.hasMask ? 1 : 0);
+    gl.uniform1i(u.u_maskOnly, v.maskOnly ? 1 : 0);
     gl.uniform2f(u.u_canvas, this.canvas.width, this.canvas.height);
     gl.uniform2f(u.u_disp, v.dispW, v.dispH);
     gl.uniform2f(u.u_center, v.cx, v.cy);

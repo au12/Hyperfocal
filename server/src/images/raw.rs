@@ -270,6 +270,45 @@ pub fn develop_libraw_data(raw: LibrawRaw, wb_mode: WbMode, under_ev: f32, t0: I
     }
 }
 
+/// The raw value where one channel clipped, from a histogram of its samples: the
+/// highest narrow pile of at least 0.03% of samples (min. 48) that stands well above the
+/// density just below it. Looking for a pile rather than the maximum keeps a few hot
+/// pixels or stray samples above the plateau from hiding it; requiring the pile to be
+/// much denser than its neighbourhood keeps the smooth tail of an unclipped highlight
+/// from being mistaken for one. Returns the top of the pile.
+fn clip_plateau(hist: &[u32], maxv: u16, tol: f32, floor: f32) -> Option<u16> {
+    let total: u64 = hist.iter().map(|&n| n as u64).sum();
+    let need = (total as f64 * 0.0003).max(48.0) as u64;
+    let w = tol.ceil().max(1.0) as usize;
+    let below = w * 8;
+    let top = maxv as usize;
+    let lo = (floor.max(0.0) as usize).max(below + w);
+    if top < lo {
+        return None;
+    }
+    let sum = |a: usize, b: usize| hist[a..=b].iter().map(|&n| n as u64).sum::<u64>();
+    // Window [v - w, v], sliding down from the top.
+    let mut pile = sum(top.saturating_sub(w), top);
+    let mut v = top;
+    while v >= lo {
+        if pile >= need {
+            let under = sum(v - w - below, v - w - 1);
+            // Pile density at least 4x the density of the `below` values under it.
+            if pile * below as u64 >= 4 * under * (w as u64 + 1) {
+                let p = (v - w..=v).rev().find(|&x| hist[x] > 0).unwrap_or(v);
+                return Some(p as u16);
+            }
+        }
+        if v == lo {
+            break;
+        }
+        pile -= hist[v] as u64;
+        v -= 1;
+        pile += hist[v - w] as u64;
+    }
+    None
+}
+
 /// One fused pass over a Bayer frame: 2x2 binning, raw clipping, histogram, white
 /// balance and the camera matrix.
 fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, decode_ms: f32, decoder: &'static str) -> Result<Developed> {
@@ -288,8 +327,10 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
     let blk = f.black;
     let blk_mean = (blk[0][0] + blk[0][1] + blk[1][0] + blk[1][1]) / 4.0;
     let white = f.white.max(1.0);
-    // Saturation detection: some white levels are nominal; if many samples pile up at a
-    // lower maximum, that is where the sensor actually clipped.
+    let tol = ((white - blk_mean) * 0.002).max(2.0);
+    // Saturation detection: some white levels are nominal (Canon's pulled ISOs such as
+    // 160/320/640/1250 clip ~1/3 EV below it); find where samples actually pile up.
+    let mut hist = [vec![0u32; 65536], vec![0u32; 65536], vec![0u32; 65536]];
     let mut maxv = [0u16; 3];
     let step = 4usize;
     for by in (0..hh).step_by(step) {
@@ -299,36 +340,18 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
                 for dx in 0..2 {
                     let s = row[cx + bx * 2 + dx];
                     let c = ch[dy][dx];
-                    if s > maxv[c] {
-                        maxv[c] = s;
-                    }
-                }
-            }
-        }
-    }
-    let tol = ((white - blk_mean) * 0.002).max(2.0);
-    let mut near = [0u64; 3];
-    let mut cnt = [0u64; 3];
-    for by in (0..hh).step_by(step) {
-        for dy in 0..2 {
-            let row = &data[(cy + by * 2 + dy) * fw..];
-            for bx in 0..hw {
-                for dx in 0..2 {
-                    let s = row[cx + bx * 2 + dx] as f32;
-                    let c = ch[dy][dx];
-                    cnt[c] += 1;
-                    if s >= maxv[c] as f32 - tol {
-                        near[c] += 1;
-                    }
+                    hist[c][s as usize] += 1;
+                    maxv[c] = maxv[c].max(s);
                 }
             }
         }
     }
     let mut sat = [white; 3];
     for c in 0..3 {
-        let m = maxv[c] as f32;
-        if m < white - tol && m > blk_mean + (white - blk_mean) * 0.25 && near[c] as f64 >= (cnt[c] as f64 * 0.0003).max(48.0) {
-            sat[c] = m;
+        if let Some(p) = clip_plateau(&hist[c], maxv[c], tol, blk_mean + (white - blk_mean) * 0.25)
+            && (p as f32) < white - tol
+        {
+            sat[c] = p as f32;
         }
     }
     let thr: [f32; 3] = [sat[0] - tol, sat[1] - tol, sat[2] - tol];
@@ -614,4 +637,81 @@ pub fn render(dev: &Developed, lut: &[u8], max_long: usize) -> super::jpeg::Rgb 
         });
     }
     super::jpeg::Rgb { w: tw, h: th, px }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hist_of(samples: impl IntoIterator<Item = u16>) -> (Vec<u32>, u16) {
+        let mut h = vec![0u32; 65536];
+        let mut m = 0;
+        for s in samples {
+            h[s as usize] += 1;
+            m = m.max(s);
+        }
+        (h, m)
+    }
+
+    /// Smooth, unclipped distribution: 0..12000 with density falling towards the top.
+    fn smooth() -> impl Iterator<Item = u16> {
+        (0..200_000u32).map(|i| (12000.0 * ((i as f32 + 0.5) / 200_000.0).sqrt()) as u16 + 512)
+    }
+
+    #[test]
+    fn plateau_below_nominal_white_despite_hot_pixels() {
+        let (h, m) = hist_of(smooth().chain(std::iter::repeat_n(13050, 5000)).chain([16383, 16383, 15000]));
+        assert_eq!(clip_plateau(&h, m, 31.7, 4480.0), Some(13050));
+    }
+
+    #[test]
+    fn plateau_spread_over_a_few_values() {
+        let (h, m) = hist_of(smooth().chain((0..6000).map(|i| 13040 + (i % 7) as u16)));
+        assert_eq!(clip_plateau(&h, m, 31.7, 4480.0), Some(13046));
+    }
+
+    #[test]
+    fn no_plateau_in_a_smooth_tail() {
+        let (h, m) = hist_of(smooth().chain([16383]));
+        assert_eq!(clip_plateau(&h, m, 31.7, 4480.0), None);
+    }
+
+    #[test]
+    fn too_few_samples_is_not_a_plateau() {
+        let (h, m) = hist_of(smooth().chain(std::iter::repeat_n(13050, 20)));
+        assert_eq!(clip_plateau(&h, m, 31.7, 4480.0), None);
+    }
+
+    /// A pulled-ISO frame: the sky clips at 13050 in every channel, the nominal white
+    /// level is 16383 and one hot pixel reads 16383. The sky must be flagged.
+    #[test]
+    fn develop_flags_clipping_below_nominal_white() {
+        let (w, h) = (256usize, 128usize);
+        let mut data = vec![0u16; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                data[y * w + x] = if y < h / 2 { 13050 } else { 512 + ((x * 31 + y * 17) % 6000) as u16 };
+            }
+        }
+        data[(h - 2) * w + 10] = 16383;
+        let f = BayerFrame {
+            data: &data,
+            stride: w,
+            rows: h,
+            crop: [0, 0, w, h],
+            ch: [[0, 1], [1, 2]],
+            black: [[512.0; 2]; 2],
+            black_at: None,
+            white: 16383.0,
+            as_shot: Some([2.0, 1.0, 1.5]),
+            daylight: None,
+            cam_to_srgb: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            baseline_ev: 0.0,
+        };
+        let d = develop_bayer(&f, WbMode::Asshot, 8.0, Instant::now(), 0.0, "test").unwrap();
+        let (hw, hh) = (w / 2, h / 2);
+        assert!(d.mask[..hw * (hh / 2)].iter().all(|m| m & 7 == 7), "sky not flagged");
+        assert_eq!(d.mask[hw * (hh / 2)..].iter().filter(|m| *m & 7 != 0).count(), 1, "only the hot pixel below the sky");
+        assert!((d.over[1] - 0.5).abs() < 0.01, "{:?}", d.over);
+    }
 }

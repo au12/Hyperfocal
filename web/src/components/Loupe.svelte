@@ -145,27 +145,36 @@
     cache.cancelOthers(keep);
   }
 
+  // The RAW clipping mask of the current photo. Kept while OE/UE are toggled off so
+  // toggling back is instant; dropped as soon as the photo, WB or source changes so a
+  // previous photo's mask is never drawn over this one. While it loads, RAW view shows
+  // no over/underexposure at all rather than a misleading guess from the rendered image.
   async function loadMask() {
     if (!gl) return;
-    const want = useRaw && (store.viewer.over || store.viewer.under) && id != null ? urls.rawmask(id, v, store.viewer.wb) : '';
-    if (want === maskShown) return;
-    maskShown = want;
-    if (!want) {
+    const url = useRaw && id != null ? urls.rawmask(id, v, store.viewer.wb) : '';
+    if (url === maskShown) return;
+    if (maskShown) {
+      maskShown = '';
       gl.setMask(null);
       requestDraw();
-      return;
     }
+    if (!url || !(store.viewer.over || store.viewer.under)) return;
+    maskShown = url;
     try {
-      const res = await fetch(want);
+      const res = await fetch(url);
       if (!res.ok) throw new Error(res.statusText);
       const bmp = await createImageBitmap(await res.blob(), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-      if (maskShown !== want) return bmp.close();
+      if (!gl || maskShown !== url) return bmp.close();
       gl.setMask(bmp);
       bmp.close();
       requestDraw();
     } catch {
-      maskShown = '';
-      gl.setMask(null);
+      // No RAW mask (e.g. the RAW failed to develop): fall back to the shown image.
+      if (gl && maskShown === url) {
+        maskShown = '';
+        gl.setMask(null);
+        requestDraw();
+      }
     }
   }
 
@@ -249,6 +258,7 @@
       peakColor: hexToRgb(s.peakColor),
       over: store.viewer.over,
       under: store.viewer.under,
+      maskOnly: useRaw && maskShown !== '',
       overSolid: s.overColor === 'red',
       underColor: hexToRgb(s.underColor),
       bg: s.bgGray ? [0.36, 0.36, 0.36] : [0.055, 0.07, 0.086],
