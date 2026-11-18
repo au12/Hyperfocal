@@ -103,6 +103,7 @@
         {/snippet}
         {#snippet children(close)}
           <button class="menu-item" onclick={() => { close(); store.dialog = 'keywords'; }}><Icon name="tags" />Keywords</button>
+          <button class="menu-item" onclick={() => { close(); store.dialog = 'geotag'; }}><Icon name="route" />Geotag from a track</button>
         {/snippet}
       </Popover>
       <button class="btn ghost icon" onclick={toggleTheme} title="Light / dark"><Icon name={store.settings.theme === 'light' ? 'moon' : 'sun'} /></button>

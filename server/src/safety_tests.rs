@@ -529,3 +529,108 @@ async fn keyword_moves_across_the_library() {
     orig.sort();
     assert_eq!(now, orig);
 }
+
+/// A sidecar that only gives a capture time (no zone).
+fn dated_sidecar(when: &str) -> String {
+    format!(
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:DateTimeOriginal="{when}"/>
+</rdf:RDF></x:xmpmeta>"#
+    )
+}
+
+async fn api_call(app: &axum::Router, method: &str, uri: &str, body: axum::body::Body) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+    let req = axum::http::Request::builder().method(method).uri(uri).header("content-type", "application/json").body(body).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+}
+
+/// Geotagging from a GPX file through the API: upload, preview, write as one
+/// background change, undo; photos with a position are left alone; originals untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn geotag_from_a_track() {
+    if !exiftool_available() {
+        eprintln!("skipping: exiftool is not installed");
+        return;
+    }
+    use axum::body::Body;
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = tmp.path().join("photos");
+    // Camera clock on UTC+2: 12:10 is 10:10 UTC.
+    write_bytes(&lib.join("2024/Walk/IMG_0001.CR3"), 100_000, 41);
+    std::fs::write(lib.join("2024/Walk/IMG_0001.xmp"), dated_sidecar("2024-05-01T12:10:00")).unwrap();
+    write_bytes(&lib.join("2024/Walk/IMG_0002.CR3"), 100_000, 42);
+    std::fs::write(lib.join("2024/Walk/IMG_0002.xmp"), dated_sidecar("2024-05-01T12:59:30")).unwrap();
+    // Off the track by a day.
+    write_bytes(&lib.join("2024/Walk/IMG_0003.CR3"), 100_000, 43);
+    std::fs::write(lib.join("2024/Walk/IMG_0003.xmp"), dated_sidecar("2024-05-02T12:10:00")).unwrap();
+    write_bytes(&lib.join("2024/Walk/IMG_0004.CR3"), 100_000, 44);
+    let before = originals(&lib);
+    let state = crate::build_state(test_config(tmp.path())).await.unwrap();
+    {
+        let st = state.clone();
+        tokio::task::spawn_blocking(move || scan_all(&st)).await.unwrap();
+    }
+    let ids: Vec<i64> = (1..=4).map(|i| photo_id(&state, "2024/Walk", &format!("IMG_000{i}.CR3"))).collect();
+    // The fourth already has a position.
+    let gps: Patch = serde_json::from_value(json!({ "gps": { "lat": 1.0, "lon": 2.0 } })).unwrap();
+    assert!(ops::apply_meta(&state, &[ids[3]], &gps, None).await.unwrap().failed.is_empty());
+
+    let mut gpx = String::from(r#"<?xml version="1.0"?><gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>"#);
+    for m in 0..=60 {
+        gpx += &format!(r#"<trkpt lat="{:.4}" lon="7.0"><ele>{}</ele><time>2024-05-01T10:{m:02}:00Z</time></trkpt>"#, 45.0 + m as f64 * 0.001, 500 + m);
+    }
+    gpx = gpx.replace("10:60:00", "11:00:00") + "</trkseg></trk></gpx>";
+    let app = crate::api::router(state.clone());
+    let (st, t) = api_call(&app, "POST", "/api/geotag/tracks?name=walk.gpx", Body::from(gpx)).await;
+    assert_eq!(st, axum::http::StatusCode::OK, "{t}");
+    assert_eq!((t["format"].as_str(), t["points"].as_i64(), t["name"].as_str()), (Some("GPX"), Some(61), Some("walk.gpx")));
+    let (st, e) = api_call(&app, "POST", "/api/geotag/tracks?name=x.txt", Body::from("hello")).await;
+    assert_eq!(st, axum::http::StatusCode::BAD_REQUEST);
+    assert!(e["error"].as_str().unwrap().contains("not a track file"));
+
+    let body = json!({ "tracks": [t["id"]], "ids": ids, "gap": 300, "prefer": 60 });
+    let (st, pv) = api_call(&app, "POST", "/api/geotag/preview", Body::from(body.to_string())).await;
+    assert_eq!(st, axum::http::StatusCode::OK, "{pv}");
+    // The camera's zone is found (+1:00 would put 12:59 past the track's end).
+    assert_eq!(pv["tz"], 120, "{pv}");
+    assert_eq!((pv["matched"].as_i64(), pv["outside"].as_i64(), pv["has_gps"].as_i64()), (Some(2), Some(1), Some(1)));
+    let first = pv["photos"].as_array().unwrap().iter().find(|p| p[0] == ids[0]).cloned();
+    assert_eq!(first, Some(json!([ids[0], 45.01, 7.0])), "{pv}");
+
+    let (st, r) = api_call(&app, "POST", "/api/geotag/apply", Body::from(body.to_string())).await;
+    assert_eq!(st, axum::http::StatusCode::OK, "{r}");
+    let done = wait_job(&state, r["job"]["id"].as_str().unwrap()).await;
+    assert_eq!((done.done, done.failed), (2, 0), "{:?}", done.errors);
+    let x = sidecar(&lib, "2024/Walk/IMG_0001.xmp");
+    assert!((x.lat.unwrap() - 45.01).abs() < 1e-6 && (x.lon.unwrap() - 7.0).abs() < 1e-6, "{:?}", (x.lat, x.lon));
+    assert_eq!(x.alt, Some(510.0));
+    assert_eq!(x.date_taken.as_deref(), Some("2024-05-01T12:10:00"), "the rest of the sidecar is kept");
+    // 12:59:30 at +2 is 10:59:30 UTC: halfway between the last two fixes.
+    let y = sidecar(&lib, "2024/Walk/IMG_0002.xmp");
+    assert!((y.lat.unwrap() - 45.0595).abs() < 1e-6, "{:?}", y.lat);
+    assert!(sidecar(&lib, "2024/Walk/IMG_0003.xmp").lat.is_none());
+    assert_eq!(sidecar(&lib, "2024/Walk/IMG_0004.xmp").lat, Some(1.0));
+    assert_eq!(column::<f64>(&state, ids[0], "lat").map(|v| (v * 1e6).round() / 1e6), Some(45.01));
+
+    // One undo removes both positions.
+    let un = ops::undo(&state, &done.batch).await.unwrap();
+    assert!(un.failed.is_empty(), "{:?}", un.failed);
+    assert!(sidecar(&lib, "2024/Walk/IMG_0001.xmp").lat.is_none());
+    assert!(sidecar(&lib, "2024/Walk/IMG_0002.xmp").lat.is_none());
+    assert_eq!(sidecar(&lib, "2024/Walk/IMG_0004.xmp").lat, Some(1.0));
+
+    // Unknown (expired) tracks are reported as such.
+    let gone = json!({ "tracks": ["nope"], "ids": ids });
+    assert_eq!(api_call(&app, "POST", "/api/geotag/preview", Body::from(gone.to_string())).await.0, axum::http::StatusCode::GONE);
+
+    let mut now: Vec<String> = originals(&lib).into_values().collect();
+    let mut orig: Vec<String> = before.into_values().collect();
+    now.sort();
+    orig.sort();
+    assert_eq!(now, orig);
+}

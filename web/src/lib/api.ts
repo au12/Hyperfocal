@@ -234,6 +234,51 @@ export interface Timeline {
   undated: number;
 }
 
+/** A track file loaded for geotagging (kept by the server for a few hours). */
+export interface TrackInfo {
+  id: string;
+  name: string;
+  format: string;
+  points: number;
+  /** First and last fix, ms since the epoch (UTC). */
+  start: number;
+  end: number;
+}
+
+export interface GeotagParams {
+  tracks: string[];
+  ids: number[];
+  /** The camera's time zone, minutes east of UTC; null: find it. */
+  tz: number | null;
+  /** Seconds added to the camera's clock. */
+  drift: number;
+  /** Longest gap between fixes a photo may fall into, seconds. */
+  gap: number;
+  replace: boolean;
+  /** The browser's zone, preferred among zones that fit as well. */
+  prefer: number;
+}
+
+export interface GeotagPreview {
+  tz: number;
+  detected: boolean;
+  plateau: [number, number] | null;
+  counts: [number, number][];
+  matched: number;
+  own_zone: number;
+  no_time: number;
+  outside: number;
+  has_gps: number;
+  total: number;
+  /** [id, lat, lon] of every photo that falls on the track. */
+  photos: [number, number, number][];
+  /** The track for drawing: lines of [lat, lon]. */
+  track: [number, number][][];
+  range: [number, number];
+  /** First and last moment of the photos considered (UTC ms). */
+  span: [number, number] | null;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -303,6 +348,35 @@ export const api = {
   rescan: (folder?: number) => req<{ ok: boolean }>('POST', 'rescan', { folder }),
   settings: () => req<Record<string, unknown>>('GET', 'settings'),
   saveSettings: (s: Record<string, unknown>) => req<Record<string, unknown>>('POST', 'settings', s),
+  uploadTrack: (file: File, onProgress?: (fraction: number) => void) =>
+    new Promise<TrackInfo>((resolve, reject) => {
+      // XMLHttpRequest, for upload progress: a location history can be hundreds of MB.
+      const x = new XMLHttpRequest();
+      x.open('POST', apiUrl('geotag/tracks', { name: file.name }));
+      x.withCredentials = true;
+      x.setRequestHeader('content-type', 'application/octet-stream');
+      x.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress?.(e.loaded / e.total);
+      };
+      x.onload = () => {
+        let j: any = null;
+        try {
+          j = JSON.parse(x.responseText);
+        } catch {
+          /* not json */
+        }
+        if (x.status >= 200 && x.status < 300 && j) resolve(j as TrackInfo);
+        else {
+          if (x.status === 401) window.dispatchEvent(new CustomEvent('hf-auth'));
+          reject(new ApiError(x.status, j?.error ?? (x.statusText || 'upload failed')));
+        }
+      };
+      x.onerror = () => reject(new ApiError(0, 'the upload failed (network error)'));
+      x.send(file);
+    }),
+  forgetTrack: (id: string) => req<{ ok: boolean }>('DELETE', `geotag/tracks/${encodeURIComponent(id)}`),
+  geotagPreview: (p: GeotagParams, signal?: AbortSignal) => req<GeotagPreview>('POST', 'geotag/preview', p, undefined, signal),
+  geotagApply: (p: GeotagParams) => req<{ job: JobStatus }>('POST', 'geotag/apply', p),
   login: (password: string) => req<{ ok: boolean }>('POST', 'login', { password }),
   logout: () => req<{ ok: boolean }>('POST', 'logout', {}),
 };

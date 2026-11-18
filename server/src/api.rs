@@ -22,9 +22,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio_stream::wrappers::BroadcastStream;
 
-type St = State<Arc<AppState>>;
+pub(crate) type St = State<Arc<AppState>>;
 
-pub struct ApiError(StatusCode, String);
+pub struct ApiError(pub(crate) StatusCode, pub(crate) String);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -50,7 +50,7 @@ impl From<r2d2::Error> for ApiError {
     }
 }
 
-fn bad(msg: impl Into<String>) -> ApiError {
+pub(crate) fn bad(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 
@@ -58,7 +58,7 @@ fn not_found() -> ApiError {
     ApiError(StatusCode::NOT_FOUND, "not found".into())
 }
 
-type ApiResult<T> = Result<T, ApiError>;
+pub(crate) type ApiResult<T> = Result<T, ApiError>;
 
 pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
@@ -90,6 +90,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/journal", get(journal))
         .route("/rescan", post(rescan))
         .route("/settings", get(get_settings).post(set_settings))
+        .merge(crate::geotag::routes())
         .route("/login", post(login))
         .route("/logout", post(logout))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -955,7 +956,7 @@ struct MetaBody {
     patch: Patch,
 }
 
-fn check_writable(state: &AppState) -> ApiResult<()> {
+pub(crate) fn check_writable(state: &AppState) -> ApiResult<()> {
     if state.is_readonly() {
         return Err(ApiError(StatusCode::FORBIDDEN, "Hyperfocal is in read-only mode".into()));
     }

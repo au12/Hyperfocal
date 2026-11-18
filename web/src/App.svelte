@@ -17,6 +17,7 @@
   import JournalDialog from './components/JournalDialog.svelte';
   import LocationDialog from './components/LocationDialog.svelte';
   import KeywordManager from './components/KeywordManager.svelte';
+  import GeotagDialog from './components/GeotagDialog.svelte';
   import BulkBar from './components/BulkBar.svelte';
   import MobileNav from './components/MobileNav.svelte';
 
@@ -205,6 +206,7 @@
   {#if store.dialog === 'journal'}<JournalDialog />{/if}
   {#if store.dialog === 'location'}<LocationDialog />{/if}
   {#if store.dialog === 'keywords'}<KeywordManager />{/if}
+  {#if store.dialog === 'geotag'}<GeotagDialog />{/if}
 {/if}
 <Toasts />
 

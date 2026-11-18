@@ -5,6 +5,7 @@ pub mod api;
 pub mod config;
 pub mod db;
 pub mod files;
+pub mod geotag;
 pub mod images;
 pub mod inspect;
 pub mod keywords;
@@ -16,6 +17,7 @@ pub mod repo;
 pub mod scan;
 pub mod sets;
 pub mod state;
+pub mod tracks;
 #[cfg(test)]
 mod safety_tests;
 
@@ -149,6 +151,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         session_key,
         decoders,
         jobs: Mutex::new(std::collections::HashMap::new()),
+        tracks: Mutex::new(std::collections::HashMap::new()),
     });
     if !readonly {
         match state.exiftool.lock().await.version().await {

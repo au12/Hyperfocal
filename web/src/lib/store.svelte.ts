@@ -16,6 +16,7 @@ import {
   type PhotoList,
   type Status,
   type Timeline,
+  type TrackInfo,
   type ToneMode,
   type WbMode,
 } from './api';
@@ -318,6 +319,8 @@ class Store {
   private jobsSeen = new Set<string>();
   private jobsDone = new Set<string>();
   locationTargets = $state.raw<number[]>([]);
+  /** Track files loaded for geotagging (this page session). */
+  tracks = $state<TrackInfo[]>([]);
   mobile = $state(false);
   busy = $state(0);
 

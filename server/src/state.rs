@@ -62,6 +62,8 @@ pub struct AppState {
     pub decoders: crate::native::Decoders,
     /// Background changes, running and recently finished, by id.
     pub jobs: Mutex<std::collections::HashMap<String, crate::ops::JobStatus>>,
+    /// Track files uploaded for geotagging, by id (kept for a few hours).
+    pub tracks: Mutex<std::collections::HashMap<String, crate::geotag::StoredTrack>>,
 }
 
 impl AppState {
