@@ -1,19 +1,22 @@
 <script lang="ts">
-  import { store, LABELS, type SortKey } from '../lib/store.svelte';
+  import { store, LABELS, activeFilterCount, type SortKey } from '../lib/store.svelte';
   import { api, type Facets } from '../lib/api';
   import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
 
   let facets = $state<Facets | null>(null);
   let filterOpen = $state(false);
+  let saveOpen = $state(false);
+  let saveName = $state('');
 
   const crumbs = $derived(store.folderPath(store.folderId));
   const f = $derived(store.filters);
   const count = $derived(store.list.id.length);
-  const activeFilters = $derived(
-    (f.rmin > 0 ? 1 : 0) + (f.unrated ? 1 : 0) + (f.lc.length ? 1 : 0) + (f.pick != null ? 1 : 0) + (f.kinds.length ? 1 : 0) +
-      (f.gps != null ? 1 : 0) + (f.cam ? 1 : 0) + (f.lens ? 1 : 0) + (f.kw ? 1 : 0) + (f.onlyRejected ? 1 : 0),
-  );
+  const activeFilters = $derived(activeFilterCount(f));
+  const coll = $derived(store.collection);
+  const modified = $derived(store.collectionModified());
+  /** Something worth saving: a search, a period or a filter. */
+  const saveable = $derived(!!store.query.trim() || !!store.dateRange || activeFilters > 0 || (coll != null && modified));
 
   async function loadFacets() {
     if (!facets) facets = await api.facets().catch(() => null);
@@ -25,9 +28,47 @@
   }
 
   function clearFilters() {
-    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: null, cam: '', lens: '', kw: '', onlyRejected: false });
+    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '' });
     store.persist();
     store.reload();
+  }
+
+  /** A name describing the view, as a starting point. */
+  function suggestName(): string {
+    const parts: string[] = [];
+    if (store.query.trim()) parts.push(`“${store.query.trim()}”`);
+    if (f.rmin > 0) parts.push(`${f.rmin}★${f.rmin < 5 ? '+' : ''}`);
+    if (f.unrated) parts.push('Unrated');
+    if (f.pick === 1) parts.push('Picks');
+    if (f.pick === 0) parts.push('Unflagged');
+    for (const c of f.lc) parts.push(c === 'none' ? 'No label' : (LABELS.find((l) => l.color === c)?.name ?? c));
+    if (f.kw) parts.push(f.kw.split('|').pop() ?? f.kw);
+    if (f.cam) parts.push(f.cam);
+    if (f.lens) parts.push(f.lens);
+    if (f.gps === 0) parts.push('No location');
+    if (f.gps === 1) parts.push('With location');
+    if (store.dateRange) parts.push(store.dateRange.label);
+    if (f.dateFrom || f.dateTo) parts.push([f.dateFrom, f.dateTo].filter(Boolean).join(' – '));
+    if (f.onlyRejected) parts.push('Rejected');
+    const folder = store.folders.get(store.folderId ?? -1);
+    if (folder && folder.path && !store.dateRange && !(store.query.trim() && !coll)) parts.push(folder.name);
+    return parts.join(' · ').slice(0, 120) || 'New collection';
+  }
+
+  function openSave(toggle: () => void) {
+    saveName = coll && typeof coll.id === 'number' ? coll.name : suggestName();
+    toggle();
+  }
+
+  async function save(asNew: boolean, close: () => void) {
+    const name = saveName.trim();
+    if (!name) return;
+    close();
+    await store.saveCollection(name, !asNew && coll && typeof coll.id === 'number' ? coll.id : undefined);
+  }
+
+  function setDate(k: 'dateFrom' | 'dateTo', v: string) {
+    store.setFilter(k, v);
   }
 
   const sorts: [SortKey, string][] = [
@@ -45,9 +86,17 @@
 
 <div class="toolbar">
   <div class="crumbs">
-    {#if store.query}
+    {#if coll}
+      <span class="crumb current" title="Collection"><Icon name={typeof coll.id === 'number' ? 'bookmark' : 'library'} size={14} /> {coll.name}</span>
+      {#if modified}<span class="modified" title="Filters or search differ from the saved collection">modified</span>{/if}
+    {:else if store.query}
+      {#if store.dateRange}<button class="crumb" onclick={() => store.search('')}>{store.dateRange.label}</button><Icon name="chevron" size={14} class="sep" />{/if}
       <span class="crumb current"><Icon name="search" size={14} /> “{store.query}”</span>
       <button class="btn sm ghost" onclick={() => store.search('')}>Clear</button>
+    {:else if store.dateRange}
+      <span class="crumb"><Icon name="calendar" size={14} /> Timeline</span>
+      <Icon name="chevron" size={14} class="sep" />
+      <span class="crumb current">{store.dateRange.label}</span>
     {:else}
       {#each crumbs as c, i (c.id)}
         {#if i > 0}<Icon name="chevron" size={14} class="sep" />{/if}
@@ -112,6 +161,12 @@
             <button class:on={f.kinds.length === 1 && f.kinds[0] === 5} onclick={() => store.setFilter('kinds', [5])}>HEIC</button>
             <button class:on={f.kinds.length > 1} onclick={() => store.setFilter('kinds', [3, 4])}>Other</button>
           </div>
+          <div class="fl">Capture date</div>
+          <div class="dates">
+            <input class="field" type="date" value={f.dateFrom} max={f.dateTo || undefined} onchange={(e) => setDate('dateFrom', (e.target as HTMLInputElement).value)} aria-label="From" />
+            <span class="dim">to</span>
+            <input class="field" type="date" value={f.dateTo} min={f.dateFrom || undefined} onchange={(e) => setDate('dateTo', (e.target as HTMLInputElement).value)} aria-label="To" />
+          </div>
           <div class="fl">Location</div>
           <div class="seg small">
             <button class:on={f.gps == null} onclick={() => store.setFilter('gps', null)}>All</button>
@@ -143,6 +198,31 @@
         </div>
       {/snippet}
     </Popover>
+
+    {#if saveable}
+      <Popover bind:open={saveOpen} align="right" width="18rem">
+        {#snippet trigger(toggle, open)}
+          <button class="btn sm" class:on={open} onclick={() => openSave(toggle)} title="Save this view as a collection">
+            <Icon name="bookmark-plus" />{store.mobile ? '' : coll && typeof coll.id === 'number' && modified ? 'Update' : 'Save'}
+          </button>
+        {/snippet}
+        {#snippet children(close)}
+          <form class="savebox" onsubmit={(e) => { e.preventDefault(); save(!(coll && typeof coll.id === 'number'), close); }}>
+            <div class="fl">Save the search, filters and dates as a collection</div>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input class="field" bind:value={saveName} maxlength="120" autofocus placeholder="Name" />
+            <div class="row end">
+              {#if coll && typeof coll.id === 'number'}
+                <button type="button" class="btn sm" onclick={() => save(true, close)} disabled={!saveName.trim()}>Save as new</button>
+                <button type="submit" class="btn sm primary" disabled={!saveName.trim()}>Update “{coll.name}”</button>
+              {:else}
+                <button type="submit" class="btn sm primary" disabled={!saveName.trim()}>Save</button>
+              {/if}
+            </div>
+          </form>
+        {/snippet}
+      </Popover>
+    {/if}
 
     <Popover align="right">
       {#snippet trigger(toggle, open)}
@@ -281,6 +361,37 @@
     width: 100%;
     height: 2rem;
     font-size: var(--fs-sm);
+  }
+  .dates {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+  .dates .field {
+    flex: 1;
+    min-width: 0;
+    height: 2rem;
+    font-size: var(--fs-sm);
+    padding: 0 0.375rem;
+  }
+  .modified {
+    font-size: var(--fs-sm);
+    color: var(--critical);
+    margin-left: 0.25rem;
+    white-space: nowrap;
+  }
+  .savebox {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem 0.25rem;
+  }
+  .savebox .fl {
+    margin-top: 0;
+  }
+  .row.end {
+    justify-content: flex-end;
+    flex-wrap: wrap;
   }
   .foot {
     display: flex;

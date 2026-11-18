@@ -114,7 +114,8 @@
           <dt>Index</dt><dd>{st.progress.phase}{#if st.progress.last_full_scan} · last full scan {new Date(st.progress.last_full_scan).toLocaleString()}{/if}</dd>
         </dl>
       {/if}
-      <div class="row">
+      <div class="row wrap">
+        <button class="btn" onclick={() => (store.dialog = 'keywords')}><Icon name="tags" /> Keywords</button>
         <button class="btn" onclick={rescan} disabled={rescanning}><Icon name="refresh" /> Re-scan library</button>
         {#if st?.auth}<button class="btn" onclick={logout}><Icon name="logout" /> Sign out</button>{/if}
       </div>
@@ -169,6 +170,9 @@
   }
   dd {
     margin: 0;
+  }
+  .wrap {
+    flex-wrap: wrap;
   }
   @media (max-width: 760px) {
     .opt {

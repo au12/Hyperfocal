@@ -157,6 +157,22 @@ export interface BatchResult {
   batch: string;
   ok: number[];
   failed: [number, string][];
+  /** Set when the change runs in the background. */
+  job?: JobStatus;
+}
+
+/** A change written in the background (keyword moves, GPS from a track, large undos). */
+export interface JobStatus {
+  id: string;
+  label: string;
+  total: number;
+  done: number;
+  failed: number;
+  finished: boolean;
+  /** Undoing this batch undoes the whole job. */
+  batch: string;
+  errors: [number, string][];
+  started: number;
 }
 
 export interface JournalEntry {
@@ -183,6 +199,39 @@ export interface Facets {
   lenses: [string, number][];
   years: [string, number][];
   labels: [string, number][];
+}
+
+/** A timeline scope: capture times from `from` (inclusive) to `to` (exclusive), in
+ * seconds on the camera's clock; or the photos without a capture time. */
+export interface DateRange {
+  from: number;
+  to: number;
+  label: string;
+  nodate?: boolean;
+}
+
+/** What a saved collection shows. Absent fields mean "as default". */
+export interface CollectionSpec {
+  q?: string;
+  /** Folder path ('' = the whole library). */
+  folder?: string;
+  rec?: boolean;
+  filters?: Record<string, unknown>;
+  date?: DateRange | null;
+}
+
+export interface Collection {
+  id: number;
+  name: string;
+  spec: CollectionSpec;
+  created?: number;
+  updated?: number;
+}
+
+export interface Timeline {
+  /** [day since 1970-01-01, photos] */
+  days: [number, number][];
+  undated: number;
 }
 
 export class ApiError extends Error {
@@ -233,10 +282,18 @@ export const api = {
   status: () => req<Status>('GET', 'status'),
   tree: () => req<{ folders: FolderRow[] }>('GET', 'tree'),
   photos: (params: Record<string, unknown>, signal?: AbortSignal) => req<PhotoList>('GET', 'photos', undefined, params, signal),
+  count: (params: Record<string, unknown>, signal?: AbortSignal) => req<{ count: number }>('GET', 'photos', undefined, { ...params, count: 1 }, signal),
+  timeline: () => req<Timeline>('GET', 'timeline'),
+  collections: () => req<Collection[]>('GET', 'collections'),
+  saveCollection: (c: { id?: number; name: string; spec: CollectionSpec }) => req<Collection>('POST', 'collections', c),
+  deleteCollection: (id: number) => req<{ ok: boolean }>('DELETE', `collections/${id}`),
   photo: (id: number, signal?: AbortSignal) => req<PhotoDetail>('GET', `photo/${id}`, undefined, undefined, signal),
   rawinfo: (id: number, v: string, wb: WbMode, signal?: AbortSignal) => req<RawInfo>('GET', `photo/${id}/rawinfo`, undefined, { v, wb }, signal),
   facets: () => req<Facets>('GET', 'facets'),
   keywords: (q: string, signal?: AbortSignal) => req<[string, number][]>('GET', 'keywords', undefined, { q }, signal),
+  keywordTree: () => req<{ nodes: [string, number][] }>('GET', 'keywords/tree'),
+  moveKeyword: (from: string, to: string | null) => req<{ job: JobStatus }>('POST', 'keywords/move', { from, to }),
+  jobs: () => req<JobStatus[]>('GET', 'jobs'),
   clusters: (params: Record<string, unknown>, signal?: AbortSignal) => req<{ cell: number; clusters: Cluster[] }>('GET', 'geo/clusters', undefined, params, signal),
   meta: (ids: number[], patch: Patch) => req<BatchResult>('POST', 'meta', { ids, patch }),
   reject: (ids: number[]) => req<BatchResult>('POST', 'reject', { ids }),

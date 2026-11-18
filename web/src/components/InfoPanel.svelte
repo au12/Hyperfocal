@@ -106,7 +106,10 @@
     </section>
 
     <section>
-      <div class="lab">Keywords</div>
+      <div class="lab row">
+        <span class="grow">Keywords</span>
+        <button class="btn sm ghost" onclick={() => (store.dialog = 'keywords')} title="Rename, merge or re-parent keywords across the library"><Icon name="tags" /> Manage</button>
+      </div>
       <KeywordEditor
         keywords={d.keywords}
         hierarchical={d.hkeywords}

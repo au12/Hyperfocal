@@ -69,6 +69,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/photos", get(list_photos))
         .route("/facets", get(facets))
         .route("/keywords", get(keywords))
+        .route("/keywords/tree", get(keyword_tree))
+        .route("/keywords/move", post(keyword_move))
+        .route("/jobs", get(jobs))
+        .route("/timeline", get(timeline))
+        .route("/collections", get(list_collections).post(save_collection))
+        .route("/collections/{id}", axum::routing::delete(delete_collection))
         .route("/geo/clusters", get(geo_clusters))
         .route("/photo/{id}", get(photo_detail))
         .route("/photo/{id}/thumb", get(thumb))
@@ -235,6 +241,8 @@ pub struct ListQuery {
     zoom: Option<u32>,
     /// 1: only count the matching photos.
     count: Option<u8>,
+    /// 1: only photos without a capture time.
+    nodate: Option<u8>,
 }
 
 /// SQL for "this folder and everything below it" on `f.path`, as an index range (paths
@@ -306,6 +314,9 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
         Some(0) => w.push("p.lat IS NULL".into()),
         _ => {}
     }
+    if q.nodate == Some(1) {
+        w.push("p.taken IS NULL".into());
+    }
     if let Some(v) = q.from {
         w.push("p.taken >= ?".into());
         a.push(Box::new(v));
@@ -322,9 +333,13 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
         w.push("p.lens = ?".into());
         a.push(Box::new(v.to_string()));
     }
-    if let Some(v) = q.kw.as_deref().filter(|s| !s.is_empty()) {
-        w.push("p.id IN (SELECT photo_id FROM photo_keywords WHERE kw = ?)".into());
+    if let Some(v) = q.kw.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        // The keyword, and every path below it (`Places|Portugal` takes in
+        // `Places|Portugal|Lisbon`): the range ends at the separator's successor.
+        w.push("p.id IN (SELECT photo_id FROM photo_keywords WHERE kw = ? OR (kw > ? AND kw < ?))".into());
         a.push(Box::new(v.to_string()));
+        a.push(Box::new(format!("{v}|")));
+        a.push(Box::new(format!("{v}}}")));
     }
     if let Some(text) = q.q.as_deref() {
         let s = crate::db::search_query(text, trigram);
@@ -572,6 +587,93 @@ fn day_counts(c: &Connection, skip_rejects: bool) -> anyhow::Result<Vec<(i64, i6
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Photos per capture day across the library (reject folders left out), for the
+/// timeline: `{"days": [[day, count], ...], "undated": n}`, days since 1970-01-01 on
+/// the camera's clock.
+async fn timeline(State(state): St) -> ApiResult<Json<Value>> {
+    let st = state.clone();
+    let v = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let c = st.db.get()?;
+        let days: Vec<Value> = day_counts(&c, true)?.into_iter().map(|(d, n)| json!([d, n])).collect();
+        let undated: i64 = c.query_row(
+            "SELECT count(*) FROM photos p JOIN folders f ON f.id = p.folder_id WHERE p.pair_of IS NULL AND p.taken IS NULL AND f.is_reject = 0",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(json!({ "days": days, "undated": undated }))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))??;
+    Ok(Json(v))
+}
+
+/// Saved searches ("smart collections"). The spec is the UI's description of a view
+/// (search text, filters, scope, dates, sort); the server only stores it.
+async fn list_collections(State(state): St) -> ApiResult<Json<Value>> {
+    let c = state.db.get()?;
+    let mut st = c.prepare("SELECT id, name, spec, created, updated FROM collections ORDER BY position, name COLLATE NOCASE")?;
+    let rows: Vec<Value> = st
+        .query_map([], |r| {
+            let spec: String = r.get(2)?;
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
+                "spec": serde_json::from_str::<Value>(&spec).unwrap_or(json!({})),
+                "created": r.get::<_, i64>(3)?, "updated": r.get::<_, i64>(4)?,
+            }))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(Json(json!(rows)))
+}
+
+#[derive(Deserialize)]
+struct CollectionBody {
+    id: Option<i64>,
+    name: String,
+    spec: Value,
+}
+
+async fn save_collection(State(state): St, Json(b): Json<CollectionBody>) -> ApiResult<Json<Value>> {
+    let name = b.name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err(bad("a collection needs a name of at most 120 characters"));
+    }
+    if !b.spec.is_object() {
+        return Err(bad("the collection's spec must be an object"));
+    }
+    let spec = b.spec.to_string();
+    if spec.len() > 16 * 1024 {
+        return Err(bad("the collection's spec is too large"));
+    }
+    let c = state.db.get()?;
+    let now = crate::db::now_ms();
+    let id = match b.id {
+        Some(id) => {
+            let n = c.execute("UPDATE collections SET name = ?2, spec = ?3, updated = ?4 WHERE id = ?1", rusqlite::params![id, name, spec, now])?;
+            if n == 0 {
+                return Err(not_found());
+            }
+            id
+        }
+        None => c.query_row(
+            "INSERT INTO collections(name, spec, position, created, updated) VALUES(?1, ?2, 0, ?3, ?3) RETURNING id",
+            rusqlite::params![name, spec, now],
+            |r| r.get(0),
+        )?,
+    };
+    state.emit(Event::Collections);
+    Ok(Json(json!({ "id": id, "name": name, "spec": b.spec, "updated": now })))
+}
+
+async fn delete_collection(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    let c = state.db.get()?;
+    if c.execute("DELETE FROM collections WHERE id = ?1", [id])? == 0 {
+        return Err(not_found());
+    }
+    state.emit(Event::Collections);
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 struct KwQuery {
     q: Option<String>,
@@ -592,6 +694,72 @@ async fn keywords(State(state): St, Query(q): Query<KwQuery>) -> ApiResult<Json<
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))??;
     Ok(Json(v))
+}
+
+/// Every photo's keyword lists (pairs folded): (id, plain, hierarchical).
+fn keyword_rows(c: &Connection) -> anyhow::Result<Vec<(i64, Vec<String>, Vec<String>)>> {
+    let split = |s: Option<String>| -> Vec<String> { s.map(|s| s.split('\n').filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default() };
+    let mut st = c.prepare("SELECT id, keywords, hkeywords FROM photos WHERE pair_of IS NULL AND (keywords IS NOT NULL OR hkeywords IS NOT NULL)")?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, split(r.get(1)?), split(r.get(2)?))))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The library's keyword tree: `{"nodes": [[path, photos], ...]}`, where a node's count
+/// includes the photos of the nodes below it.
+async fn keyword_tree(State(state): St) -> ApiResult<Json<Value>> {
+    let st = state.clone();
+    let v = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let c = st.db.get()?;
+        let rows = keyword_rows(&c)?;
+        let tree = crate::keywords::tree(rows.iter().map(|(_, s, h)| (s.as_slice(), h.as_slice())));
+        Ok(json!({ "nodes": tree }))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))??;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+struct KwMoveBody {
+    from: String,
+    to: Option<String>,
+}
+
+/// Rename, merge, re-parent or remove a keyword across the library, as one undoable
+/// batch written in the background.
+async fn keyword_move(State(state): St, Json(b): Json<KwMoveBody>) -> ApiResult<Json<Value>> {
+    check_writable(&state)?;
+    let from = crate::keywords::split(&b.from);
+    let to = b.to.as_deref().map(crate::keywords::split);
+    crate::keywords::check_move(&from, to.as_deref()).map_err(bad)?;
+    let st = state.clone();
+    let from2 = from.clone();
+    let ids = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<i64>> {
+        let c = st.db.get()?;
+        Ok(keyword_rows(&c)?.into_iter().filter(|(_, s, h)| crate::keywords::has_node(s, h, &from2)).map(|(id, _, _)| id).collect())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))??;
+    if ids.is_empty() {
+        return Err(bad("no photo has this keyword"));
+    }
+    let show = |p: &[String]| p.join(" › ");
+    let label = match &to {
+        Some(t) => format!("Keyword {} → {}", show(&from), show(t)),
+        None => format!("Removing keyword {}", show(&from)),
+    };
+    let patch = Patch {
+        keywords_move: Some(ops::KwMove { from: crate::keywords::join(&from), to: to.as_deref().map(crate::keywords::join) }),
+        ..Default::default()
+    };
+    let job = ops::spawn_patch_job(&state, label, ids.into_iter().map(|id| (id, patch.clone())).collect())?;
+    Ok(Json(json!({ "job": job })))
+}
+
+async fn jobs(State(state): St) -> Json<Value> {
+    let mut v: Vec<ops::JobStatus> = state.jobs.lock().values().cloned().collect();
+    v.sort_by_key(|j| -j.started);
+    Json(json!(v))
 }
 
 async fn geo_clusters(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<Json<Value>> {
@@ -837,6 +1005,11 @@ async fn undo(State(state): St, Json(b): Json<UndoBody>) -> ApiResult<Json<Value
                 .map_err(|_| bad("nothing to undo"))?
         }
     };
+    // Large batches (a keyword moved across the library) undo in the background.
+    if ops::undo_count(&state, &batch)? > 200 {
+        let job = ops::spawn_undo(&state, &batch, "Undoing a large change".into())?;
+        return Ok(Json(json!({ "batch": job.batch, "ok": [], "failed": [], "job": job })));
+    }
     Ok(Json(json!(ops::undo(&state, &batch).await?)))
 }
 
@@ -910,5 +1083,141 @@ mod tests {
         assert_eq!(file_label("cr3", Some("IMG_1.HIF")), "cr3+hif");
         assert_eq!(file_label("cr2", Some("IMG_1.JPG,IMG_1.HIF")), "cr2+jpg+hif");
         assert_eq!(file_label("dng", Some("")), "dng");
+    }
+}
+
+#[cfg(test)]
+mod collection_tests {
+    use super::*;
+    use axum::http::Request;
+    use std::collections::HashMap;
+    use tower::ServiceExt;
+
+    async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let req = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+        let req = req.body(Body::from(body.map(|b| b.to_string()).unwrap_or_default())).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn collections_and_timeline() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("photos")).unwrap();
+        let mut cfg = crate::config::Config::for_tests(tmp.path());
+        cfg.readonly = true;
+        let state = crate::build_state(cfg).await.unwrap();
+        {
+            let c = state.db.get().unwrap();
+            c.execute_batch(
+                "INSERT INTO folders(id, parent_id, path, name, scanned_at) VALUES(1, NULL, '', 'Library', 1), (2, 1, '2019', '2019', 1), (3, 2, '2019/Trip', 'Trip', 1), (4, 3, '2019/Trip/_Rejected', '_Rejected', 1);
+                 UPDATE folders SET is_reject = 1 WHERE id = 4;",
+            )
+            .unwrap();
+            for (folder, name, taken, rating) in [(3, "a.CR3", Some(1_560_000_000i64), 5), (3, "b.CR3", Some(1_560_090_000), 0), (3, "c.JPG", None, 3), (4, "d.CR3", Some(1_560_000_100), 0)] {
+                let rec = crate::model::PhotoRec { folder_id: folder, name: name.into(), stem: name.into(), ext: "cr3".into(), kind: 1, taken, rating, ..Default::default() };
+                let id = crate::repo::upsert(&c, &rec).unwrap();
+                crate::repo::index_text(&c, id, &rec, "2019/Trip").unwrap();
+            }
+            crate::repo::refresh_folder(&c, 3).unwrap();
+            crate::repo::refresh_folder(&c, 4).unwrap();
+        }
+        let app = router(state.clone());
+        // The timeline leaves the reject folder out and counts photos without a date.
+        let (st, tl) = call(&app, "GET", "/api/timeline", None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(tl["undated"], 1);
+        let days = tl["days"].as_array().unwrap();
+        assert_eq!(days.len(), 2, "{tl}");
+        assert_eq!(days[0], json!([1_560_000_000 / 86400, 1]));
+        // Counts, a date range and "no date".
+        let (_, n) = call(&app, "GET", "/api/photos?folder=1&rec=1&count=1", None).await;
+        assert_eq!(n["count"], 3);
+        let (_, n) = call(&app, "GET", "/api/photos?folder=1&rec=1&nodate=1&count=1", None).await;
+        assert_eq!(n["count"], 1);
+        let (_, n) = call(&app, "GET", "/api/photos?folder=1&rec=1&from=1559952000&to=1560038400&count=1", None).await;
+        assert_eq!(n["count"], 1);
+        // Subtree ranges never catch a sibling folder that only shares a prefix.
+        {
+            let c = state.db.get().unwrap();
+            c.execute("INSERT INTO folders(id, parent_id, path, name, scanned_at) VALUES(5, 1, '20190', '20190', 1)", []).unwrap();
+            let rec = crate::model::PhotoRec { folder_id: 5, name: "x.CR3".into(), stem: "x".into(), ext: "cr3".into(), kind: 1, ..Default::default() };
+            crate::repo::upsert(&c, &rec).unwrap();
+            crate::repo::refresh_folder(&c, 5).unwrap();
+        }
+        let (_, n) = call(&app, "GET", "/api/photos?folder=2&rec=1&count=1", None).await;
+        assert_eq!(n["count"], 3);
+        // Collections: create, list, rename, delete; works in read-only mode (index only).
+        let spec = json!({"filters": {"rmin": 5}, "folder": "2019", "rec": true});
+        let (st, c) = call(&app, "POST", "/api/collections", Some(json!({"name": " Best of 2019 ", "spec": spec}))).await;
+        assert_eq!(st, StatusCode::OK, "{c}");
+        let id = c["id"].as_i64().unwrap();
+        assert_eq!(c["name"], "Best of 2019");
+        let (_, list) = call(&app, "GET", "/api/collections", None).await;
+        assert_eq!(list[0]["spec"], spec);
+        let (st, _) = call(&app, "POST", "/api/collections", Some(json!({"id": id, "name": "Best", "spec": spec}))).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, list) = call(&app, "GET", "/api/collections", None).await;
+        assert_eq!(list[0]["name"], "Best");
+        assert_eq!(call(&app, "POST", "/api/collections", Some(json!({"name": "", "spec": spec}))).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(call(&app, "POST", "/api/collections", Some(json!({"name": "x", "spec": [1]}))).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(call(&app, "POST", "/api/collections", Some(json!({"id": 999, "name": "x", "spec": {}}))).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(call(&app, "DELETE", &format!("/api/collections/{id}"), None).await.0, StatusCode::OK);
+        assert_eq!(call(&app, "DELETE", &format!("/api/collections/{id}"), None).await.0, StatusCode::NOT_FOUND);
+        let (_, list) = call(&app, "GET", "/api/collections", None).await;
+        assert_eq!(list, json!([]));
+    }
+
+    #[tokio::test]
+    async fn keyword_filter_and_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("photos")).unwrap();
+        let mut cfg = crate::config::Config::for_tests(tmp.path());
+        cfg.readonly = true;
+        let state = crate::build_state(cfg).await.unwrap();
+        {
+            let c = state.db.get().unwrap();
+            c.execute("INSERT INTO folders(id, parent_id, path, name, scanned_at) VALUES(1, NULL, '', 'Library', 1)", []).unwrap();
+            let photos: [(&str, &[&str], &[&str]); 5] = [
+                ("a.CR3", &["Lisbon", "Portugal", "Places"], &["Places|Portugal|Lisbon"]),
+                ("b.CR3", &["Ärzte"], &["Places|Portugal|Ärzte"]),
+                ("c.CR3", &["Lisbon"], &[]),
+                ("d.CR3", &["dog"], &["Places|Portugalia"]),
+                ("e.CR3", &[], &[]),
+            ];
+            for (name, subj, hier) in photos {
+                let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+                let rec = crate::model::PhotoRec { folder_id: 1, name: name.into(), stem: name.into(), ext: "cr3".into(), kind: 1, keywords: v(subj), hkeywords: v(hier), ..Default::default() };
+                let id = crate::repo::upsert(&c, &rec).unwrap();
+                crate::repo::index_text(&c, id, &rec, "").unwrap();
+            }
+            crate::repo::refresh_folder(&c, 1).unwrap();
+        }
+        let app = router(state.clone());
+        let count = |kw: &str| format!("/api/photos?folder=1&rec=1&count=1&kw={}", urlencode(kw));
+        // A path takes in the paths below it (any letters), never a sibling sharing a prefix.
+        assert_eq!(call(&app, "GET", &count("Places|Portugal"), None).await.1["count"], 2);
+        assert_eq!(call(&app, "GET", &count("places|portugal|lisbon"), None).await.1["count"], 1);
+        assert_eq!(call(&app, "GET", &count("Places"), None).await.1["count"], 3);
+        assert_eq!(call(&app, "GET", &count("Lisbon"), None).await.1["count"], 2);
+        assert_eq!(call(&app, "GET", &count(" dog "), None).await.1["count"], 1);
+        // The tree counts each node once per photo; a covered plain keyword is no node.
+        let (st, t) = call(&app, "GET", "/api/keywords/tree", None).await;
+        assert_eq!(st, StatusCode::OK);
+        let nodes: HashMap<String, i64> = t["nodes"].as_array().unwrap().iter().map(|n| (n[0].as_str().unwrap().to_string(), n[1].as_i64().unwrap())).collect();
+        assert_eq!(nodes["Places"], 3);
+        assert_eq!(nodes["Places|Portugal"], 2);
+        assert_eq!(nodes["Places|Portugalia"], 1);
+        assert_eq!(nodes["Lisbon"], 1, "only c.CR3 has Lisbon outside a path");
+        assert!(!nodes.contains_key("Portugal") && !nodes.contains_key("Ärzte"));
+        // Changes are refused in read-only mode.
+        let (st, _) = call(&app, "POST", "/api/keywords/move", Some(json!({"from": "Lisbon", "to": "Places|Portugal|Lisbon"}))).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+    }
+
+    fn urlencode(s: &str) -> String {
+        s.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
     }
 }

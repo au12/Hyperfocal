@@ -7,6 +7,7 @@ pub mod db;
 pub mod files;
 pub mod images;
 pub mod inspect;
+pub mod keywords;
 pub mod meta;
 pub mod model;
 pub mod native;
@@ -147,6 +148,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         trigram: AtomicBool::new(trigram),
         session_key,
         decoders,
+        jobs: Mutex::new(std::collections::HashMap::new()),
     });
     if !readonly {
         match state.exiftool.lock().await.version().await {

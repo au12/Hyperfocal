@@ -30,6 +30,10 @@ pub enum Event {
     Folder { id: i64 },
     Tree,
     Photos { ids: Vec<i64> },
+    /// The saved collections changed (in another tab or on another device).
+    Collections,
+    /// Progress of a background change.
+    Job(crate::ops::JobStatus),
 }
 
 pub enum ScanMsg {
@@ -56,6 +60,8 @@ pub struct AppState {
     pub session_key: [u8; 32],
     /// RAW and HEIC decoders available to this build.
     pub decoders: crate::native::Decoders,
+    /// Background changes, running and recently finished, by id.
+    pub jobs: Mutex<std::collections::HashMap<String, crate::ops::JobStatus>>,
 }
 
 impl AppState {

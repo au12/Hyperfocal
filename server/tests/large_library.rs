@@ -436,6 +436,14 @@ async fn large_library() {
             assert!(sub["id"].as_array().unwrap().len() > 1000, "substring search found too little");
         }
         b.get("facets", "/api/facets", ms(700)).await;
+        let tl = b.get("timeline", "/api/timeline", ms(400)).await;
+        if round == 0 {
+            let days: i64 = tl["days"].as_array().unwrap().iter().map(|d| d[1].as_i64().unwrap()).sum();
+            assert!(days > (n as i64) * 9 / 10, "timeline covers {days} photos");
+        }
+        b.get("count: library 5 stars", &format!("/api/photos?folder={root}&rec=1&rmin=5&count=1"), ms(300)).await;
+        b.get("count: picks in a year", &format!("/api/photos?folder={root}&rec=1&pick=1&count=1&from={}&to={}", days_from_civil(2019, 1, 1) * 86400, days_from_civil(2020, 1, 1) * 86400), ms(300)).await;
+        b.get("collections", "/api/collections", ms(50)).await;
         b.get("keywords: suggest", "/api/keywords?q=fri", ms(400)).await;
         b.get("map: world clusters", &format!("/api/geo/clusters?folder={root}&rec=1&zoom=2"), ms(500)).await;
         b.get("map: city clusters", &format!("/api/geo/clusters?folder={root}&rec=1&zoom=12&west=-9.3&east=-9.0&south=38.6&north=38.8"), ms(200)).await;

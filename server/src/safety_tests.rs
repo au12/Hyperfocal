@@ -445,3 +445,87 @@ async fn darktable_sidecars_get_the_standard_name() {
     orig.sort();
     assert_eq!(now, orig);
 }
+
+/// Wait for a background job to finish.
+async fn wait_job(state: &Arc<AppState>, id: &str) -> crate::ops::JobStatus {
+    for _ in 0..600 {
+        if let Some(j) = state.jobs.lock().get(id).filter(|j| j.finished).cloned() {
+            return j;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("job {id} did not finish");
+}
+
+/// A keyword renamed and re-parented across the library: one journaled batch in the
+/// background, sidecars of other apps merged, undone in one step, originals untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyword_moves_across_the_library() {
+    if !exiftool_available() {
+        eprintln!("skipping: exiftool is not installed");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = tmp.path().join("photos");
+    write_bytes(&lib.join("2024/Trip/IMG_0001.CR2"), 100_000, 31);
+    write_bytes(&lib.join("2024/Trip/IMG_0001.JPG"), 20_000, 32);
+    write_bytes(&lib.join("2024/Trip/IMG_0002.CR3"), 100_000, 33);
+    std::fs::write(lib.join("2024/Trip/IMG_0002.xmp"), EXCIRE_SIDECAR).unwrap();
+    write_bytes(&lib.join("2023/Home/IMG_0003.CR3"), 100_000, 34);
+    let before = originals(&lib);
+    let state = crate::build_state(test_config(tmp.path())).await.unwrap();
+    {
+        let st = state.clone();
+        tokio::task::spawn_blocking(move || scan_all(&st)).await.unwrap();
+    }
+    let p1 = photo_id(&state, "2024/Trip", "IMG_0001.CR2");
+    let p2 = photo_id(&state, "2024/Trip", "IMG_0002.CR3");
+    let p3 = photo_id(&state, "2023/Home", "IMG_0003.CR3");
+    let add = |k: &str| -> Patch { serde_json::from_value(serde_json::json!({ "keywords_add": [k] })).unwrap() };
+    assert!(ops::apply_meta(&state, &[p1, p2], &add("Places|Portugal|Lisbon"), None).await.unwrap().failed.is_empty());
+    assert!(ops::apply_meta(&state, &[p3], &add("Lisbon"), None).await.unwrap().failed.is_empty());
+
+    // Rename the hierarchical node; the plain "Lisbon" of the third photo is a different node.
+    let patch = Patch {
+        keywords_move: Some(ops::KwMove { from: "Places|Portugal|Lisbon".into(), to: Some("Places|Portugal|Lisboa".into()) }),
+        ..Default::default()
+    };
+    let job = ops::spawn_patch_job(&state, "test".into(), vec![(p1, patch.clone()), (p2, patch)]).unwrap();
+    let done = wait_job(&state, &job.id).await;
+    assert_eq!((done.done, done.failed, done.total), (2, 0, 2), "{:?}", done.errors);
+    let x1 = sidecar(&lib, "2024/Trip/IMG_0001.xmp");
+    assert_eq!(x1.hsubject, Some(vec!["Places|Portugal|Lisboa".to_string()]));
+    assert_eq!(x1.subject, Some(vec!["Lisboa".to_string()]));
+    let x2 = sidecar(&lib, "2024/Trip/IMG_0002.xmp");
+    assert_eq!(x2.subject, Some(vec!["FromExcire".to_string(), "Lisboa".to_string()]));
+    assert!(std::fs::read_to_string(lib.join("2024/Trip/IMG_0002.xmp")).unwrap().contains("Exposure2012"));
+    assert_eq!(sidecar(&lib, "2023/Home/IMG_0003.xmp").subject, Some(vec!["Lisbon".to_string()]));
+    // The index followed.
+    assert_eq!(column::<String>(&state, p1, "hkeywords").as_deref(), Some("Places|Portugal|Lisboa"));
+
+    // Re-parent the plain keyword of the third photo.
+    let patch = Patch { keywords_move: Some(ops::KwMove { from: "Lisbon".into(), to: Some("Places|Portugal|Lisbon".into()) }), ..Default::default() };
+    let job2 = ops::spawn_patch_job(&state, "test".into(), vec![(p3, patch)]).unwrap();
+    assert_eq!(wait_job(&state, &job2.id).await.failed, 0);
+    let x3 = sidecar(&lib, "2023/Home/IMG_0003.xmp");
+    assert_eq!((x3.subject, x3.hsubject), (Some(vec!["Lisbon".to_string()]), Some(vec!["Places|Portugal|Lisbon".to_string()])));
+
+    // One undo puts the whole first job back, Excire's keyword included.
+    let un = ops::undo(&state, &job.batch).await.unwrap();
+    assert!(un.failed.is_empty(), "{:?}", un.failed);
+    assert_eq!(un.ok.len(), 2);
+    assert_eq!(sidecar(&lib, "2024/Trip/IMG_0001.xmp").hsubject, Some(vec!["Places|Portugal|Lisbon".to_string()]));
+    assert_eq!(sidecar(&lib, "2024/Trip/IMG_0002.xmp").subject, Some(vec!["FromExcire".to_string(), "Lisbon".to_string()]));
+    // ... and the background undo of the second (as the API runs large ones).
+    let undo_job = ops::spawn_undo(&state, &job2.batch, "undo".into()).unwrap();
+    let u = wait_job(&state, &undo_job.id).await;
+    assert_eq!((u.done, u.failed), (1, 0));
+    assert_eq!(sidecar(&lib, "2023/Home/IMG_0003.xmp").hsubject.unwrap_or_default(), Vec::<String>::new());
+    assert!(ops::undo(&state, &job2.batch).await.is_err(), "nothing left to undo");
+
+    let mut now: Vec<String> = originals(&lib).into_values().collect();
+    let mut orig: Vec<String> = before.into_values().collect();
+    now.sort();
+    orig.sort();
+    assert_eq!(now, orig);
+}

@@ -4,13 +4,18 @@ import {
   emptyList,
   urls,
   type BatchResult,
+  type Collection,
+  type CollectionSpec,
+  type DateRange,
   type Folder,
   type FolderRow,
+  type JobStatus,
   type LabelColor,
   type Patch,
   type PhotoDetail,
   type PhotoList,
   type Status,
+  type Timeline,
   type ToneMode,
   type WbMode,
 } from './api';
@@ -39,6 +44,119 @@ export interface Filters {
   cam: string;
   lens: string;
   kw: string;
+  /** Capture date filter, 'YYYY-MM-DD' or '' (both ends inclusive). */
+  dateFrom: string;
+  dateTo: string;
+}
+
+export const DEFAULT_FILTERS: Filters = {
+  rmin: 0,
+  unrated: false,
+  lc: [],
+  pick: null,
+  kinds: [],
+  gps: null,
+  showRejected: false,
+  onlyRejected: false,
+  sort: 'taken',
+  desc: false,
+  cam: '',
+  lens: '',
+  kw: '',
+  dateFrom: '',
+  dateTo: '',
+};
+
+/** The filters that narrow what is shown (sort order and "show rejected" aside). */
+export function activeFilterCount(f: Filters): number {
+  return (
+    (f.rmin > 0 ? 1 : 0) + (f.unrated ? 1 : 0) + (f.lc.length ? 1 : 0) + (f.pick != null ? 1 : 0) + (f.kinds.length ? 1 : 0) +
+    (f.gps != null ? 1 : 0) + (f.cam ? 1 : 0) + (f.lens ? 1 : 0) + (f.kw ? 1 : 0) + (f.onlyRejected ? 1 : 0) + (f.dateFrom || f.dateTo ? 1 : 0)
+  );
+}
+
+/** Built-in collections (the Library section). */
+export const QUICK: { id: string; name: string; icon: string; spec: CollectionSpec }[] = [
+  { id: 'picks', name: 'Picks', icon: 'flag', spec: { folder: '', rec: true, filters: { pick: 1 } } },
+  { id: 'fivestar', name: 'Five stars', icon: 'star', spec: { folder: '', rec: true, filters: { rmin: 5 } } },
+  { id: 'nogps', name: 'Without location', icon: 'pin', spec: { folder: '', rec: true, filters: { gps: 0 } } },
+  { id: 'rejected', name: 'All rejected', icon: 'folder-x', spec: { folder: '', rec: true, filters: { onlyRejected: true, showRejected: true } } },
+];
+
+export interface ActiveCollection {
+  /** A saved collection's id, or a built-in one's name. */
+  id: number | string;
+  name: string;
+  spec: CollectionSpec;
+}
+
+const DAY = 86400;
+
+/** Seconds (camera clock) at midnight of a 'YYYY-MM-DD' date. */
+function dateSecs(s: string): number | null {
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 1000 : null;
+}
+
+/** A readable name for a capture-date range: a year, a month, a day or from-to. */
+export function rangeLabel(from: number, to: number): string {
+  const a = new Date(from * 1000);
+  const b = new Date(to * 1000);
+  const opts = { timeZone: 'UTC' } as const;
+  const y = a.getUTCFullYear(), m = a.getUTCMonth(), d = a.getUTCDate();
+  if (Date.UTC(y + 1, 0, 1) === b.getTime() && m === 0 && d === 1) return String(y);
+  if (Date.UTC(y, m + 1, 1) === b.getTime() && d === 1) return a.toLocaleDateString(undefined, { ...opts, month: 'long', year: 'numeric' });
+  if (to - from === DAY) return a.toLocaleDateString(undefined, { ...opts, weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+  const last = new Date((to - DAY) * 1000);
+  const f = (x: Date) => x.toLocaleDateString(undefined, { ...opts, day: 'numeric', month: 'short', year: 'numeric' });
+  return `${f(a)} – ${f(last)}`;
+}
+
+/** The list query for a view (pure, so collection counts use the same rules). */
+export function viewParams(v: {
+  root: number | undefined;
+  folderId: number | null;
+  recursive: boolean;
+  query: string;
+  filters: Filters;
+  dateRange: DateRange | null;
+  /** A collection's scope applies to its search; a plain search covers the whole library. */
+  scoped: boolean;
+}): Record<string, unknown> {
+  const f = v.filters;
+  const q = v.query.trim();
+  const wide = q.length > 0 && !v.scoped;
+  let from: number | undefined;
+  let to: number | undefined;
+  const d = v.dateRange;
+  if (d && !d.nodate) {
+    from = d.from;
+    to = d.to;
+  }
+  const df = f.dateFrom ? dateSecs(f.dateFrom) : null;
+  const dt = f.dateTo ? dateSecs(f.dateTo) : null;
+  if (df != null) from = from == null ? df : Math.max(from, df);
+  if (dt != null) to = to == null ? dt + DAY : Math.min(to, dt + DAY);
+  return {
+    folder: wide ? v.root : (v.folderId ?? v.root),
+    rec: wide ? 1 : v.recursive,
+    rej: f.onlyRejected ? 2 : f.showRejected ? 1 : undefined,
+    rmin: f.rmin > 0 ? f.rmin : undefined,
+    rmax: f.unrated ? 0 : undefined,
+    lc: f.lc.length ? f.lc.join(',') : undefined,
+    pick: f.pick ?? undefined,
+    kind: f.kinds.length ? f.kinds.join(',') : undefined,
+    gps: f.gps ?? undefined,
+    cam: f.cam || undefined,
+    lens: f.lens || undefined,
+    kw: f.kw || undefined,
+    nodate: d?.nodate ? 1 : undefined,
+    from,
+    to,
+    q: q || undefined,
+    sort: f.sort === 'taken' ? undefined : f.sort,
+    desc: f.desc,
+  };
 }
 
 export interface ViewerState {
@@ -157,23 +275,18 @@ class Store {
   recursive = $state(false);
   query = $state('');
   view = $state<'grid' | 'map'>('grid');
-  filters = $state<Filters>(
-    loadLocal('hf.filters', {
-      rmin: 0,
-      unrated: false,
-      lc: [],
-      pick: null,
-      kinds: [],
-      gps: null,
-      showRejected: false,
-      onlyRejected: false,
-      sort: 'taken',
-      desc: false,
-      cam: '',
-      lens: '',
-      kw: '',
-    } as Filters),
-  );
+  filters = $state<Filters>(loadLocal('hf.filters', { ...DEFAULT_FILTERS }));
+  /** A timeline period being browsed (whole library), or null. */
+  dateRange = $state<DateRange | null>(null);
+  /** The collection being shown (its filters replace the user's until it is left). */
+  collection = $state.raw<ActiveCollection | null>(null);
+  private savedFilters: Filters | null = null;
+  collections = $state.raw<Collection[]>([]);
+  /** Photos per collection (saved ids and built-in names). */
+  counts = $state<Record<string, number>>({});
+  timeline = $state.raw<Timeline | null>(null);
+  /** Folder path -> id. */
+  pathIds = new Map<string, number>();
 
   // Photo list (columnar, not deeply reactive; `rev` signals in-place changes)
   list = $state.raw<PhotoList>(emptyList());
@@ -199,7 +312,11 @@ class Store {
 
   settings = $state<Settings>(migrateSettings(loadLocal('hf.settings', DEFAULT_SETTINGS)));
   toasts = $state<Toast[]>([]);
-  dialog = $state<null | 'settings' | 'help' | 'journal' | 'location' | 'keywords'>(null);
+  dialog = $state<null | 'settings' | 'help' | 'journal' | 'location' | 'keywords' | 'integrity' | 'geotag'>(null);
+  /** Background changes, by id (running and recently finished). */
+  jobs = $state<Record<string, JobStatus>>({});
+  private jobsSeen = new Set<string>();
+  private jobsDone = new Set<string>();
   locationTargets = $state.raw<number[]>([]);
   mobile = $state(false);
   busy = $state(0);
@@ -221,7 +338,8 @@ class Store {
     saveLocal('hf.settings', this.settings);
     saveLocal('hf.viewer', this.viewer);
     saveLocal('hf.panels', this.panels);
-    saveLocal('hf.filters', this.filters);
+    // A collection's filters are its own; the user's come back when it is left.
+    saveLocal('hf.filters', this.savedFilters ?? this.filters);
   };
 
   // ------------------------------------------------------------ toasts
@@ -246,10 +364,24 @@ class Store {
     }
     await this.loadTree();
     this.connectEvents();
+    await this.loadCollections().catch(() => {});
+    this.loadTimeline();
     const hash = new URLSearchParams(location.hash.slice(1));
     const f = Number(hash.get('f'));
-    const start = this.folders.has(f) ? f : (this.lastFolder() ?? this.roots[0]?.id ?? null);
-    if (start != null) await this.openFolder(start, false);
+    const c = hash.get('c');
+    const d = hash.get('d');
+    const saved = c ? this.collections.find((x) => String(x.id) === c) : undefined;
+    const quick = c ? QUICK.find((x) => x.id === c) : undefined;
+    if (saved || quick) {
+      await this.applyCollection(saved ? { id: saved.id, name: saved.name, spec: saved.spec } : { id: quick!.id, name: quick!.name, spec: quick!.spec });
+    } else if (d) {
+      const m = d.match(/^(-?\d+)_(-?\d+)$/);
+      if (d === 'none') await this.openDate({ from: 0, to: 0, label: 'No date', nodate: true });
+      else if (m) await this.openDate({ from: +m[1], to: +m[2], label: rangeLabel(+m[1], +m[2]) });
+    } else {
+      const start = this.folders.has(f) ? f : (this.lastFolder() ?? this.roots[0]?.id ?? null);
+      if (start != null) await this.openFolder(start, false);
+    }
     const p = Number(hash.get('p'));
     if (p && this.index.has(p)) this.openLoupe(this.index.get(p)!);
     window.addEventListener('hashchange', this.onHash);
@@ -268,7 +400,9 @@ class Store {
 
   private writeHash() {
     const h = new URLSearchParams();
-    if (this.folderId != null) h.set('f', String(this.folderId));
+    if (this.collection) h.set('c', String(this.collection.id));
+    else if (this.dateRange) h.set('d', this.dateRange.nodate ? 'none' : `${this.dateRange.from}_${this.dateRange.to}`);
+    else if (this.folderId != null) h.set('f', String(this.folderId));
     if (this.loupe && this.list.id[this.current] != null) h.set('p', String(this.list.id[this.current]));
     const s = '#' + h.toString();
     if (location.hash !== s) history.replaceState(null, '', s);
@@ -290,6 +424,9 @@ class Store {
         this.status = { ...this.status, progress: p };
       } else if (e.type === 'tree') {
         this.loadTree();
+        this.scheduleTimeline();
+      } else if (e.type === 'collections') {
+        this.loadCollections().catch(() => {});
       } else if (e.type === 'folder') {
         if (this.affects(e.id)) this.scheduleReload();
         this.scheduleTree();
@@ -297,6 +434,9 @@ class Store {
         const ids: number[] = e.ids ?? [];
         if (ids.some((i) => this.index.has(i))) this.scheduleReload();
         if (this.detail && ids.includes(this.detail.id)) this.loadDetail();
+      } else if (e.type === 'job') {
+        const { type, ...j } = e;
+        this.onJob(j as JobStatus);
       }
     };
     es.onerror = () => {
@@ -304,14 +444,63 @@ class Store {
     };
   };
 
+  /** A background change moved on: progress in the header, a toast when it is done. */
+  onJob = (j: JobStatus) => {
+    // Updates can arrive late or twice (the event stream and the API response).
+    if (this.jobsDone.has(j.id)) return;
+    const prev = this.jobs[j.id];
+    if (prev && !j.finished && prev.done > j.done) return;
+    const seenRunning = this.jobsSeen.has(j.id);
+    this.jobs[j.id] = j;
+    if (!j.finished) {
+      this.jobsSeen.add(j.id);
+      return;
+    }
+    this.jobsDone.add(j.id);
+    if (!seenRunning) {
+      delete this.jobs[j.id];
+      return;
+    }
+    this.jobsSeen.delete(j.id);
+    const ok = j.done - j.failed;
+    if (j.failed) this.toast(`${j.label}: ${j.failed} of ${j.total} not saved: ${j.errors[0]?.[1] ?? ''}`, 'error', { label: 'Undo the rest', run: () => this.undo(j.batch) }, 12000);
+    else this.toast(`${j.label}: ${ok.toLocaleString()} photo${ok === 1 ? '' : 's'} updated`, 'ok', { label: 'Undo', run: () => this.undo(j.batch) }, 9000);
+    this.scheduleReload();
+    if (this.loupe || this.detail) this.loadDetail();
+    setTimeout(() => {
+      if (this.jobs[j.id]?.finished) delete this.jobs[j.id];
+    }, 4000);
+  };
+
+  /** Background changes still running. */
+  runningJobs = (): JobStatus[] => Object.values(this.jobs).filter((j) => !j.finished);
+
   private treeTimer: ReturnType<typeof setTimeout> | null = null;
   private scheduleTree() {
     if (this.treeTimer) clearTimeout(this.treeTimer);
-    this.treeTimer = setTimeout(() => this.loadTree(), 1500);
+    this.treeTimer = setTimeout(() => {
+      this.loadTree();
+      this.loadTimeline();
+      this.refreshCounts();
+    }, 1500);
   }
 
+  private timelineTimer: ReturnType<typeof setTimeout> | null = null;
+  private scheduleTimeline() {
+    if (this.timelineTimer) clearTimeout(this.timelineTimer);
+    this.timelineTimer = setTimeout(() => this.loadTimeline(), 1500);
+  }
+
+  loadTimeline = async () => {
+    try {
+      this.timeline = await api.timeline();
+    } catch {
+      /* keep the last one */
+    }
+  };
+
   private affects(folderId: number): boolean {
-    if (this.query) return true;
+    if (this.query || this.dateRange || this.collection) return true;
     if (this.folderId == null) return false;
     if (folderId === this.folderId) return true;
     if (!this.recursive) return false;
@@ -357,6 +546,9 @@ class Store {
       return t;
     };
     for (const r of roots) walk(r, '', 0);
+    const paths = new Map<string, number>();
+    for (const f of map.values()) paths.set(f.path, f.id);
+    this.pathIds = paths;
     this.folders = map;
     this.roots = roots;
     for (const r of roots) this.expanded.add(r.id);
@@ -375,7 +567,11 @@ class Store {
 
   // ------------------------------------------------------------ list
   openFolder = async (id: number, fromUser = true) => {
-    if (fromUser) this.query = '';
+    if (fromUser) {
+      this.query = '';
+      this.dateRange = null;
+      this.leaveCollection();
+    }
     this.folderId = id;
     try {
       localStorage.setItem('hf.folder', String(id));
@@ -394,27 +590,205 @@ class Store {
     this.writeHash();
   };
 
-  params = (): Record<string, unknown> => {
-    const f = this.filters;
-    const searching = this.query.trim().length > 0;
+  /** Every folder of the library at once (no search, period or collection).
+   * `prepare` runs before the list loads, e.g. to set a filter. */
+  openLibrary = async (prepare?: () => void) => {
     const root = this.roots[0]?.id;
+    if (root == null) return;
+    this.leaveCollection();
+    this.query = '';
+    this.dateRange = null;
+    prepare?.();
+    this.folderId = root;
+    this.recursive = true;
+    this.loupe = false;
+    this.selected.clear();
+    try {
+      localStorage.setItem('hf.folder', String(root));
+    } catch {
+      /* ignore */
+    }
+    await this.reload();
+    this.cursor = 0;
+    this.writeHash();
+  };
+
+  /** The photos with a keyword (or one below it), across the library. */
+  showKeyword = (kw: string) => {
+    if (this.view === 'map') this.view = 'grid';
+    return this.openLibrary(() => {
+      this.filters.kw = kw;
+      this.persist();
+    });
+  };
+
+  params = (): Record<string, unknown> =>
+    viewParams({
+      root: this.roots[0]?.id,
+      folderId: this.folderId,
+      recursive: this.recursive,
+      query: this.query,
+      filters: this.filters,
+      dateRange: this.dateRange,
+      scoped: this.collection != null,
+    });
+
+  // ------------------------------------------------------------ timeline & collections
+  /** Browse one period of the timeline across every folder. */
+  openDate = async (range: DateRange) => {
+    this.leaveCollection();
+    this.query = '';
+    this.dateRange = range;
+    this.folderId = this.roots[0]?.id ?? null;
+    this.recursive = true;
+    this.loupe = false;
+    this.selected.clear();
+    await this.reload();
+    this.cursor = 0;
+    this.writeHash();
+  };
+
+  private leaveCollection() {
+    if (!this.collection) return;
+    if (this.savedFilters) this.filters = this.savedFilters;
+    this.savedFilters = null;
+    this.collection = null;
+    this.persist();
+  }
+
+  /** Show a collection: its search, scope, dates and filters (the user's own filters
+   * come back when it is left). */
+  applyCollection = async (c: ActiveCollection) => {
+    if (!this.collection) this.savedFilters = $state.snapshot(this.filters) as Filters;
+    const sp = c.spec;
+    const base = this.savedFilters ?? DEFAULT_FILTERS;
+    this.collection = c;
+    this.filters = { ...DEFAULT_FILTERS, sort: base.sort, desc: base.desc, ...(sp.filters as Partial<Filters>) };
+    this.query = sp.q ?? '';
+    this.dateRange = sp.date ?? null;
+    const root = this.roots[0]?.id ?? null;
+    const fid = sp.folder ? this.pathIds.get(sp.folder) : root;
+    if (sp.folder && fid == null) this.toast(`The folder “${sp.folder}” is no longer in the library: showing the whole library`, 'info');
+    this.folderId = fid ?? root;
+    this.recursive = sp.rec ?? true;
+    this.loupe = false;
+    this.selected.clear();
+    await this.reload();
+    this.cursor = 0;
+    this.writeHash();
+  };
+
+  /** What the current view would save as. */
+  currentSpec = (): CollectionSpec => {
+    const wide = this.query.trim() !== '' && !this.collection;
     return {
-      folder: searching ? root : (this.folderId ?? root),
-      rec: searching ? 1 : this.recursive,
-      rej: f.onlyRejected ? 2 : f.showRejected ? 1 : undefined,
-      rmin: f.rmin > 0 ? f.rmin : undefined,
-      rmax: f.unrated ? 0 : undefined,
-      lc: f.lc.length ? f.lc.join(',') : undefined,
-      pick: f.pick ?? undefined,
-      kind: f.kinds.length ? f.kinds.join(',') : undefined,
-      gps: f.gps ?? undefined,
-      cam: f.cam || undefined,
-      lens: f.lens || undefined,
-      kw: f.kw || undefined,
-      q: searching ? this.query.trim() : undefined,
-      sort: f.sort === 'taken' ? undefined : f.sort,
-      desc: f.desc,
+      q: this.query.trim() || undefined,
+      folder: wide ? '' : (this.folders.get(this.folderId ?? -1)?.path ?? ''),
+      rec: wide ? true : this.recursive,
+      filters: $state.snapshot(this.filters) as unknown as Record<string, unknown>,
+      date: this.dateRange ? ($state.snapshot(this.dateRange) as DateRange) : null,
     };
+  };
+
+  /** Whether the saved collection on screen no longer matches its spec. */
+  collectionModified = (): boolean => {
+    const c = this.collection;
+    if (!c || typeof c.id !== 'number') return false;
+    const norm = (sp: CollectionSpec) =>
+      JSON.stringify({
+        q: sp.q ?? '',
+        folder: sp.folder ?? '',
+        rec: sp.rec ?? true,
+        filters: { ...DEFAULT_FILTERS, ...(sp.filters as Partial<Filters>) },
+        date: sp.date && !sp.date.nodate ? [sp.date.from, sp.date.to] : sp.date?.nodate ? 'none' : null,
+      });
+    void this.rev;
+    return norm(c.spec) !== norm(this.currentSpec());
+  };
+
+  loadCollections = async () => {
+    this.collections = await api.collections();
+    if (this.collection && typeof this.collection.id === 'number') {
+      const now = this.collections.find((x) => x.id === this.collection!.id);
+      if (now) this.collection = { id: now.id, name: now.name, spec: now.spec };
+    }
+    this.refreshCounts(true);
+  };
+
+  /** Save the current view as a new collection, or over `id`. */
+  saveCollection = async (name: string, id?: number) => {
+    try {
+      const c = await api.saveCollection({ id, name, spec: this.currentSpec() });
+      if (!this.collection) this.savedFilters = $state.snapshot(this.filters) as Filters;
+      this.collection = { id: c.id, name: c.name, spec: c.spec };
+      this.writeHash();
+      await this.loadCollections();
+      this.toast(id ? `Updated “${c.name}”` : `Saved “${c.name}”`, 'ok');
+    } catch (e) {
+      this.toast(`Not saved: ${(e as Error).message}`, 'error');
+    }
+  };
+
+  renameCollection = async (c: Collection, name: string) => {
+    try {
+      await api.saveCollection({ id: c.id, name, spec: c.spec });
+      await this.loadCollections();
+    } catch (e) {
+      this.toast(`Not renamed: ${(e as Error).message}`, 'error');
+    }
+  };
+
+  deleteCollection = async (c: Collection) => {
+    try {
+      await api.deleteCollection(c.id);
+      if (this.collection?.id === c.id) {
+        this.leaveCollection();
+        await this.reload();
+        this.writeHash();
+      }
+      await this.loadCollections();
+      this.toast(`Deleted “${c.name}”`, 'ok');
+    } catch (e) {
+      this.toast(`Not deleted: ${(e as Error).message}`, 'error');
+    }
+  };
+
+  /** The list query of a collection, as `params()` would build it while it is shown. */
+  specParams = (sp: CollectionSpec): Record<string, unknown> => {
+    const root = this.roots[0]?.id;
+    const fid = sp.folder ? (this.pathIds.get(sp.folder) ?? root) : root;
+    const base = this.savedFilters ?? this.filters;
+    return viewParams({
+      root,
+      folderId: fid ?? null,
+      recursive: sp.rec ?? true,
+      query: sp.q ?? '',
+      filters: { ...DEFAULT_FILTERS, sort: base.sort, desc: base.desc, ...(sp.filters as Partial<Filters>) },
+      dateRange: sp.date ?? null,
+      scoped: true,
+    });
+  };
+
+  private countsAt = 0;
+  private countsAbort: AbortController | null = null;
+  /** Photo counts of every collection (at most every 20 s unless forced). */
+  refreshCounts = async (force = false) => {
+    if (!this.roots.length || (!force && Date.now() - this.countsAt < 20_000)) return;
+    this.countsAt = Date.now();
+    this.countsAbort?.abort();
+    const ctl = new AbortController();
+    this.countsAbort = ctl;
+    const all: [string, CollectionSpec][] = [...QUICK.map((q) => [q.id, q.spec] as [string, CollectionSpec]), ...this.collections.map((c) => [String(c.id), c.spec] as [string, CollectionSpec])];
+    await Promise.all(
+      all.map(async ([id, sp]) => {
+        try {
+          const { count } = await api.count(this.specParams(sp), ctl.signal);
+          if (!ctl.signal.aborted) this.counts[id] = count;
+        } catch {
+          /* aborted or failed */
+        }
+      }),
+    );
   };
 
   reload = async (keepPosition = false) => {
@@ -456,6 +830,7 @@ class Store {
     this.query = q;
     this.loupe = false;
     this.reload();
+    this.writeHash();
   };
 
   // ------------------------------------------------------------ selection
@@ -723,6 +1098,12 @@ class Store {
     this.busy++;
     try {
       const r = await api.undo(batch);
+      if (r.job) {
+        // A large change undoes in the background; its progress shows in the header.
+        this.onJob(r.job);
+        this.toast('Undoing in the background…', 'info', undefined, 3000);
+        return;
+      }
       if (r.failed.length) this.toast(`Undo incomplete: ${r.failed[0][1]}`, 'error', undefined, 8000);
       else this.toast('Undone', 'ok');
       await this.reload(true);
