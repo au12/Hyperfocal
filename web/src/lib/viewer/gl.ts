@@ -3,6 +3,11 @@
 // view tool is instant and never touches the server. Screen sharpening adds two cheap
 // passes (the view, then a horizontal Gaussian) at canvas resolution; the main pass does
 // the vertical half and the unsharp mask.
+//
+// RAW detail: zoomed in, full-resolution tiles (see detail.ts) replace the half-size
+// image where they are loaded. They live in an array texture (one tile per layer, with a
+// pixel of the neighbouring tiles around it so filtering is seamless) and a page table
+// says which layer holds which tile.
 
 const VS = `#version 300 es
 in vec2 p;
@@ -38,15 +43,39 @@ vec2 mapPx(vec2 frag) {
   return img / u_disp;
 }`;
 
+// The image at a point: a loaded full-resolution tile there, else the base image.
+const IMG = `
+uniform sampler2D u_img;
+uniform highp sampler2DArray u_atlas;
+uniform highp usampler2D u_page;  // per tile: atlas layer + 1, or 0
+uniform bool u_detail;
+uniform vec2 u_full;       // full-resolution size (sensor orientation), px
+uniform float u_tile;      // tile size, px
+uniform float u_apron;     // neighbouring pixels around each tile in its layer
+uniform float u_layer;     // layer size, px
+
+vec3 img(vec2 st, float bias) {
+  if (u_detail) {
+    vec2 px = clamp(st, 0.0, 1.0) * u_full;
+    ivec2 t = min(ivec2(px / u_tile), textureSize(u_page, 0) - 1);
+    uint l = texelFetch(u_page, t, 0).r;
+    if (l > 0u) {
+      vec2 local = px - vec2(t) * u_tile + u_apron;
+      return texture(u_atlas, vec3(local / u_layer, float(l - 1u))).rgb;
+    }
+  }
+  return texture(u_img, st, bias).rgb;
+}`;
+
 // Pass 1 of screen sharpening: the plain view, edges extended past the image so the blur
 // does not pull the background in.
 const FS_VIEW = `#version 300 es
 precision highp float;
-uniform sampler2D u_img;
+${IMG}
 ${MAP}
 out vec4 outColor;
 void main() {
-  outColor = vec4(texture(u_img, orient(clamp(mapPx(gl_FragCoord.xy), 0.0, 1.0)), LOD_BIAS).rgb, 1.0);
+  outColor = vec4(img(orient(clamp(mapPx(gl_FragCoord.xy), 0.0, 1.0)), LOD_BIAS), 1.0);
 }`;
 
 // Pass 2: horizontal Gaussian of pass 1.
@@ -92,7 +121,7 @@ void main() {
 
 const FS = `#version 300 es
 precision highp float;
-uniform sampler2D u_img;
+${IMG}
 uniform sampler2D u_mask;
 uniform sampler2D u_blurH;  // pass 2 output (horizontal blur of the view)
 uniform bool u_hasImg;
@@ -101,7 +130,7 @@ uniform bool u_maskOnly;    // RAW view: clipping comes from the RAW mask only
 uniform float u_overLod;    // mask pyramid levels: clipping one level coarser than a device
 uniform float u_underLod;   // px (bold, like FastRawViewer); underexposure at the footprint
 ${MAP}
-uniform vec2 u_texel;       // 1 / texture size
+uniform vec2 u_texel;       // 1 / texture size (of the full-resolution frame with detail on)
 uniform float u_sharpen;    // unsharp amount (0 = off)
 uniform float u_sigma;      // unsharp radius in device px
 uniform bool u_invert;
@@ -132,7 +161,7 @@ void main() {
   vec2 d = mapPx(gl_FragCoord.xy);
   if (!u_hasImg || d.x < 0.0 || d.y < 0.0 || d.x > 1.0 || d.y > 1.0) { outColor = vec4(u_bg, 1.0); return; }
   vec2 st = orient(d);
-  vec3 c = texture(u_img, st, LOD_BIAS).rgb;
+  vec3 c = img(st, LOD_BIAS);
 
   if (u_sharpen > 0.0) {
     // Vertical half of the Gaussian over pass 2, then the unsharp mask (display values).
@@ -155,9 +184,9 @@ void main() {
   if (u_peak > 0) {
     vec2 tx = vec2(u_texel.x, 0.0);
     vec2 ty = vec2(0.0, u_texel.y);
-    float tl = luma(texture(u_img, st - tx - ty).rgb), t = luma(texture(u_img, st - ty).rgb), tr = luma(texture(u_img, st + tx - ty).rgb);
-    float l = luma(texture(u_img, st - tx).rgb), m = luma(texture(u_img, st).rgb), r = luma(texture(u_img, st + tx).rgb);
-    float bl = luma(texture(u_img, st - tx + ty).rgb), bo = luma(texture(u_img, st + ty).rgb), br = luma(texture(u_img, st + tx + ty).rgb);
+    float tl = luma(img(st - tx - ty, 0.0)), t = luma(img(st - ty, 0.0)), tr = luma(img(st + tx - ty, 0.0));
+    float l = luma(img(st - tx, 0.0)), m = luma(img(st, 0.0)), r = luma(img(st + tx, 0.0));
+    float bl = luma(img(st - tx + ty, 0.0)), bo = luma(img(st + ty, 0.0)), br = luma(img(st + tx + ty, 0.0));
     float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
     float gy = (bl + 2.0 * bo + br) - (tl + 2.0 * t + tr);
     float g = sqrt(gx * gx + gy * gy);
@@ -175,7 +204,7 @@ void main() {
       if (u_over && ob != 0) c = overColor(ob);
       else if (u_under && ub != 0) c = underColor(ub);
     } else if (!u_maskOnly) {
-      vec3 src = texture(u_img, st, LOD_BIAS).rgb;
+      vec3 src = img(st, LOD_BIAS);
       vec3 cl = step(vec3(0.996), src);
       vec3 cu = vec3(1.0) - step(vec3(0.008), src);
       int ob = int(cl.r) | (int(cl.g) << 1) | (int(cl.b) << 2);
@@ -242,12 +271,23 @@ export class GLView {
   hasImg = false;
   hasMask = false;
   maxTex: number;
+  maxLayers: number;
+  /** Full-resolution tiles: the array texture, its page table and geometry. */
+  private atlas: WebGLTexture | null = null;
+  private page: WebGLTexture;
+  private pageData = new Uint16Array(1);
+  private pageW = 1;
+  private pageH = 1;
+  private pageDirty = true;
+  private detailOn = false;
+  detail: { full: [number, number]; tile: number; apron: number; layers: number } | null = null;
 
   constructor(public canvas: HTMLCanvasElement) {
     const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, premultipliedAlpha: false, preserveDrawingBuffer: false });
     if (!gl) throw new Error('WebGL2 is not available');
     this.gl = gl;
     this.maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    this.maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS);
     const sh = (type: number, src: string) => {
       const s = gl.createShader(type)!;
       gl.shaderSource(s, src);
@@ -268,11 +308,12 @@ export class GLView {
       return [p, u];
     };
     const mapU = ['u_canvas', 'u_disp', 'u_center', 'u_scale', 'u_orient'];
+    const imgU = ['u_img', 'u_atlas', 'u_page', 'u_detail', 'u_full', 'u_tile', 'u_apron', 'u_layer'];
     [this.prog, this.u] = program(FS, [
-      'u_img', 'u_mask', 'u_blurH', 'u_hasImg', 'u_hasMask', 'u_maskOnly', 'u_overLod', 'u_underLod', ...mapU, 'u_texel', 'u_sharpen', 'u_sigma', 'u_invert',
+      ...imgU, 'u_mask', 'u_blurH', 'u_hasImg', 'u_hasMask', 'u_maskOnly', 'u_overLod', 'u_underLod', ...mapU, 'u_texel', 'u_sharpen', 'u_sigma', 'u_invert',
       'u_peak', 'u_peakColor', 'u_over', 'u_under', 'u_overSolid', 'u_underSolid', 'u_underColor', 'u_bg',
     ]);
-    [this.progView, this.uView] = program(FS_VIEW, ['u_img', ...mapU]);
+    [this.progView, this.uView] = program(FS_VIEW, [...imgU, ...mapU]);
     [this.progBlur, this.uBlur] = program(FS_BLUR, ['u_src', 'u_sigma']);
     [this.progReduce, this.uReduce] = program(FS_REDUCE, ['u_src']);
 
@@ -283,13 +324,25 @@ export class GLView {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     this.tex = gl.createTexture()!;
     this.mask = gl.createTexture()!;
+    this.page = gl.createTexture()!;
     this.fbo = gl.createFramebuffer()!;
     gl.useProgram(this.prog);
     gl.uniform1i(this.u.u_img, 0);
     gl.uniform1i(this.u.u_mask, 1);
     gl.uniform1i(this.u.u_blurH, 2);
+    gl.uniform1i(this.u.u_atlas, 3);
+    gl.uniform1i(this.u.u_page, 4);
     gl.useProgram(this.progView);
     gl.uniform1i(this.uView.u_img, 0);
+    gl.uniform1i(this.uView.u_atlas, 3);
+    gl.uniform1i(this.uView.u_page, 4);
+    // Unit 3 always holds an array texture and unit 4 an integer one, so the programs
+    // validate before any tile exists.
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyAtlas());
+    gl.activeTexture(gl.TEXTURE4);
+    this.uploadPage();
+    gl.activeTexture(gl.TEXTURE0);
     gl.useProgram(this.progBlur);
     gl.uniform1i(this.uBlur.u_src, 2);
     gl.useProgram(this.progReduce);
@@ -363,6 +416,108 @@ export class GLView {
     this.hasMask = true;
   }
 
+  private placeholder: WebGLTexture | null = null;
+  private emptyAtlas(): WebGLTexture {
+    const gl = this.gl;
+    if (!this.placeholder) {
+      this.placeholder = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.placeholder);
+      gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, 1, 1, 1);
+    }
+    return this.placeholder;
+  }
+
+  private uploadPage() {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.page);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16UI, this.pageW, this.pageH, 0, gl.RED_INTEGER, gl.UNSIGNED_SHORT, this.pageData);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.pageDirty = false;
+  }
+
+  /** Sets up full-resolution tiles: a frame of `full` px (sensor orientation) cut into
+   * `tile`-px tiles, each stored with `apron` px of its neighbours, `layers` at most at
+   * once. Clears every tile. */
+  detailConfigure(full: [number, number], tile: number, apron: number, layers: number) {
+    const gl = this.gl;
+    layers = Math.max(1, Math.min(layers, this.maxLayers));
+    const size = tile + 2 * apron;
+    const d = this.detail;
+    if (!this.atlas || !d || d.layers !== layers || d.tile !== tile || d.apron !== apron) {
+      if (this.atlas) gl.deleteTexture(this.atlas);
+      this.atlas = gl.createTexture()!;
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.atlas);
+      gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, size, size, layers);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+    this.detail = { full, tile, apron, layers };
+    this.pageW = Math.max(1, Math.ceil(full[0] / tile));
+    this.pageH = Math.max(1, Math.ceil(full[1] / tile));
+    this.pageData = new Uint16Array(this.pageW * this.pageH);
+    this.pageDirty = true;
+  }
+
+  /** Drops the tiles (keeps the storage). */
+  detailClear() {
+    this.pageData.fill(0);
+    this.pageDirty = true;
+  }
+
+  /** Releases the tile storage. */
+  detailRelease() {
+    if (this.atlas) this.gl.deleteTexture(this.atlas);
+    this.atlas = null;
+    this.detail = null;
+    this.detailOn = false;
+    this.pageW = this.pageH = 1;
+    this.pageData = new Uint16Array(1);
+    this.pageDirty = true;
+  }
+
+  /** Whether loaded tiles are drawn. */
+  detailEnable(on: boolean) {
+    this.detailOn = on && !!this.atlas;
+  }
+
+  /** Shows (layer >= 0) or hides (-1) tile (tx, ty). */
+  detailSetPage(tx: number, ty: number, layer: number) {
+    if (tx < 0 || ty < 0 || tx >= this.pageW || ty >= this.pageH) return;
+    this.pageData[ty * this.pageW + tx] = layer + 1;
+    this.pageDirty = true;
+  }
+
+  /** Copies a decoded tile image (apron included) into a layer. */
+  detailUpload(layer: number, src: TexImageSource & { width: number; height: number }) {
+    const gl = this.gl;
+    if (!this.atlas) return;
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.atlas);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL);
+    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, src.width, src.height, 1, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
+  /** Points the shared framebuffer at a layer, for rendering a tile on the GPU. */
+  detailTarget(layer: number): WebGLFramebuffer | null {
+    const gl = this.gl;
+    if (!this.atlas) return null;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.atlas, 0, layer);
+    return this.fbo;
+  }
+
   resize(): boolean {
     const dpr = window.devicePixelRatio || 1;
     const w = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
@@ -399,6 +554,19 @@ export class GLView {
     return this.targets;
   }
 
+  private setDetail(u: Uniforms) {
+    const gl = this.gl;
+    const d = this.detail;
+    const on = this.detailOn && !!d;
+    gl.uniform1i(u.u_detail, on ? 1 : 0);
+    if (on && d) {
+      gl.uniform2f(u.u_full, d.full[0], d.full[1]);
+      gl.uniform1f(u.u_tile, d.tile);
+      gl.uniform1f(u.u_apron, d.apron);
+      gl.uniform1f(u.u_layer, d.tile + 2 * d.apron);
+    }
+  }
+
   private setMap(u: Uniforms, v: ViewParams) {
     const gl = this.gl;
     gl.uniform2f(u.u_canvas, this.canvas.width, this.canvas.height);
@@ -412,6 +580,11 @@ export class GLView {
     const gl = this.gl;
     const u = this.u;
     const { width: cw, height: ch } = this.canvas;
+    gl.activeTexture(gl.TEXTURE4);
+    if (this.pageDirty) this.uploadPage();
+    else gl.bindTexture(gl.TEXTURE_2D, this.page);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.atlas ?? this.emptyAtlas());
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.mask);
     gl.activeTexture(gl.TEXTURE0);
@@ -426,6 +599,7 @@ export class GLView {
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.view, 0);
       gl.useProgram(this.progView);
       this.setMap(this.uView, v);
+      this.setDetail(this.uView);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       // Pass 2: horizontal blur of pass 1.
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.blurH, 0);
@@ -441,6 +615,7 @@ export class GLView {
     gl.viewport(0, 0, cw, ch);
     gl.useProgram(this.prog);
     this.setMap(u, v);
+    this.setDetail(u);
     gl.uniform1i(u.u_hasImg, this.hasImg ? 1 : 0);
     gl.uniform1i(u.u_hasMask, this.hasMask ? 1 : 0);
     gl.uniform1i(u.u_maskOnly, v.maskOnly ? 1 : 0);
@@ -458,7 +633,8 @@ export class GLView {
     const bold = Math.max(Math.ceil(lvl - 0.05), Math.ceil(Math.log2(1.25 * dpr * perPx)));
     gl.uniform1f(u.u_overLod, perPx > 0.75 ? Math.min(top, Math.max(0, bold)) : 0);
     gl.uniform1f(u.u_underLod, Math.min(top, Math.max(0, Math.floor(lvl))));
-    gl.uniform2f(u.u_texel, 1 / Math.max(1, this.texW), 1 / Math.max(1, this.texH));
+    if (this.detailOn && this.detail) gl.uniform2f(u.u_texel, 1 / this.detail.full[0], 1 / this.detail.full[1]);
+    else gl.uniform2f(u.u_texel, 1 / Math.max(1, this.texW), 1 / Math.max(1, this.texH));
     gl.uniform1f(u.u_sharpen, sharpen ? v.sharpen : 0);
     gl.uniform1f(u.u_sigma, sigma);
     gl.uniform1i(u.u_invert, v.invert ? 1 : 0);
@@ -477,6 +653,9 @@ export class GLView {
     const gl = this.gl;
     gl.deleteTexture(this.tex);
     gl.deleteTexture(this.mask);
+    gl.deleteTexture(this.page);
+    if (this.atlas) gl.deleteTexture(this.atlas);
+    if (this.placeholder) gl.deleteTexture(this.placeholder);
     if (this.targets) {
       gl.deleteTexture(this.targets.view);
       gl.deleteTexture(this.targets.blurH);

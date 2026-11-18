@@ -4,6 +4,7 @@
   import { api, urls, type RawInfo } from '../lib/api';
   import { GLView, hexToRgb } from '../lib/viewer/gl';
   import { ImageCache, type Decoded } from '../lib/viewer/loader';
+  import { DetailLayer, type DetailPath } from '../lib/viewer/detail';
   import { viewerCtl, toggleFullscreen } from '../lib/ctl';
   import Icon from './Icon.svelte';
   import Histogram from './Histogram.svelte';
@@ -12,6 +13,10 @@
   let stage: HTMLDivElement | undefined = $state();
   let canvas: HTMLCanvasElement | undefined = $state();
   let gl: GLView | null = null;
+  let detail: DetailLayer | null = null;
+  /** Full-resolution tiles are being drawn, and where they are demosaiced (zoom badge). */
+  let detailOn = $state(false);
+  let detailPath = $state<DetailPath | null>(null);
   let glError = $state('');
   const cache = new ImageCache(16);
 
@@ -179,13 +184,18 @@
   }
 
   async function loadRawInfo() {
-    if (!store.panels.histogram || id == null) {
+    if (id == null) {
       rawInfo = null;
       return;
     }
     if (!useRaw) {
       rawInfo = null;
-      if (currentBmp) computeJpegHist(currentBmp);
+      if (currentBmp && store.panels.histogram) computeJpegHist(currentBmp);
+      return;
+    }
+    // Needed for the histogram and for the full-resolution view.
+    if (!store.panels.histogram && store.settings.rawDetail === 'off') {
+      rawInfo = null;
       return;
     }
     const pid = id;
@@ -246,6 +256,10 @@
       cy = dispH / 2;
     } else clampCenter();
     const s = store.settings;
+    if (detail) {
+      detailOn = detail.update({ orientation: o, dispW, dispH, scale: curScale, cx, cy }, cw, ch);
+      detailPath = detail.path;
+    }
     gl.draw({
       orientation: o,
       dispW,
@@ -335,9 +349,60 @@
       ro.disconnect();
       cancelAnimationFrame(raf);
       cache.clear();
+      detail?.destroy();
+      detail = null;
       gl?.destroy();
       gl = null;
     };
+  });
+
+  // Full-resolution RAW tiles: the demosaicing path follows the setting.
+  $effect(() => {
+    const want = store.settings.rawDetail;
+    untrack(() => {
+      if (!gl) return;
+      const coarse = matchMedia('(pointer: coarse)').matches;
+      const path: DetailPath | null =
+        want === 'off' ? null : want === 'server' ? 'server' : want === 'gpu' || !coarse ? (DetailLayer.gpuSupported(gl.gl) ? 'gpu' : 'server') : 'server';
+      if (detail && path === detail.path) return;
+      detail?.destroy();
+      detail = path ? new DetailLayer(gl, path, requestDraw) : null;
+      detailOn = false;
+      detailPath = detail?.path ?? null;
+      syncDetail();
+      requestDraw();
+    });
+  });
+
+  function syncDetail() {
+    if (!detail) return;
+    const info = rawInfo;
+    if (!useRaw || id == null || !info?.full || !info.tile) {
+      detail.setSpec(null);
+      return;
+    }
+    detail.setSpec({
+      id,
+      v,
+      mode: store.viewer.tone,
+      ev,
+      wb: store.viewer.wb,
+      full: info.full,
+      tile: info.tile,
+      apron: info.apron ?? 0,
+      version: store.status?.version ?? '',
+    });
+  }
+
+  $effect(() => {
+    void rawInfo;
+    void useRaw;
+    void store.viewer.tone;
+    void ev;
+    untrack(() => {
+      syncDetail();
+      requestDraw();
+    });
   });
 
   // Reload when the photo, the source or any server-side render parameter changes.
@@ -386,6 +451,7 @@
 
   $effect(() => {
     void store.panels.histogram;
+    void store.settings.rawDetail;
     void useRaw;
     void id;
     void store.viewer.wb;
@@ -523,7 +589,9 @@
   const peakLabel = ['', 'Peaking: edges', 'Peaking: details', 'Peaking: both'];
   const wbLabel: Record<string, string> = { asshot: '', daylight: 'WB daylight', auto: 'WB auto' };
   const exif = $derived(store.detail && store.detail.id === id ? store.detail : null);
-  const halfRes = $derived(shownKind === 'raw' && !fit && curScale > 0.55);
+  const halfRes = $derived(shownKind === 'raw' && !fit && curScale > 0.55 && !detailOn);
+  /** Whether zooming in further brings the full-resolution RAW view. */
+  const fullResAhead = $derived(!!detailPath && !!rawInfo?.full);
 </script>
 
 <div class="loupe" class:chrome-off={!chrome}>
@@ -602,7 +670,7 @@
 
       <div class="chips">
         <span class="chip src" class:raw={shownKind === 'raw'}>{shownKind === 'raw' ? 'RAW' : fileLabel}{#if shownKind === 'thumb'} · loading{/if}</span>
-        {#if halfRes}<span class="chip" title="RAW view is rendered at half resolution; switch to JPEG (J) for full-resolution focus checks">RAW ½ res</span>{/if}
+        {#if halfRes}<span class="chip" title={fullResAhead ? 'RAW view at half resolution: zoom in to 75% or more for the full sensor resolution' : 'RAW view is rendered at half resolution; switch to JPEG (J) for full-resolution focus checks'}>RAW ½ res</span>{/if}
         {#if toneLabel[store.viewer.tone] && useRaw}<span class="chip">{toneLabel[store.viewer.tone]}</span>{/if}
         {#if wbLabel[store.viewer.wb] && useRaw}<span class="chip">{wbLabel[store.viewer.wb]}</span>{/if}
         {#if store.viewer.sharpen}<span class="chip">Sharpen {store.viewer.sharpen}</span>{/if}
@@ -610,7 +678,7 @@
         {#if store.viewer.peaking}<span class="chip">{peakLabel[store.viewer.peaking]}</span>{/if}
         {#if store.viewer.over}<span class="chip">OE{#if !useRaw} (JPEG){/if}</span>{/if}
         {#if store.viewer.under}<span class="chip">UE{#if !useRaw} (JPEG){/if}</span>{/if}
-        {#if !fit}<span class="chip tnum">{zoomPct}%</span>{/if}
+        {#if !fit}<span class="chip tnum" title={detailOn ? 'Full sensor resolution, demosaiced ' + (detailPath === 'gpu' ? 'on this device' : 'on the server') : ''}>{zoomPct}%{#if detailOn}{' · full res'}{/if}</span>{/if}
         {#if loadError}<span class="chip err" title={loadError}>{shownKind === 'raw' ? 'RAW' : 'Image'} unavailable</span>{/if}
       </div>
       {#if inReject}<div class="rejected-banner">In {store.status?.reject_dir ?? '_Rejected'}</div>{/if}

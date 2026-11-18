@@ -95,6 +95,15 @@
           {#if s.underDisplay === 'solid'}<input type="color" value={s.underColor} onchange={(e) => set('underColor', (e.target as HTMLInputElement).value)} />{/if}
         </span>
       </div>
+      <div class="opt">
+        <span>Full-resolution RAW when zoomed in</span>
+        <div class="seg">
+          {#each [['auto', 'Auto'], ['gpu', 'This device'], ['server', 'Server'], ['off', 'Off']] as [k, label]}
+            <button class:on={s.rawDetail === k} onclick={() => set('rawDetail', k as typeof s.rawDetail)}>{label}</button>
+          {/each}
+        </div>
+      </div>
+      <p class="note dim">Zoomed in to 75% or more, the RAW view shows the full sensor resolution, demosaiced (RCD) tile by tile: on this device's graphics chip (more data over the network, instant tone changes) or on the server (smaller JPEG tiles). Auto uses the graphics chip on computers and the server on phones and tablets.</p>
       <p class="note dim">Per channel, as in FastRawViewer. Overexposed: cyan = red clipped, magenta = green, yellow = blue, black = all channels. Underexposed: red, green or blue for that channel, mixed when several are (magenta = red and blue), white = all. In RAW view both are measured on the raw data, before white balance: clipped within 0.05 EV of the sensor's saturation, underexposed 7.7 EV below it. Sharpening levels 1 and 2 use a 1 and 2 pixel radius.</p>
 
       <h3>Library</h3>

@@ -83,6 +83,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/photo/{id}/raw", get(raw_render))
         .route("/photo/{id}/rawmask", get(raw_mask))
         .route("/photo/{id}/rawinfo", get(raw_info))
+        .route("/photo/{id}/rawtile", get(raw_tile))
+        .route("/photo/{id}/cfatile", get(cfa_tile))
+        .route("/lut", get(view_lut))
         .route("/meta", post(write_meta))
         .route("/reject", post(reject))
         .route("/restore", post(restore))
@@ -892,6 +895,9 @@ struct ImgQuery {
     ev: Option<f32>,
     wb: Option<WbMode>,
     prio: Option<String>,
+    /// Full-resolution tile column and row.
+    tx: Option<usize>,
+    ty: Option<usize>,
 }
 
 async fn thumb(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
@@ -936,6 +942,40 @@ async fn raw_render(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQu
     Ok(image_response(bytes.as_ref().clone(), "image/jpeg", q.v.is_some()))
 }
 
+/// A full-resolution (1:1) tile of a RAW file's visible area, demosaiced on the server,
+/// in the colours and tone of the RAW view.
+async fn raw_tile(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
+    let loc = load(&state, id).await?;
+    if Kind::from_i32(loc.rec.kind) != Kind::Raw {
+        return Err(bad("not a RAW file"));
+    }
+    let (Some(tx), Some(ty)) = (q.tx, q.ty) else { return Err(bad("tx and ty are required")) };
+    let bytes = state
+        .images
+        .raw_tile(&state, &loc, q.mode.unwrap_or_default(), q.ev.unwrap_or(0.0).clamp(-6.0, 6.0), q.wb.unwrap_or_default(), tx, ty)
+        .await
+        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
+    Ok(image_response(bytes.as_ref().clone(), "image/jpeg", q.v.is_some()))
+}
+
+/// A tile's demosaic input for the viewer's GPU path (see `images::raw::cfa_tile`).
+async fn cfa_tile(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
+    let loc = load(&state, id).await?;
+    if Kind::from_i32(loc.rec.kind) != Kind::Raw {
+        return Err(bad("not a RAW file"));
+    }
+    let (Some(tx), Some(ty)) = (q.tx, q.ty) else { return Err(bad("tx and ty are required")) };
+    let bytes = state.images.cfa_tile(&state, &loc, q.wb.unwrap_or_default(), tx, ty).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
+    Ok(image_response(bytes.as_ref().clone(), "application/octet-stream", q.v.is_some()))
+}
+
+/// The tone curve of a RAW view (65536 bytes: the display value of every f16 pattern
+/// of linear sRGB), for the viewer's GPU path.
+async fn view_lut(State(state): St, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
+    let lut = state.images.view_lut(q.mode.unwrap_or_default(), q.ev.unwrap_or(0.0).clamp(-6.0, 6.0));
+    Ok(image_response(lut.as_ref().clone(), "application/octet-stream", q.v.is_some()))
+}
+
 async fn raw_mask(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
     let loc = load(&state, id).await?;
     let dev = state.images.developed(&state, &loc, q.wb.unwrap_or_default(), true).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
@@ -951,6 +991,7 @@ async fn raw_info(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuer
         "w": dev.w, "h": dev.h, "hist": dev.hist, "hist_min_ev": images::raw::HIST_MIN_EV, "hist_per_ev": images::raw::HIST_PER_EV,
         "over": dev.over, "under": dev.under, "wb": dev.wb, "baseline_ev": dev.baseline_ev, "boost_ev": images::RENDER_BOOST_EV,
         "decode_ms": dev.decode_ms, "develop_ms": dev.develop_ms, "approximate": dev.approximate, "decoder": dev.decoder,
+        "full": dev.full.map(|(w, h)| [w, h]), "tile": images::raw::TILE, "apron": images::raw::TILE_APRON,
     });
     let mut resp = Json(v).into_response();
     if q.v.is_some() {

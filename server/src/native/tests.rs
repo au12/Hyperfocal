@@ -141,10 +141,9 @@ mod libraw {
         assert_eq!(flash.mask, lib.mask);
         assert!(!lib.approximate);
         // The grey half is neutral and at 25% of the range.
-        let t = raw::f16_table();
         let at = |d: &raw::Developed, x: usize, y: usize| -> [f32; 3] {
             let i = (y * d.w as usize + x) * 3;
-            [t[d.rgb[i] as usize], t[d.rgb[i + 1] as usize], t[d.rgb[i + 2] as usize]]
+            [0, 1, 2].map(|c| half::f16::from_bits(d.rgb[i + c]).to_f32())
         };
         for d in [&flash, &lib] {
             let [r, g, b] = at(d, 4, 12);

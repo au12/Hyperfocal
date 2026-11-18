@@ -33,6 +33,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::services::{ServeDir, ServeFile};
 
 fn library_writable(path: &std::path::Path) -> bool {
@@ -181,11 +182,12 @@ async fn run() -> Result<()> {
     }
     let d = &state.decoders;
     tracing::info!(
-        "decoders: FlashRaw {}{}, LibRaw {}, libheif {}",
+        "decoders: FlashRaw {}{}, LibRaw {}, libheif {}; vector code: {}",
         d.flashraw,
         if d.raw == "libraw" { " (not used: HYPERFOCAL_RAW_DECODER=libraw)" } else { "" },
         d.libraw.as_deref().unwrap_or("unavailable"),
         d.libheif.as_deref().unwrap_or("unavailable (no HEIC support)"),
+        images::simd::level(),
     );
 
     scan::spawn(state.clone());
@@ -218,7 +220,8 @@ async fn run() -> Result<()> {
         .merge(api::router(state.clone()))
         .fallback_service(spa)
         .layer(middleware::from_fn(static_cache))
-        .layer(CompressionLayer::new());
+        // Not the binary tile data of the RAW viewer (noisy samples: little to gain).
+        .layer(CompressionLayer::new().compress_when(DefaultPredicate::new().and(NotForContentType::const_new("application/octet-stream"))));
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port));
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("binding {addr}"))?;

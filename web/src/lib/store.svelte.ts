@@ -191,6 +191,9 @@ export interface Settings {
   underDisplay: 'channels' | 'solid';
   underColor: string;
   bgGray: boolean;
+  /** Full-resolution RAW view when zoomed in: demosaiced on this device's GPU, on the
+   * server, either (auto: the GPU on desktops, the server on phones and tablets), or off. */
+  rawDetail: 'auto' | 'gpu' | 'server' | 'off';
 }
 
 /** Screen sharpening radius of levels 1 and 2, in device pixels. Radii and the default
@@ -213,6 +216,7 @@ const DEFAULT_SETTINGS: Settings = {
   underDisplay: 'channels',
   underColor: '#2f6fff',
   bgGray: false,
+  rawDetail: 'auto',
 };
 
 /** Saved settings still holding the previous, uncalibrated sharpening defaults get the new ones. */

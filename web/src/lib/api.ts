@@ -132,6 +132,11 @@ export interface RawInfo {
   approximate: boolean;
   /** Which decoder read the sensor data: "FlashRaw" or "LibRaw". */
   decoder?: string;
+  /** Full-resolution view: size of the demosaiced frame (absent for non-Bayer sensors),
+   * the tile grid, and the pixels each tile repeats from its neighbours on each side. */
+  full?: [number, number] | null;
+  tile?: number;
+  apron?: number;
 }
 
 export interface Patch {
@@ -443,5 +448,12 @@ export const urls = {
   raw: (id: number, v: string, o: { w: number; mode: ToneMode; ev: number; wb: WbMode; low?: boolean }) =>
     apiUrl(`photo/${id}/raw`, { v, w: o.w, mode: o.mode === 'normal' ? undefined : o.mode, ev: o.ev ? o.ev.toFixed(2) : undefined, wb: o.wb === 'asshot' ? undefined : o.wb, prio: o.low ? 'low' : undefined }),
   rawmask: (id: number, v: string, wb: WbMode) => apiUrl(`photo/${id}/rawmask`, { v, wb: wb === 'asshot' ? undefined : wb }),
+  /** A full-resolution tile of the RAW view, demosaiced and tone-mapped on the server (JPEG). */
+  rawtile: (id: number, v: string, o: { mode: ToneMode; ev: number; wb: WbMode; tx: number; ty: number }) =>
+    apiUrl(`photo/${id}/rawtile`, { v, mode: o.mode === 'normal' ? undefined : o.mode, ev: o.ev ? o.ev.toFixed(2) : undefined, wb: o.wb === 'asshot' ? undefined : o.wb, tx: o.tx, ty: o.ty }),
+  /** A tile's sensor samples, for demosaicing on this device's GPU. */
+  cfatile: (id: number, v: string, wb: WbMode, tx: number, ty: number) => apiUrl(`photo/${id}/cfatile`, { v, wb: wb === 'asshot' ? undefined : wb, tx, ty }),
+  /** The tone curve of a RAW view (65536 bytes), for the GPU path. */
+  lut: (mode: ToneMode, ev: number, ver: string) => apiUrl('lut', { mode: mode === 'normal' ? undefined : mode, ev: ev ? ev.toFixed(2) : undefined, v: ver || undefined }),
   events: () => apiUrl('events'),
 };

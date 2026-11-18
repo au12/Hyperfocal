@@ -5,8 +5,10 @@
 pub mod canon;
 #[cfg(any(feature = "heic", test))]
 pub mod color;
+pub mod demosaic;
 pub mod jpeg;
 pub mod raw;
+pub mod simd;
 pub mod tone;
 
 use crate::config::Config;
@@ -128,7 +130,18 @@ struct RenderKey {
     long: usize,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TileKey {
+    dev: DevKey,
+    /// None: the demosaic input for the viewer's GPU path; mode and ev do not apply.
+    mode: Option<ToneMode>,
+    ev: i32,
+    tx: usize,
+    ty: usize,
+}
+
 type Inflight = Arc<tokio::sync::Mutex<Option<std::result::Result<Arc<Developed>, String>>>>;
+type BayerInflight = Arc<tokio::sync::Mutex<Option<std::result::Result<Arc<raw::Bayer>, String>>>>;
 
 pub struct Images {
     pub index_pool: rayon::ThreadPool,
@@ -146,6 +159,12 @@ pub struct Images {
     interactive: AtomicUsize,
     /// Preview requests per size, for pre-rendering at the size viewers use.
     preview_sizes: Mutex<[u64; PREVIEW_SIZES.len()]>,
+    /// Sensor data of the photos being inspected, for full-resolution tiles.
+    bayers: Mutex<Lru<(i64, u64), Arc<raw::Bayer>>>,
+    bayer_inflight: Mutex<HashMap<(i64, u64), BayerInflight>>,
+    tiles: Mutex<Lru<TileKey, Arc<Vec<u8>>>>,
+    /// Tiles demosaic on one core each: about as many at once as there are cores.
+    tile_sem: tokio::sync::Semaphore,
 }
 
 /// The preview sizes (long edge) the API serves.
@@ -297,6 +316,10 @@ impl Images {
             queue_cv: Condvar::new(),
             interactive: AtomicUsize::new(0),
             preview_sizes: Mutex::new([0; PREVIEW_SIZES.len()]),
+            bayers: Mutex::new(Lru::new(320 * 1024 * 1024)),
+            bayer_inflight: Mutex::new(HashMap::new()),
+            tiles: Mutex::new(Lru::new(96 * 1024 * 1024)),
+            tile_sem: tokio::sync::Semaphore::new(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 16)),
         })
     }
 
@@ -473,11 +496,18 @@ impl Images {
         }
         let _permit = self.gate.acquire(high).await;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
-        let res = tokio::task::spawn_blocking(move || -> Result<Developed> { raw::develop_path(&src, wb, raw::UE_EV) })
-        .await
-        .map_err(|e| anyhow!("{e}"))
-        .and_then(|r| r);
-        let res = res.map(Arc::new).map_err(|e| format!("{e:#}"));
+        // The photo being viewed keeps its sensor data, for 1:1 tiles without decoding again.
+        let keep = high;
+        let res = tokio::task::spawn_blocking(move || raw::develop_path_keep(&src, wb, raw::UE_EV, keep)).await.map_err(|e| anyhow!("{e}")).and_then(|r| r);
+        let res = res
+            .map(|(d, b)| {
+                if let Some(b) = b {
+                    let size = b.bytes();
+                    self.bayers.lock().put((key.id, key.sig), Arc::new(b), size);
+                }
+                Arc::new(d)
+            })
+            .map_err(|e| format!("{e:#}"));
         if let Ok(d) = &res {
             let size = d.bytes();
             self.developed.lock().put(key.clone(), d.clone(), size);
@@ -486,6 +516,89 @@ impl Images {
         drop(slot);
         self.inflight.lock().remove(&key);
         res.map_err(|e| anyhow!(e))
+    }
+
+    /// The sensor data of a RAW file (cached for the photos being inspected).
+    pub async fn bayer(&self, state: &AppState, loc: &Located) -> Result<Arc<raw::Bayer>> {
+        let key = (loc.rec.id, sig(&loc.rec));
+        if let Some(b) = self.bayers.lock().get(&key) {
+            return Ok(b);
+        }
+        let cell = self.bayer_inflight.lock().entry(key).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None))).clone();
+        let mut slot = cell.lock().await;
+        if let Some(r) = slot.as_ref() {
+            return r.clone().map_err(|e| anyhow!(e));
+        }
+        if let Some(b) = self.bayers.lock().get(&key) {
+            return Ok(b);
+        }
+        let _permit = self.gate.acquire(true).await;
+        let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
+        let res = tokio::task::spawn_blocking(move || raw::bayer_path(&src)).await.map_err(|e| anyhow!("{e}")).and_then(|r| r);
+        let res = res.map(Arc::new).map_err(|e| format!("{e:#}"));
+        if let Ok(b) = &res {
+            self.bayers.lock().put(key, b.clone(), b.bytes());
+        }
+        *slot = Some(res.clone());
+        drop(slot);
+        self.bayer_inflight.lock().remove(&key);
+        res.map_err(|e| anyhow!(e))
+    }
+
+    /// A full-resolution tile of a RAW file as JPEG bytes (see `raw::render_tile`).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn raw_tile(&self, state: &AppState, loc: &Located, mode: ToneMode, ev: f32, wb: WbMode, tx: usize, ty: usize) -> Result<Arc<Vec<u8>>> {
+        let dkey = DevKey { id: loc.rec.id, sig: sig(&loc.rec), wb };
+        let tkey = TileKey { dev: dkey, mode: Some(mode), ev: (ev * 100.0).round() as i32, tx, ty };
+        if let Some(b) = self.tiles.lock().get(&tkey) {
+            return Ok(b);
+        }
+        self.interactive.fetch_add(1, Ordering::SeqCst);
+        let res = async {
+            let dev = self.developed(state, loc, wb, true).await?;
+            raw::tile_rect(&dev, tx, ty)?;
+            let bayer = self.bayer(state, loc).await?;
+            let lut = self.lut(mode, RENDER_BOOST_EV + ev);
+            let _p = self.tile_sem.acquire().await?;
+            tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+                let img = raw::catch(|| raw::render_tile(&bayer, &dev, &lut, tx, ty)).map_err(|e| anyhow!(e))?;
+                jpeg::encode(&img, 90, true)
+            })
+            .await?
+        }
+        .await;
+        self.interactive.fetch_sub(1, Ordering::SeqCst);
+        let bytes = Arc::new(res?);
+        self.tiles.lock().put(tkey, bytes.clone(), bytes.len());
+        Ok(bytes)
+    }
+
+    /// A tile's demosaic input for the viewer's GPU path (`raw::cfa_tile`).
+    pub async fn cfa_tile(&self, state: &AppState, loc: &Located, wb: WbMode, tx: usize, ty: usize) -> Result<Arc<Vec<u8>>> {
+        let dkey = DevKey { id: loc.rec.id, sig: sig(&loc.rec), wb };
+        let tkey = TileKey { dev: dkey, mode: None, ev: 0, tx, ty };
+        if let Some(b) = self.tiles.lock().get(&tkey) {
+            return Ok(b);
+        }
+        self.interactive.fetch_add(1, Ordering::SeqCst);
+        let res = async {
+            let dev = self.developed(state, loc, wb, true).await?;
+            raw::tile_rect(&dev, tx, ty)?;
+            let bayer = self.bayer(state, loc).await?;
+            let _p = self.tile_sem.acquire().await?;
+            tokio::task::spawn_blocking(move || raw::catch(|| raw::cfa_tile(&bayer, &dev, tx, ty)).map_err(|e| anyhow!(e))).await?
+        }
+        .await;
+        self.interactive.fetch_sub(1, Ordering::SeqCst);
+        let bytes = Arc::new(res?);
+        self.tiles.lock().put(tkey, bytes.clone(), bytes.len());
+        Ok(bytes)
+    }
+
+    /// The tone curve of a view (f16 bits of linear sRGB to 8-bit display values), as the
+    /// RAW renders and tiles use it.
+    pub fn view_lut(&self, mode: ToneMode, ev: f32) -> Arc<Vec<u8>> {
+        self.lut(mode, RENDER_BOOST_EV + ev)
     }
 
     fn lut(&self, mode: ToneMode, ev: f32) -> Arc<Vec<u8>> {
