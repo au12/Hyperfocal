@@ -45,6 +45,29 @@ jobs:
           npm run check
           npm run build
 
+  # A generated 300,000-photo index through the real router: catches a query that turns
+  # into a full scan before it reaches a real archive. Runs alongside the tests; timing
+  # on shared runners is noisy, so it does not hold back the image.
+  large-library:
+    name: Large library (300,000 photos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install exiftool, nasm, libheif and LibRaw
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libimage-exiftool-perl nasm pkg-config libclang-dev \
+            libheif-dev libheif-plugin-libde265 libraw-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          key: release
+      - name: 300,000-photo library
+        working-directory: server
+        run: cargo test --release --locked --test large_library -- --ignored --nocapture
+
   image:
     name: Build and publish image
     needs: test

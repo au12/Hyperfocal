@@ -8,3 +8,6 @@ unraid
 assets
 *.log
 dev
+server/fuzz/target
+server/fuzz/corpus
+server/fuzz/artifacts

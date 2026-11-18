@@ -69,3 +69,7 @@ strip = true
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[lints.rust]
+# cargo-fuzz builds with --cfg fuzzing (see src/fuzzing.rs and fuzz/).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

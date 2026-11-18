@@ -455,8 +455,9 @@ fn parse_nmea<R: BufRead>(r: R, out: &mut Vec<Fix>) -> Result<&'static str> {
             if v.len() <= deg_digits {
                 return None;
             }
-            let d: f64 = v[..deg_digits].parse().ok()?;
-            let m: f64 = v[deg_digits..].parse().ok()?;
+            // get(): a stray multi-byte character must not split (found by fuzzing).
+            let d: f64 = v.get(..deg_digits)?.parse().ok()?;
+            let m: f64 = v.get(deg_digits..)?.parse().ok()?;
             let x = d + m / 60.0;
             Some(if hemi == "S" || hemi == "W" { -x } else { x })
         };
@@ -467,11 +468,13 @@ fn parse_nmea<R: BufRead>(r: R, out: &mut Vec<Fix>) -> Result<&'static str> {
             if tm.len() < 6 || date.len() != 6 {
                 continue;
             }
-            let p = |s: &str| s.parse::<i64>().ok();
-            let (Some(h), Some(mi), Some(s), Some(dd), Some(mm), Some(yy)) = (p(&tm[0..2]), p(&tm[2..4]), p(&tm[4..6]), p(&date[0..2]), p(&date[2..4]), p(&date[4..6])) else { continue };
-            let frac = tm.get(6..).and_then(|x| format!("0{x}").parse::<f64>().ok()).unwrap_or(0.0);
+            let p = |s: &str, r: std::ops::Range<usize>| s.get(r).and_then(|x| x.parse::<i64>().ok());
+            let (Some(h), Some(mi), Some(s), Some(dd), Some(mm), Some(yy)) = (p(tm, 0..2), p(tm, 2..4), p(tm, 4..6), p(date, 0..2), p(date, 2..4), p(date, 4..6)) else { continue };
+            // Fractional seconds: ".25" -> 0.25 (anything else, such as an exponent, is
+            // dropped: it could overflow the time stamp; found by fuzzing).
+            let frac = tm.get(6..).and_then(|x| format!("0{x}").parse::<f64>().ok()).filter(|f| (0.0..1.0).contains(f)).unwrap_or(0.0);
             let year = if yy < 80 { 2000 + yy } else { 1900 + yy };
-            if !(1..=12).contains(&mm) || !(1..=31).contains(&dd) {
+            if !(1..=12).contains(&mm) || !(1..=31).contains(&dd) || !(0..24).contains(&h) || !(0..60).contains(&mi) || !(0..61).contains(&s) {
                 continue;
             }
             let t = (crate::model::days_from_civil(year, mm, dd) * 86400 + h * 3600 + mi * 60 + s) * 1000 + (frac * 1000.0).round() as i64;
@@ -1022,6 +1025,15 @@ mod tests {
         assert_eq!(t.fixes[0].ele, 545.4);
         assert_eq!(t.fixes[1].t, T0 + 2500);
         assert!(t.fixes[1].lat < 0.0 && t.fixes[1].lon < 0.0 && t.fixes[1].ele.is_nan());
+        // Stray multi-byte characters inside a field are skipped, not a panic (fuzzing).
+        let t = read(
+            "$GPRMC,10\u{feff}0000,A,4807.038,N,01131.000,E,0,0,010524,,*00\n\
+             $GPRMC,100000,A,48\u{e9}7.038,N,01131.000,E,0,0,010524,,*00\n\
+             $GPRMC,100001,A,4807.038,N,01131.000,E,0,0,01\u{e9}524,,*00\n\
+             $GPRMC,100002,A,4807.038,N,01131.000,E,0,0,010524,,*00\n",
+        )
+        .unwrap();
+        assert_eq!(t.fixes.len(), 1);
     }
 
     #[test]

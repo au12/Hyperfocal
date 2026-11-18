@@ -1,0 +1,61 @@
+[package]
+name = "hyperfocal-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hyperfocal = { path = ".." }
+
+# A crate of its own, outside the server's build.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "heif"
+path = "fuzz_targets/heif.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xmp"
+path = "fuzz_targets/xmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jpeg"
+path = "fuzz_targets/jpeg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tiff"
+path = "fuzz_targets/tiff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "helper"
+path = "fuzz_targets/helper.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "track"
+path = "fuzz_targets/track.rs"
+test = false
+doc = false
+bench = false

@@ -197,7 +197,7 @@ fn hash_open(r: &mut Paced, len: u64, want: i64) -> io::Result<(i64, String)> {
     Ok((SCOPE_FILE, hex(&h)))
 }
 
-fn jpeg_parts(r: &mut Paced, len: u64, h: &mut Xxh3) -> io::Result<bool> {
+fn jpeg_parts<R: Read + Seek>(r: &mut R, len: u64, h: &mut Xxh3) -> io::Result<bool> {
     if len > 512 << 20 {
         return Ok(false);
     }
@@ -271,7 +271,9 @@ pub fn jpeg_image(b: &[u8], h: &mut Xxh3) -> bool {
 
 /// Feeds the main image of a TIFF or DNG file to `h`: its size and its strips or tiles
 /// (the raw data of a DNG), never previews or metadata. False when there is none.
-fn tiff_parts(r: &mut Paced, len: u64, h: &mut Xxh3) -> io::Result<bool> {
+/// Feeds a TIFF/DNG's main image data (its strips or tiles) to `h`. False when no main
+/// image is found.
+pub(crate) fn tiff_parts<R: Read + Seek>(r: &mut R, len: u64, h: &mut Xxh3) -> io::Result<bool> {
     let mut hd = [0u8; 8];
     r.seek(SeekFrom::Start(0))?;
     if len < 8 {

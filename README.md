@@ -37,6 +37,8 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 
 - **Embedded JPEG or real RAW, on one key (`J`).** The camera JPEG appears instantly. The RAW view is developed from the sensor data, so what you judge is the real file, not the camera's rendering.
 - **Two RAW decoders.** FlashRaw reads RAW files first, in-process. When it cannot read a file (a camera newer than it, or a damaged file), LibRaw takes over. A RAW view drawn by LibRaw says so on its histogram.
+- **Full-resolution RAW for focus checks.** Zoomed in to 75% or more, the RAW view switches from half resolution to the full sensor resolution, demosaiced with RCD (the algorithm RawTherapee and darktable use) one tile at a time, nearest the centre first. Tiles are demosaiced on your device's graphics chip (instant exposure and tone changes) or on the server (smaller JPEG tiles); *Auto* uses the graphics chip on computers and the server on phones. Both give the same pixels to within one level.
+- **Compare view.** Select 2–4 photos and press `C` to see them side by side, with zoom and pan synced at 100% (1:1 pixels) or separate. The active photo takes ratings, labels, picks and rejects; `↑`/`↓` steps it through the folder against the others, which makes picking the sharpest frame of a burst quick.
 - **HEIC/HEIF** from phones and from cameras that shoot `.HIF`. Colours are converted properly: Display P3 to sRGB, and HDR (PQ/HLG) tone-mapped to SDR. RAW+HEIF pairs are grouped like RAW+JPEG.
 - **View tools that never touch the file.** Every tool only changes what you see:
   - two levels of screen sharpening
@@ -61,12 +63,12 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - The next photos are prefetched.
   - High-priority requests jump ahead of background work.
   - Developed RAW data stays in RAM, so switching between view tools takes 30–70 ms.
-- **Keyboard first.** You can pick FastRawViewer's default shortcuts or a Lightroom / Excire preset. Plain `0–5` and `6–9` work in both.
+- **Keyboard first.** You can pick FastRawViewer's default shortcuts or a Lightroom / Excire preset. Plain `0–5` and `6–9` work in both. Any shortcut can be changed in the shortcuts dialog (`F1`), and reset to the defaults.
 
 ### Library management (Excire-style)
 
 - **Your folders, as they are.** The Year/Event (or Year/Month) tree is shown exactly as it is on disk. Any folder can be viewed with or without its sub-folders.
-- **Quick collections:** Picks, Five stars, Without location, All rejected.
+- **Timeline and saved collections.** Browse by capture date across folders (year, month, day), and save any search and filter combination as a collection, such as "5★ picks from 2019 with no location". Quick collections: Picks, Five stars, Without location, All rejected.
 - **Search and filters.**
   - Full-text search covers file name, folder, title, caption, keywords, place, camera and lens.
   - Filters cover rating, label, pick state, file type, camera, lens, keyword, date range and GPS.
@@ -74,10 +76,13 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 - **XMP and IPTC editing.**
   - Fields: title, caption, creator, copyright, keywords (including `Places|Portugal|Lisbon` hierarchies), sub-location, city, state and country.
   - Edit one photo, or select many and edit them all at once.
+- **Keyword manager.** Rename, move, merge and remove keywords across the whole library, hierarchies included, as one background change that can be undone as a whole.
 - **Locations.**
   - Place photos on a map by clicking it or searching for a place name. City, state and country are filled in from the position (you can turn this off).
   - Works in bulk for any selection.
   - The map view shows the whole library, clustered.
+- **Geotag from a track.** Load GPX, KML, TCX or NMEA files, or a phone's location history (Google Takeout's Records or Timeline export), and Hyperfocal matches capture times against them. The camera's time zone is detected, clock drift can be corrected, and the result is previewed on a map before anything is written to the sidecars.
+- **Archive integrity monitor.** Every original gets a content hash when it is first indexed and is verified again over time (a full pass every 90 days by default), in a nightly window and at a gentle read rate, so array disks are not kept spinning. Originals that changed, went missing or became unreadable are reported in the app and, optionally, through ntfy, Gotify or a webhook. For JPEG, HEIC and TIFF/DNG only the image data is hashed, so a metadata edit by another app is not reported as damage. A file moved to another folder is recognised by its hash. Report-only: nothing is ever repaired or deleted.
 - **History.** Every change is journaled with what it changed from and to, and can be undone from the History dialog.
 - **Live updates.** Changes made in another tab, or picked up from disk, appear immediately.
 
@@ -90,6 +95,7 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - a tools sheet
   - swipe navigation
 - Can be added to the home screen as an app (web app manifest; browsers require HTTPS for this, for example through your reverse proxy).
+- **Offline copies.** Over HTTPS, the thumbnails, previews and folder lists you looked at stay viewable when the server cannot be reached (Settings → Offline; signing out clears them).
 - Optional password. All URLs are relative, so it also works under a sub-path.
 
 ## Safety
@@ -112,6 +118,8 @@ Hyperfocal was written for an archive that must not be damaged. These rules are 
    - If one of them crashes or hangs on a damaged file, only that request fails: the server, the indexer and your files are unaffected. These libraries do get security fixes from time to time, which is why they are kept at arm's length.
    - FlashRaw, the JPEG code and the HEIF metadata reader are memory-safe Rust and run in-process. A decoder that panics on a malformed file is caught too.
 8. **Read-only mode** turns every write off. It is used automatically when the library is mounted read-only or ExifTool is unavailable, and can be forced with `HYPERFOCAL_READONLY=true`.
+
+The readers of file contents that run in-process (HEIF, XMP, JPEG and TIFF/DNG headers, GPS tracks, the helper's output) are fuzzed with cargo-fuzz every week, and a smoke test of them runs on every push.
 
 An end-to-end test runs every write path against a scratch library and compares every original byte for byte afterwards. It runs in CI on every push. The write paths it covers:
 
@@ -211,7 +219,7 @@ Lightroom works the same way: use *Metadata → Save Metadata to File* and *Read
 
 ## Keyboard shortcuts
 
-The FastRawViewer preset is the default. Press `?` in the app for the full list. Switch to the Lightroom / Excire preset under Settings.
+The FastRawViewer preset is the default. Press `?` or `F1` in the app for the full list, where any shortcut can also be changed (click **+** and press the new key; a key already in use asks before it moves) or reset to the defaults. Switch to the Lightroom / Excire preset there or under Settings; your own changes are kept per preset, in the browser.
 
 | Action | FastRawViewer preset | Lightroom / Excire preset |
 | --- | --- | --- |
@@ -219,6 +227,8 @@ The FastRawViewer preset is the default. Press `?` in the app for the full list.
 | Open / back to grid | `Enter` / `Esc`, `G` | same |
 | RAW ↔ embedded JPEG | `J` | `J` |
 | Fit ↔ 100 % | `Z` | `Z` |
+| Compare the selected photos (2–4) | `C` or `N` | same |
+| Compare: active photo / step it through the folder | `←` `→` / `↑` `↓` | same |
 | Screen sharpening (off / 1 / 2) | `S` | `S` |
 | Focus peaking | `P` | `Shift+P` |
 | Overexposure / underexposure | `O` / `U` | `O` / `Shift+U` |
@@ -249,15 +259,26 @@ The FastRawViewer preset is the default. Press `?` in the app for the full list.
 | `HYPERFOCAL_REJECT_DIR` | `_Rejected` | Reject sub-folder name. `_rejected` in any case is always treated as a reject folder. |
 | `HYPERFOCAL_RESCAN_MINUTES` | `15` | Full re-check interval (`0` = only at start-up) |
 | `HYPERFOCAL_PREGEN_THUMBS` | `true` | Build all thumbnails in the background |
+| `HYPERFOCAL_PREGEN_PREVIEWS` | `true` | At idle, make screen-size previews of recent imports ahead of time, within the preview disk budget |
+| `HYPERFOCAL_PREGEN_DAYS` | `14` | How far back "recent imports" goes, in days |
 | `HYPERFOCAL_RAW_CACHE_MB` | `1536` | RAM for developed RAW data |
 | `HYPERFOCAL_PREVIEW_CACHE_MB` | `4096` | Disk budget for screen-size previews |
 | `HYPERFOCAL_INDEX_THREADS` | cores, 2–8 | Parallel metadata readers |
 | `HYPERFOCAL_DECODE_CONCURRENCY` | cores ÷ 4, 1–4 | RAW files developed at once |
 | `HYPERFOCAL_RAW_DECODER` | `auto` | `auto`: FlashRaw, with LibRaw when FlashRaw cannot read a file. `libraw`: LibRaw for every RAW file. |
+| `HYPERFOCAL_INTEGRITY` | `true` | Archive integrity monitor: hash every original and verify it again over time |
+| `HYPERFOCAL_VERIFY_DAYS` | `90` | Every original is verified once in this many days |
+| `HYPERFOCAL_VERIFY_HOUR` | `4` | Start of the nightly verification window (local hour; set `TZ`) |
+| `HYPERFOCAL_VERIFY_MINUTES` | `120` | Length of the nightly window. Outside it, new and changed files are still hashed, at most 4 GB an hour. |
+| `HYPERFOCAL_HASH_MBPS` | `60` | Read rate while hashing, MB/s (`0` = unlimited). Reading pauses while you are viewing photos. |
+| `HYPERFOCAL_ALERT_URL` | – | Where integrity alerts go: an ntfy topic URL, a Gotify `…/message` URL, or any webhook |
+| `HYPERFOCAL_ALERT_FORMAT` | `auto` | `ntfy`, `gotify` or `json` (`auto` decides from the URL) |
+| `HYPERFOCAL_ALERT_TOKEN` | – | Access token for the alert service (ntfy token, Gotify app token, or a bearer token for a webhook) |
+| `TZ` | `UTC` | Time zone of the container, for the nightly window (for example `Europe/Lisbon`) |
 | `PUID` / `PGID` | `99` / `100` | User and group the app runs as (Unraid `nobody:users`) |
 | `UMASK` | `000` | `000` matches Unraid share permissions, so Excire can still edit sidecars over SMB |
 
-Viewer and culling preferences are set per browser in the app's Settings dialog. They include the theme, shortcut preset, whether single view opens as JPEG or RAW, auto-advance, prefetch depth, sharpening strengths, the peaking colour and the over- and underexposure styles.
+Viewer and culling preferences are set per browser in the app's Settings dialog. They include the theme, shortcut preset and your own shortcuts, whether single view opens as JPEG or RAW, where full-resolution RAW is demosaiced, auto-advance, prefetch depth, sharpening strengths, the peaking colour, the over- and underexposure styles and offline copies.
 
 ## Performance
 
@@ -268,16 +289,18 @@ These numbers are from a 2-vCPU test VM; an Unraid server will be faster.
 | Embedded full-size JPEG | 2–5 ms |
 | Screen-size preview, first time | 60–105 ms (then cached on disk) |
 | First RAW render, half-size development | 180–550 ms |
+| Half-size development of a 24 MP frame (after decoding) | 31 ms |
 | Switching between view tools | 30–70 ms |
 | Clipping mask | 4 ms |
+| Full-resolution RAW tile (512×512, RCD), on the server | 10 ms |
 
-The server is a single Rust binary (axum, SQLite in WAL mode, FlashRaw, libjpeg-turbo with SIMD). The UI is about 70 KB of compressed Svelte 5; the map loads only when you use it. The image is Debian slim plus ExifTool, which is used only to write sidecars, and libheif and LibRaw for the helper process.
+The server is a single Rust binary (axum, SQLite in WAL mode, FlashRaw, libjpeg-turbo with SIMD). The RAW development pass is written as plain loops the compiler vectorises (SSE2, or NEON on ARM), with an AVX2 copy picked at run time on CPUs that have it; the log says which one runs. The UI is about 70 KB of compressed Svelte 5; the map loads only when you use it. The image is Debian slim plus ExifTool, which is used only to write sidecars, and libheif and LibRaw for the helper process.
 
 On the same VM, the LibRaw helper starts in a few milliseconds, and a LibRaw development takes 0.1–2 s depending on sensor size. A HEIC thumbnail or preview costs one HEVC decode, about 0.5 s for a 12-megapixel photo; after that it is cached like everything else.
 
 ## Limitations
 
-- The RAW view is developed at half resolution (a 2×2 Bayer quad per pixel). That is plenty for judging exposure and focus at screen size. For pixel-level checks at 100 %, the embedded JPEG view shows the camera JPEG at full resolution.
+- The RAW view is developed at half resolution (a 2×2 Bayer quad per pixel) until you zoom in to 75% or more; then Bayer sensors are shown at full resolution, tile by tile. X-Trans and other non-Bayer sensors stay at half resolution: for pixel-level checks on those, the embedded JPEG view shows the camera JPEG at full resolution.
 - Fujifilm X-Trans, monochrome and linear DNG files use an approximate development path, about 0.6–0.9 s.
 - HEIC/HEIF files get the image view, metadata and every culling feature, but none of the RAW tools: they hold no sensor data.
 - LibRaw 0.21, the version in the Docker image, has no colour data for some cameras released after 2022. FlashRaw handles those, but if LibRaw has to take over for one, its RAW view can look flat in colour.
@@ -305,11 +328,18 @@ cd server && cargo test && cargo run --release
 cd web && npm ci && npm run dev     # proxies /api to :8099
 npm run check && npm run build      # type check and production build (precompressed)
 
+# 300,000-photo library test (release build)
+cd server && cargo test --release --test large_library -- --ignored --nocapture
+
+# fuzzing (nightly Rust and cargo-fuzz): one target per kind of file contents
+cd server/fuzz && cargo +nightly fuzz list
+cargo +nightly fuzz run xmp corpus/xmp seeds/xmp -- -max_total_time=60
+
 # image
 docker build -t hyperfocal .
 ```
 
-The GitHub Action in `.github/workflows/docker.yml` runs the tests, builds the image and publishes it to GHCR. The HEIC and DNG test fixtures are generated by `server/tests/fixtures/make_fixtures.py`.
+The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a smoke test of every fuzz target on mutated inputs) and the 300,000-photo library test, builds the image and publishes it to GHCR. `.github/workflows/fuzz.yml` fuzzes the parsers weekly. The HEIC and DNG test fixtures are generated by `server/tests/fixtures/make_fixtures.py`.
 
 ## Credits
 

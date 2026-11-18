@@ -5,6 +5,9 @@ pub mod api;
 pub mod config;
 pub mod db;
 pub mod files;
+/// Entry points for the fuzz targets (server/fuzz) and their stable smoke test.
+#[cfg(any(fuzzing, test))]
+pub mod fuzzing;
 pub mod geotag;
 pub mod images;
 pub mod inspect;

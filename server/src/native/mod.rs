@@ -228,11 +228,16 @@ pub fn heic_thumb(path: &Path, want: usize, draft_min: usize) -> Result<(Rgb, He
     parse_heic(&out)
 }
 
-fn parse_heic(out: &[u8]) -> Result<(Rgb, HeicInfo)> {
+/// w * h * channels, None on overflow (the sizes come from another process).
+fn size(w: usize, h: usize, channels: usize) -> Option<usize> {
+    w.checked_mul(h)?.checked_mul(channels)
+}
+
+pub(crate) fn parse_heic(out: &[u8]) -> Result<(Rgb, HeicInfo)> {
     let f = parse(out)?;
     let info: HeicInfo = f.json(b"INFO").map_err(|e| anyhow!(e))?;
     let px = f.require(b"RGB8").map_err(|e| anyhow!(e))?;
-    if info.w == 0 || info.h == 0 || px.len() != info.w * info.h * 3 {
+    if info.w == 0 || info.h == 0 || size(info.w, info.h, 3) != Some(px.len()) {
         bail!("the native helper sent a malformed image");
     }
     Ok((Rgb { w: info.w, h: info.h, px: px.to_vec() }, info))
@@ -272,7 +277,7 @@ pub fn libraw_meta(path: &Path) -> Result<LibrawMeta> {
     parse_libraw_meta(&out)
 }
 
-fn parse_libraw_meta(out: &[u8]) -> Result<LibrawMeta> {
+pub(crate) fn parse_libraw_meta(out: &[u8]) -> Result<LibrawMeta> {
     let f = parse(out)?;
     let mut m: LibrawMeta = f.json(b"META").map_err(|e| anyhow!(e))?;
     m.xmp = f.get(b"XMP ").filter(|x| !x.is_empty()).map(|x| x.to_vec());
@@ -314,7 +319,7 @@ pub fn libraw_preview(path: &Path, min_long: usize) -> Result<Preview> {
     parse_libraw_preview(&out)
 }
 
-fn parse_libraw_preview(out: &[u8]) -> Result<Preview> {
+pub(crate) fn parse_libraw_preview(out: &[u8]) -> Result<Preview> {
     let f = parse(out)?;
     let info: PreviewInfo = f.json(b"INFO").map_err(|e| anyhow!(e))?;
     let data = f.require(b"DATA").map_err(|e| anyhow!(e))?;
@@ -328,7 +333,7 @@ fn parse_libraw_preview(out: &[u8]) -> Result<Preview> {
             }
             Ok(Preview::Jpeg { data: data.to_vec(), w, h })
         }
-        "rgb8" if info.w > 0 && info.h > 0 && data.len() == info.w as usize * info.h as usize * 3 => {
+        "rgb8" if info.w > 0 && info.h > 0 && size(info.w as usize, info.h as usize, 3) == Some(data.len()) => {
             Ok(Preview::Rgb(Rgb { w: info.w as usize, h: info.h as usize, px: data.to_vec() }))
         }
         _ => bail!("the native helper sent a malformed preview"),
@@ -394,7 +399,7 @@ pub fn libraw_raw(path: &Path, wb: WbMode) -> Result<LibrawRaw> {
     parse_libraw_raw(&out)
 }
 
-fn parse_libraw_raw(out: &[u8]) -> Result<LibrawRaw> {
+pub(crate) fn parse_libraw_raw(out: &[u8]) -> Result<LibrawRaw> {
     let f = parse(out)?;
     let info: RawInfo = f.json(b"INFO").map_err(|e| anyhow!(e))?;
     let data = frames::u16s(f.require(b"DATA").map_err(|e| anyhow!(e))?).map_err(|e| anyhow!(e))?;
@@ -402,7 +407,7 @@ fn parse_libraw_raw(out: &[u8]) -> Result<LibrawRaw> {
         RawInfo::Bayer(b) => {
             let ok = b.w >= 2
                 && b.h >= 2
-                && data.len() == b.w * b.h
+                && size(b.w, b.h, 1) == Some(data.len())
                 && b.ch.iter().flatten().all(|c| *c <= 2)
                 && (1..=64).contains(&b.black_rows)
                 && (1..=64).contains(&b.black_cols)
@@ -417,7 +422,7 @@ fn parse_libraw_raw(out: &[u8]) -> Result<LibrawRaw> {
             Ok(LibrawRaw::Bayer(b, data))
         }
         RawInfo::Rgb16(r) => {
-            if r.w == 0 || r.h == 0 || data.len() != r.w * r.h * 3 {
+            if r.w == 0 || r.h == 0 || size(r.w, r.h, 3) != Some(data.len()) {
                 bail!("the native helper sent a malformed image");
             }
             Ok(LibrawRaw::Rgb16(r, data))
