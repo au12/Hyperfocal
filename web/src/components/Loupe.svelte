@@ -676,8 +676,8 @@
         {#if store.viewer.sharpen}<span class="chip">Sharpen {store.viewer.sharpen}</span>{/if}
         {#if store.viewer.invert}<span class="chip">Inverted</span>{/if}
         {#if store.viewer.peaking}<span class="chip">{peakLabel[store.viewer.peaking]}</span>{/if}
-        {#if store.viewer.over}<span class="chip">OE{#if !useRaw} (JPEG){/if}</span>{/if}
-        {#if store.viewer.under}<span class="chip">UE{#if !useRaw} (JPEG){/if}</span>{/if}
+        {#if store.viewer.over}<span class="chip">OE{#if !useRaw}{' (JPEG)'}{/if}</span>{/if}
+        {#if store.viewer.under}<span class="chip">UE{#if !useRaw}{' (JPEG)'}{/if}</span>{/if}
         {#if !fit}<span class="chip tnum" title={detailOn ? 'Full sensor resolution, demosaiced ' + (detailPath === 'gpu' ? 'on this device' : 'on the server') : ''}>{zoomPct}%{#if detailOn}{' · full res'}{/if}</span>{/if}
         {#if loadError}<span class="chip err" title={loadError}>{shownKind === 'raw' ? 'RAW' : 'Image'} unavailable</span>{/if}
       </div>

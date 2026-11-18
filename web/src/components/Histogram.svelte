@@ -81,7 +81,7 @@
 
 <div class="hist">
   <div class="head">
-    <span>{raw ? 'RAW histogram' : 'Histogram'}{#if approximate} (approx.){/if}{#if raw?.decoder === 'LibRaw'}<span class="dim" title="Decoded with LibRaw (FlashRaw could not read this file)"> · LibRaw</span>{/if}</span>
+    <span>{raw ? 'RAW histogram' : 'Histogram'}{#if approximate}{' (approx.)'}{/if}{#if raw?.decoder === 'LibRaw'}<span class="dim" title="Decoded with LibRaw (FlashRaw could not read this file)"> · LibRaw</span>{/if}</span>
     {#if raw}<span class="dim">EV below clipping</span>{/if}
   </div>
   <canvas bind:this={canvas} style:width={`${W}px`} style:height={`${H}px`}></canvas>
