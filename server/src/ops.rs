@@ -8,7 +8,7 @@ use crate::repo::{self, Located};
 use crate::scan;
 use crate::sets::Plan;
 use crate::state::{AppState, Event};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::params;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
@@ -356,7 +356,7 @@ pub struct BatchResult {
     pub failed: Vec<(i64, String)>,
 }
 
-fn new_batch() -> String {
+pub fn new_batch() -> String {
     format!("{:x}{:04x}", crate::db::now_ms(), rand::random::<u16>())
 }
 
@@ -450,7 +450,13 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
     let dir = scan::abs_dir(state, &loc.folder_path);
     // `IMG_1.xmp` (the Adobe/Excire convention) for the photo that owns the name,
     // `IMG_1.TIF.xmp` for another photo with the same name (see `sets`).
-    let listing = scan::listing(state, &loc.folder_path, loc.folder_is_reject)?;
+    let mut listing = scan::listing(state, &loc.folder_path, loc.folder_is_reject)?;
+    // A darktable/digiKam-style sidecar the rescan has not renamed yet gets the
+    // standard name first, so the edit lands in it (and Excire sees it).
+    let ids = std::collections::HashMap::from([(loc.rec.name.as_str(), loc.rec.id)]);
+    for (from, to) in scan::standardize_sidecars(state, &loc.folder_path, &dir, &Plan::new(&listing), &ids, Some(&loc.rec.name)) {
+        listing.rename(&from, &to);
+    }
     let sidecar_name = Plan::new(&listing).write_sidecar(&loc.rec.name)?;
     let sidecar = dir.join(&sidecar_name);
     let existed = sidecar.exists();
@@ -624,8 +630,15 @@ pub async fn undo(state: &Arc<AppState>, batch: &str) -> Result<BatchResult> {
     let new_batch = new_batch();
     // Group metadata restores per photo (each row has its own "before").
     for (jid, kind, pid, data) in rows {
-        let Some(pid) = pid else { continue };
         let v: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
+        if kind == "rename" {
+            match undo_rename(state, jid, &v).await {
+                Ok(id) => ok.extend(id.or(pid)),
+                Err(e) => failed.push((pid.unwrap_or(0), format!("{e:#}"))),
+            }
+            continue;
+        }
+        let Some(pid) = pid else { continue };
         let res = match kind.as_str() {
             "reject" => move_photos(state, &[pid], false, Some(new_batch.clone()), Some(batch)).await,
             "restore" => move_photos(state, &[pid], true, Some(new_batch.clone()), Some(batch)).await,
@@ -646,6 +659,23 @@ pub async fn undo(state: &Arc<AppState>, batch: &str) -> Result<BatchResult> {
         }
     }
     Ok(BatchResult { batch: new_batch, ok, failed })
+}
+
+/// Give a renamed sidecar its old name back. Marked undone first, so the rescan that
+/// follows leaves it alone from now on.
+async fn undo_rename(state: &Arc<AppState>, jid: i64, v: &Value) -> Result<Option<i64>> {
+    let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string).ok_or_else(|| anyhow!("bad journal entry"));
+    let (folder, from, to) = (field("folder")?, field("from")?, field("to")?);
+    let dir = scan::abs_dir(state, &folder);
+    files::rename_noreplace(&dir.join(&to), &dir.join(&from)).with_context(|| format!("renaming {to} back to {from}"))?;
+    state.db.get()?.execute("UPDATE journal SET undone = 1 WHERE id = ?1", [jid])?;
+    let fid: Option<i64> = state.db.get()?.query_row("SELECT id FROM folders WHERE path = ?1", [&folder], |r| r.get(0)).ok();
+    let Some(fid) = fid else { return Ok(None) };
+    let st = state.clone();
+    tokio::task::spawn_blocking(move || scan::scan_folder(&st, fid, false)).await??;
+    let photo = v.get("photo").and_then(Value::as_str).unwrap_or_default();
+    let c = state.db.get()?;
+    Ok(c.query_row("SELECT id FROM photos WHERE folder_id = ?1 AND name = ?2", params![fid, photo], |r| r.get(0)).ok())
 }
 
 pub fn recent_journal(state: &AppState, limit: usize) -> Result<Vec<Value>> {

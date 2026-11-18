@@ -35,6 +35,7 @@ fn test_config(root: &Path) -> Config {
         decode_concurrency: 1,
         password: None,
         exiftool: "exiftool".into(),
+        rename_sidecars: true,
         raw_decoder_libraw: false,
     }
 }
@@ -378,6 +379,84 @@ async fn same_name_photos_stay_apart() {
     assert_eq!(rating(tif), 4);
 
     // Originals: same bytes, nothing lost or duplicated.
+    let mut now: Vec<String> = originals(&lib).into_values().collect();
+    let mut orig: Vec<String> = before.into_values().collect();
+    now.sort();
+    orig.sort();
+    assert_eq!(now, orig);
+}
+
+/// darktable/digiKam-style sidecars (`IMG_1.CR3.xmp`) get the standard name when no
+/// other photo's metadata can mix with them; the rename is journaled, and undoing it
+/// keeps the old name for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn darktable_sidecars_get_the_standard_name() {
+    if !exiftool_available() {
+        eprintln!("skipping: exiftool is not installed");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = tmp.path().join("photos");
+    let dir = lib.join("2023/Hike");
+    write_bytes(&dir.join("IMG_0005.CR3"), 200_000, 21);
+    std::fs::write(dir.join("IMG_0005.CR3.xmp"), EXCIRE_SIDECAR).unwrap();
+    write_bytes(&dir.join("IMG_0006.NEF"), 200_000, 22);
+    write_bytes(&dir.join("IMG_0006.JPG"), 30_000, 23);
+    std::fs::write(dir.join("IMG_0006.NEF.xmp"), EXCIRE_SIDECAR).unwrap();
+    // Not renamed: a same-name TIFF, and a standard sidecar already there.
+    write_bytes(&dir.join("IMG_0007.CR3"), 200_000, 24);
+    write_bytes(&dir.join("IMG_0007.TIF"), 60_000, 25);
+    std::fs::write(dir.join("IMG_0007.CR3.xmp"), EXCIRE_SIDECAR).unwrap();
+    write_bytes(&dir.join("IMG_0008.CR3"), 200_000, 26);
+    std::fs::write(dir.join("IMG_0008.CR3.xmp"), EXCIRE_SIDECAR).unwrap();
+    std::fs::write(dir.join("IMG_0008.xmp"), EXCIRE_SIDECAR.replace("xmp:Rating=\"2\"", "xmp:Rating=\"4\"")).unwrap();
+    let before = originals(&lib);
+
+    let state = crate::build_state(test_config(tmp.path())).await.unwrap();
+    {
+        let st = state.clone();
+        tokio::task::spawn_blocking(move || scan_all(&st)).await.unwrap();
+    }
+    let mut want: Vec<String> = [
+        "IMG_0005.CR3", "IMG_0005.xmp", "IMG_0006.JPG", "IMG_0006.NEF", "IMG_0006.xmp", "IMG_0007.CR3", "IMG_0007.CR3.xmp",
+        "IMG_0007.TIF", "IMG_0008.CR3", "IMG_0008.CR3.xmp", "IMG_0008.xmp",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    want.sort();
+    assert_eq!(all_files(&dir), want);
+    // Same bytes under the new name, and the index reads it.
+    assert_eq!(std::fs::read(dir.join("IMG_0005.xmp")).unwrap(), EXCIRE_SIDECAR.as_bytes());
+    let p5 = photo_id(&state, "2023/Hike", "IMG_0005.CR3");
+    assert_eq!(column::<String>(&state, p5, "sidecar").as_deref(), Some("IMG_0005.xmp"));
+    assert_eq!(column::<i32>(&state, p5, "rating"), Some(2));
+    assert_eq!(column::<i32>(&state, photo_id(&state, "2023/Hike", "IMG_0008.CR3"), "rating"), Some(4));
+
+    // Undo the renames: the old names come back and later scans leave them alone.
+    let batch: String = state
+        .db
+        .get()
+        .unwrap()
+        .query_row("SELECT batch FROM journal WHERE kind = 'rename' LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    let r = ops::undo(&state, &batch).await.unwrap();
+    assert!(r.failed.is_empty(), "{:?}", r.failed);
+    assert_eq!(r.ok.len(), 2);
+    {
+        let st = state.clone();
+        tokio::task::spawn_blocking(move || scan_all(&st)).await.unwrap();
+    }
+    assert!(dir.join("IMG_0005.CR3.xmp").is_file() && dir.join("IMG_0006.NEF.xmp").is_file());
+    assert!(!dir.join("IMG_0005.xmp").exists() && !dir.join("IMG_0006.xmp").exists());
+    assert_eq!(column::<i32>(&state, p5, "rating"), Some(2));
+    // An edit then goes into the sidecar the photo shows, under the name you kept.
+    let patch: Patch = serde_json::from_value(serde_json::json!({ "rating": 5 })).unwrap();
+    let r = ops::apply_meta(&state, &[p5], &patch, None).await.unwrap();
+    assert!(r.failed.is_empty(), "{:?}", r.failed);
+    assert_eq!(sidecar(&lib, "2023/Hike/IMG_0005.CR3.xmp").rating, Some(5));
+    assert!(!dir.join("IMG_0005.xmp").exists());
+
     let mut now: Vec<String> = originals(&lib).into_values().collect();
     let mut orig: Vec<String> = before.into_values().collect();
     now.sort();

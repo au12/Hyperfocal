@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use rusqlite::{OptionalExtension, params};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -139,6 +139,53 @@ struct FileEntry {
     mtime: i64,
 }
 
+/// Give darktable/digiKam-style sidecars (`IMG_1.CR3.xmp`) the standard name
+/// (`IMG_1.xmp`, which Excire and Lightroom read) where `sets` allows it: for every
+/// photo in the folder, or only `only`. Never overwrites, skips renames that were
+/// undone, and journals each one. Returns the `(from, to)` renames done.
+pub fn standardize_sidecars(
+    state: &AppState,
+    folder_path: &str,
+    dir: &Path,
+    plan: &Plan,
+    ids: &HashMap<&str, i64>,
+    only: Option<&str>,
+) -> Vec<(String, String)> {
+    if !state.cfg.rename_sidecars || state.is_readonly() {
+        return Vec::new();
+    }
+    let mut done = Vec::new();
+    let mut batch: Option<String> = None;
+    for (photo, from, to) in plan.standard_renames() {
+        if only.is_some_and(|o| o != photo) || rename_was_undone(state, folder_path, &from) {
+            continue;
+        }
+        if let Err(e) = crate::files::rename_noreplace(&dir.join(&from), &dir.join(&to)) {
+            tracing::warn!("could not rename {} to {to}: {e}", dir.join(&from).display());
+            continue;
+        }
+        tracing::info!("renamed {} to {to}", dir.join(&from).display());
+        let batch = batch.get_or_insert_with(crate::ops::new_batch);
+        let data = serde_json::json!({ "folder": folder_path, "photo": photo, "from": from, "to": to });
+        if let Err(e) = crate::ops::journal(state, batch, "rename", ids.get(photo).copied(), "renamed sidecars to the standard name", &data) {
+            tracing::warn!("journaling the rename of {from}: {e:#}");
+        }
+        done.push((from, to));
+    }
+    done
+}
+
+fn rename_was_undone(state: &AppState, folder_path: &str, from: &str) -> bool {
+    let Ok(c) = state.db.get() else { return true };
+    c.query_row(
+        "SELECT 1 FROM journal WHERE kind = 'rename' AND undone = 1
+            AND json_extract(data, '$.folder') = ?1 AND json_extract(data, '$.from') = ?2 LIMIT 1",
+        params![folder_path, from],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
 /// The files of a library folder and of the folders it shares sidecars with (see
 /// `sets`), read fresh from disk.
 pub fn listing(state: &AppState, folder_path: &str, is_reject: bool) -> Result<Listing> {
@@ -197,8 +244,7 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
         tracing::warn!("reading the folders next to {}: {e}", dir.display());
         Vec::new()
     });
-    let listing = Listing::new(names, partners);
-    let plan = Plan::new(&listing);
+    let mut listing = Listing::new(names, partners);
 
     let conn = state.db.get()?;
     let mut existing: HashMap<String, (i64, i64, i64, Option<String>, Option<i64>)> = HashMap::new();
@@ -213,6 +259,16 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
         }
     }
     drop(conn);
+
+    let ids: HashMap<&str, i64> = existing.iter().map(|(n, v)| (n.as_str(), v.0)).collect();
+    let renamed = standardize_sidecars(state, &rel, &dir, &Plan::new(&listing), &ids, None);
+    for (from, to) in &renamed {
+        listing.rename(from, to);
+        if let Some((_, mtime)) = sidecars.remove(&from.to_lowercase()) {
+            sidecars.insert(to.to_lowercase(), (to.clone(), mtime));
+        }
+    }
+    let plan = Plan::new(&listing);
 
     let mut todo: Vec<(FileEntry, Option<(String, i64)>)> = Vec::new();
     let present: HashSet<String> = files.iter().map(|f| f.name.clone()).collect();
