@@ -82,13 +82,14 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
 /// Lets the photo on screen jump ahead of prefetching.
 pub struct Gate {
     sem: tokio::sync::Semaphore,
+    total: usize,
     high: AtomicUsize,
     notify: tokio::sync::Notify,
 }
 
 impl Gate {
     fn new(permits: usize) -> Gate {
-        Gate { sem: tokio::sync::Semaphore::new(permits.max(1)), high: AtomicUsize::new(0), notify: tokio::sync::Notify::new() }
+        Gate { sem: tokio::sync::Semaphore::new(permits.max(1)), total: permits.max(1), high: AtomicUsize::new(0), notify: tokio::sync::Notify::new() }
     }
     pub async fn acquire(&self, high: bool) -> tokio::sync::SemaphorePermit<'_> {
         if high {
@@ -304,6 +305,12 @@ impl Images {
             "rendered": r.len(), "rendered_mb": r.bytes() / 1048576,
             "thumb_queue": self.queue.lock().0.len(),
         })
+    }
+
+    /// Someone is waiting on a thumbnail, preview or RAW development right now:
+    /// background readers (the integrity monitor) pause.
+    pub fn busy(&self) -> bool {
+        self.interactive.load(Ordering::SeqCst) > 0 || self.gate.sem.available_permits() < self.gate.total
     }
 
     /// Thumbnail file for a photo (generated on first request).

@@ -634,3 +634,145 @@ async fn geotag_from_a_track() {
     orig.sort();
     assert_eq!(now, orig);
 }
+
+/// A minimal JPEG: metadata segment `app`, then image data `data`.
+fn tiny_jpeg(app: &[u8], data: &[u8]) -> Vec<u8> {
+    let seg = |m: u8, body: &[u8]| [&[0xFF, m][..], &((body.len() + 2) as u16).to_be_bytes(), body].concat();
+    [vec![0xFF, 0xD8], seg(0xE1, app), seg(0xDB, &[1u8; 65]), seg(0xC0, &[8, 0, 8, 0, 8, 1, 1, 0x11, 0]), seg(0xDA, &[1, 1, 0, 0, 63, 0]), data.to_vec(), vec![0xFF, 0xD9]].concat()
+}
+
+/// One HTTP request answered with 200, as (head, body).
+fn one_http_request(listener: std::net::TcpListener) -> std::thread::JoinHandle<(String, String)> {
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut s, _) = listener.accept().unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = s.read(&mut chunk).unwrap();
+            buf.extend_from_slice(&chunk[..n]);
+            let text = String::from_utf8_lossy(&buf).to_string();
+            if let Some(i) = text.find("\r\n\r\n") {
+                let len: usize = text[..i].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap())).unwrap_or(0);
+                if buf.len() >= i + 4 + len || n == 0 {
+                    s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").unwrap();
+                    return (text[..i].to_string(), text[i + 4..].to_string());
+                }
+            }
+        }
+    })
+}
+
+/// The integrity monitor over real files: first hashes, a metadata edit that is not
+/// damage, bit rot that is, a move told apart from a loss, a reject move, accepting
+/// and forgetting, and an alert. It never writes to the library itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integrity_monitor() {
+    use crate::integrity::{self, Pace};
+    use axum::body::Body;
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = tmp.path().join("photos");
+    write_bytes(&lib.join("2024/Trip/IMG_0001.CR3"), 200_000, 51);
+    write_bytes(&lib.join("2024/Trip/IMG_0002.CR3"), 200_000, 52);
+    write_bytes(&lib.join("2024/Trip/IMG_0003.CR3"), 210_000, 53);
+    std::fs::write(lib.join("2024/Trip/phone.jpg"), tiny_jpeg(b"Exif\0\0rating=1", &[7; 3000])).unwrap();
+    write_bytes(&lib.join("2023/Home/IMG_0009.CR3"), 220_000, 54);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut cfg = test_config(tmp.path());
+    cfg.integrity = true;
+    cfg.alert_url = Some(format!("http://{}/photos-alerts", listener.local_addr().unwrap()));
+    let state = crate::build_state(cfg).await.unwrap();
+    let st = state.clone();
+    let rescan = move || {
+        let st = st.clone();
+        async move { tokio::task::spawn_blocking(move || scan_all(&st)).await.unwrap() }
+    };
+    let sweep = |all: bool| {
+        let st = state.clone();
+        async move { tokio::task::spawn_blocking(move || integrity::session(&st, &mut Pace::unlimited(), None, true, all).unwrap()).await.unwrap() }
+    };
+    let status_of = |folder: &str, name: &str| -> Option<i64> {
+        let c = state.db.get().unwrap();
+        c.query_row("SELECT status FROM originals WHERE folder = ?1 AND name = ?2", [folder, name], |r| r.get(0)).ok()
+    };
+    rescan().await;
+    let first = sweep(false).await;
+    assert_eq!((first.files, first.problems), (5, 0), "{first:?}");
+    let jpeg_hash: String = state.db.get().unwrap().query_row("SELECT scope || ':' || hash FROM originals WHERE name = 'phone.jpg'", [], |r| r.get(0)).unwrap();
+    assert!(jpeg_hash.starts_with("1:"), "JPEGs hash their image data: {jpeg_hash}");
+
+    // 1. An app rewrites the JPEG's metadata: not damage.
+    std::fs::write(lib.join("2024/Trip/phone.jpg"), tiny_jpeg(b"Exif\0\0rating=5, with a caption", &[7; 3000])).unwrap();
+    // 2. Bit rot in a RAW file: same size, same date.
+    let p2 = lib.join("2024/Trip/IMG_0002.CR3");
+    let when = std::fs::metadata(&p2).unwrap().modified().unwrap();
+    let mut data = std::fs::read(&p2).unwrap();
+    data[100_000] ^= 0x10;
+    std::fs::write(&p2, &data).unwrap();
+    std::fs::File::options().write(true).open(&p2).unwrap().set_modified(when).unwrap();
+    // 3. A folder reorganised outside Hyperfocal: a move, not a loss.
+    std::fs::create_dir_all(lib.join("2024/Best")).unwrap();
+    std::fs::rename(lib.join("2024/Trip/IMG_0003.CR3"), lib.join("2024/Best/IMG_0003.CR3")).unwrap();
+    // 4. A file deleted outside Hyperfocal.
+    std::fs::remove_file(lib.join("2023/Home/IMG_0009.CR3")).unwrap();
+    let before = originals(&lib);
+    rescan().await;
+    {
+        let st = state.clone();
+        let done = tokio::task::spawn_blocking(move || integrity::check_index(&st, &mut Pace::unlimited(), &mut integrity::Budget::unlimited()).unwrap()).await.unwrap();
+        assert!(done.complete);
+        // The JPEG verified, the moved file matched, the deleted one reported.
+        assert_eq!((done.files, done.problems), (2, 1), "{done:?}");
+    }
+    assert_eq!(status_of("2024/Trip", "phone.jpg"), Some(integrity::OK), "a metadata edit is not damage");
+    assert_eq!(status_of("2024/Best", "IMG_0003.CR3"), Some(integrity::OK), "the move was followed");
+    assert_eq!(status_of("2024/Trip", "IMG_0003.CR3"), None);
+    assert_eq!(status_of("2023/Home", "IMG_0009.CR3"), Some(integrity::MISSING));
+    // Bit rot keeps size and date: only a verification finds it.
+    assert_eq!(status_of("2024/Trip", "IMG_0002.CR3"), Some(integrity::OK));
+    let s = sweep(true).await;
+    assert_eq!(s.problems, 1, "{s:?}");
+    assert_eq!(status_of("2024/Trip", "IMG_0002.CR3"), Some(integrity::CHANGED));
+    assert_eq!(originals(&lib), before, "the monitor only reads");
+
+    // A reject move inside Hyperfocal carries the record along.
+    let p1 = photo_id(&state, "2024/Trip", "IMG_0001.CR3");
+    assert!(ops::reject(&state, &[p1]).await.unwrap().failed.is_empty());
+    assert_eq!(status_of("2024/Trip/_Rejected", "IMG_0001.CR3"), Some(integrity::OK));
+    assert_eq!(status_of("2024/Trip", "IMG_0001.CR3"), None);
+
+    // The API: counts, the list, then an alert (after the grace period) to the webhook.
+    let app = crate::api::router(state.clone());
+    let (st, v) = api_call(&app, "GET", "/api/integrity", Body::empty()).await;
+    assert_eq!(st, axum::http::StatusCode::OK, "{v}");
+    assert_eq!((v["changed"].as_i64(), v["missing"].as_i64(), v["originals"].as_i64()), (Some(1), Some(1), Some(5)), "{v}");
+    let problems = v["problems"].as_array().unwrap();
+    let rot = problems.iter().find(|p| p["name"] == "IMG_0002.CR3").unwrap();
+    assert!(rot["photo_id"].as_i64().is_some(), "a changed photo can be opened");
+    let lost = problems.iter().find(|p| p["name"] == "IMG_0009.CR3").unwrap();
+    assert!(lost["photo_id"].is_null());
+    assert_eq!(integrity::alerts(&state, true).unwrap(), 0, "nothing is reported during the grace period");
+    state.db.get().unwrap().execute("UPDATE originals SET status_at = status_at - 86400000 WHERE status != 0", []).unwrap();
+    let server = one_http_request(listener);
+    let sent = {
+        let st = state.clone();
+        tokio::task::spawn_blocking(move || integrity::alerts(&st, true).unwrap()).await.unwrap()
+    };
+    assert_eq!(sent, 2);
+    let (head, body) = server.join().unwrap();
+    assert!(head.starts_with("POST /photos-alerts"), "{head}");
+    assert!(head.to_ascii_lowercase().contains("title: hyperfocal: 2 originals 1 changed, 1 missing"), "{head}");
+    assert!(body.contains("Changed: 2024/Trip/IMG_0002.CR3") && body.contains("Missing: 2023/Home/IMG_0009.CR3"), "{body}");
+    assert_eq!(integrity::alerts(&state, true).unwrap(), 0, "each problem is reported once");
+
+    // Accept the new contents; forget the deleted file.
+    let id = |p: &serde_json::Value| p["id"].as_i64().unwrap();
+    let (st, r) = api_call(&app, "POST", "/api/integrity/accept", Body::from(json!({ "ids": [id(rot)] }).to_string())).await;
+    assert_eq!((st, r["accepted"].as_i64()), (axum::http::StatusCode::OK, Some(1)));
+    let (_, r) = api_call(&app, "POST", "/api/integrity/forget", Body::from(json!({ "ids": [id(lost), id(rot)] }).to_string())).await;
+    assert_eq!(r["forgotten"], 1, "only missing files can be forgotten");
+    assert_eq!(status_of("2024/Trip", "IMG_0002.CR3"), Some(integrity::OK));
+    assert_eq!(status_of("2023/Home", "IMG_0009.CR3"), None);
+    assert_eq!(sweep(true).await.problems, 0, "the accepted contents are the reference now");
+}

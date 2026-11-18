@@ -36,6 +36,21 @@ pub struct Config {
     pub rename_sidecars: bool,
     /// `libraw`: decode every RAW file with LibRaw instead of only when FlashRaw cannot.
     pub raw_decoder_libraw: bool,
+    /// Archive integrity monitor: hash every original and verify it again over time.
+    pub integrity: bool,
+    /// Days in which every original is verified once.
+    pub verify_days: u32,
+    /// The nightly window for verification: start (local hour, the container's TZ) and length.
+    pub verify_hour: u32,
+    pub verify_minutes: u32,
+    /// Read rate while hashing (MB/s).
+    pub hash_mbps: u32,
+    /// Where integrity alerts go: an ntfy topic, a Gotify `/message` URL or a webhook.
+    pub alert_url: Option<String>,
+    /// `auto` (from the URL), `ntfy`, `gotify` or `json`.
+    pub alert_format: String,
+    /// Token for the alert service (ntfy access token, Gotify app token, webhook bearer).
+    pub alert_token: Option<String>,
 }
 
 fn env_str(key: &str) -> Option<String> {
@@ -76,6 +91,14 @@ impl Config {
             exiftool: "exiftool".into(),
             rename_sidecars: true,
             raw_decoder_libraw: false,
+            integrity: false,
+            verify_days: 90,
+            verify_hour: 4,
+            verify_minutes: 120,
+            hash_mbps: 0,
+            alert_url: None,
+            alert_format: "auto".into(),
+            alert_token: None,
         }
     }
 
@@ -107,6 +130,14 @@ impl Config {
             exiftool: env_str("HYPERFOCAL_EXIFTOOL").unwrap_or_else(|| "exiftool".into()),
             rename_sidecars: env_bool("HYPERFOCAL_RENAME_SIDECARS", true),
             raw_decoder_libraw: env_str("HYPERFOCAL_RAW_DECODER").is_some_and(|v| v.eq_ignore_ascii_case("libraw")),
+            integrity: env_bool("HYPERFOCAL_INTEGRITY", true),
+            verify_days: env_num("HYPERFOCAL_VERIFY_DAYS", 90u32).clamp(1, 3650),
+            verify_hour: env_num("HYPERFOCAL_VERIFY_HOUR", 4u32).min(23),
+            verify_minutes: env_num("HYPERFOCAL_VERIFY_MINUTES", 120u32).clamp(1, 1440),
+            hash_mbps: env_num("HYPERFOCAL_HASH_MBPS", 60u32),
+            alert_url: env_str("HYPERFOCAL_ALERT_URL"),
+            alert_format: env_str("HYPERFOCAL_ALERT_FORMAT").unwrap_or_else(|| "auto".into()),
+            alert_token: env_str("HYPERFOCAL_ALERT_TOKEN"),
         }
     }
 }

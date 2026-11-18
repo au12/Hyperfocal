@@ -8,6 +8,7 @@ pub mod files;
 pub mod geotag;
 pub mod images;
 pub mod inspect;
+pub mod integrity;
 pub mod keywords;
 pub mod meta;
 pub mod model;
@@ -152,6 +153,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         decoders,
         jobs: Mutex::new(std::collections::HashMap::new()),
         tracks: Mutex::new(std::collections::HashMap::new()),
+        integrity: Default::default(),
     });
     if !readonly {
         match state.exiftool.lock().await.version().await {
@@ -188,6 +190,7 @@ async fn run() -> Result<()> {
 
     scan::spawn(state.clone());
     images::Images::spawn_workers(state.clone());
+    integrity::spawn(state.clone());
     if !state.trigram_ready() {
         // An index from before substring search: fill the trigram index in the background.
         let st = state.clone();

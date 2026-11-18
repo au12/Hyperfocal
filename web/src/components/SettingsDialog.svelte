@@ -117,6 +117,7 @@
       <div class="row wrap">
         <button class="btn" onclick={() => (store.dialog = 'keywords')}><Icon name="tags" /> Keywords</button>
         <button class="btn" onclick={() => (store.dialog = 'geotag')}><Icon name="route" /> Geotag from a track</button>
+        {#if st?.integrity !== false}<button class="btn" onclick={() => (store.dialog = 'integrity')}><Icon name="shield" /> Archive integrity</button>{/if}
         <button class="btn" onclick={rescan} disabled={rescanning}><Icon name="refresh" /> Re-scan library</button>
         {#if st?.auth}<button class="btn" onclick={logout}><Icon name="logout" /> Sign out</button>{/if}
       </div>

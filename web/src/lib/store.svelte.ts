@@ -9,6 +9,7 @@ import {
   type DateRange,
   type Folder,
   type FolderRow,
+  type IntegrityCounts,
   type JobStatus,
   type LabelColor,
   type Patch,
@@ -321,6 +322,8 @@ class Store {
   locationTargets = $state.raw<number[]>([]);
   /** Track files loaded for geotagging (this page session). */
   tracks = $state<TrackInfo[]>([]);
+  /** Archive integrity problems (kept current by the event stream). */
+  integrity = $state<IntegrityCounts>({ changed: 0, missing: 0, unreadable: 0 });
   mobile = $state(false);
   busy = $state(0);
 
@@ -361,6 +364,7 @@ class Store {
         this.needLogin = true;
         return;
       }
+      if (this.status.counts?.integrity) this.integrity = this.status.counts.integrity;
     } catch (e) {
       this.toast(`Server unreachable: ${(e as Error).message}`, 'error');
       return;
@@ -440,6 +444,8 @@ class Store {
       } else if (e.type === 'job') {
         const { type, ...j } = e;
         this.onJob(j as JobStatus);
+      } else if (e.type === 'integrity') {
+        this.integrity = { changed: e.changed ?? 0, missing: e.missing ?? 0, unreadable: e.unreadable ?? 0 };
       }
     };
     es.onerror = () => {

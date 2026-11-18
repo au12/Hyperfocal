@@ -208,7 +208,7 @@ fn migrate(c: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn set_meta(c: &Connection, key: &str, value: &str) -> Result<()> {
+pub fn set_meta(c: &Connection, key: &str, value: &str) -> Result<()> {
     c.execute("INSERT INTO meta(key, value) VALUES(?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value])?;
     Ok(())
 }

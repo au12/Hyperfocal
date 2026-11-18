@@ -22,9 +22,11 @@ export interface Status {
   readonly: boolean;
   reject_dir: string;
   progress: Progress;
-  counts: { photos: number; folders: number; geotagged: number };
+  counts: { photos: number; folders: number; geotagged: number; integrity?: IntegrityCounts };
   cache: Record<string, number>;
   decoders?: { flashraw: string; libraw: string | null; libheif: string | null; raw: 'flashraw' | 'libraw' };
+  /** The archive integrity monitor runs. */
+  integrity?: boolean;
   auth: boolean;
   logged_in: boolean;
 }
@@ -234,6 +236,52 @@ export interface Timeline {
   undated: number;
 }
 
+export interface IntegrityCounts {
+  changed: number;
+  missing: number;
+  unreadable: number;
+}
+
+/** 1 changed, 2 missing, 3 unreadable. */
+export interface IntegrityProblem {
+  id: number;
+  folder: string;
+  name: string;
+  status: 1 | 2 | 3;
+  since: number | null;
+  detail: string | null;
+  size: number;
+  verified_at: number;
+  first_seen: number;
+  notified: boolean;
+  folder_id: number | null;
+  photo_id: number | null;
+}
+
+export interface IntegritySession {
+  started: number;
+  ended: number | null;
+  files: number;
+  bytes: number;
+  problems: number;
+  manual: boolean;
+}
+
+export interface IntegritySummary extends IntegrityCounts {
+  enabled: boolean;
+  originals: number;
+  indexed: number;
+  bytes: number;
+  verified_recently: number;
+  oldest_verified: number | null;
+  problems: IntegrityProblem[];
+  worker: { phase: string; current: string | null; session: IntegritySession | null; last_alert: number | null; alert_error: string | null };
+  window: { open: boolean; next: number; hour: number; minutes: number };
+  days: number;
+  mbps: number;
+  alert: { host: string; format: string } | null;
+}
+
 /** A track file loaded for geotagging (kept by the server for a few hours). */
 export interface TrackInfo {
   id: string;
@@ -377,6 +425,12 @@ export const api = {
   forgetTrack: (id: string) => req<{ ok: boolean }>('DELETE', `geotag/tracks/${encodeURIComponent(id)}`),
   geotagPreview: (p: GeotagParams, signal?: AbortSignal) => req<GeotagPreview>('POST', 'geotag/preview', p, undefined, signal),
   geotagApply: (p: GeotagParams) => req<{ job: JobStatus }>('POST', 'geotag/apply', p),
+  integrity: () => req<IntegritySummary>('GET', 'integrity'),
+  integrityRecheck: (ids: number[]) => req<{ ok: boolean }>('POST', 'integrity/recheck', { ids }),
+  integrityAccept: (ids: number[]) => req<{ accepted: number }>('POST', 'integrity/accept', { ids }),
+  integrityForget: (ids: number[]) => req<{ forgotten: number }>('POST', 'integrity/forget', { ids }),
+  integrityRun: (o: { all?: boolean; stop?: boolean }) => req<{ ok: boolean }>('POST', 'integrity/run', o),
+  integrityTestAlert: () => req<{ ok: boolean }>('POST', 'integrity/test-alert', {}),
   login: (password: string) => req<{ ok: boolean }>('POST', 'login', { password }),
   logout: () => req<{ ok: boolean }>('POST', 'logout', {}),
 };

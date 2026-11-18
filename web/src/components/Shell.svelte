@@ -45,6 +45,10 @@
   const indexing = $derived(p && p.phase !== 'idle' && p.phase !== 'starting');
   const folderName = $derived(store.query ? 'Search' : (store.folders.get(store.folderId ?? -1)?.name ?? 'Hyperfocal'));
   const running = $derived(store.runningJobs());
+  const problems = $derived(store.integrity.changed + store.integrity.missing + store.integrity.unreadable);
+  const problemText = $derived(
+    [store.integrity.changed && `${store.integrity.changed} changed`, store.integrity.missing && `${store.integrity.missing} missing`, store.integrity.unreadable && `${store.integrity.unreadable} unreadable`].filter(Boolean).join(', '),
+  );
 </script>
 
 <header class="shell">
@@ -60,6 +64,7 @@
       <div class="title grow ellipsis">{folderName}</div>
       <button class="btn ghost icon" onclick={() => uiCtl.focusSearch()} aria-label="Search"><Icon name="search" /></button>
     {/if}
+    {#if problems}<button class="btn ghost icon alarm" onclick={() => (store.dialog = 'integrity')} aria-label="Archive integrity: {problemText}"><Icon name="shield-alert" /><span class="dot">{problems > 99 ? '99+' : problems}</span></button>{/if}
     <button class="btn ghost icon" onclick={() => (store.dialog = 'settings')} aria-label="Settings"><Icon name="settings" /></button>
   {:else}
     <div class="brand">
@@ -96,6 +101,9 @@
         </div>
       {/if}
       {#if store.busy > 0}<span class="spinner small" title="Saving…"></span>{/if}
+      {#if problems}
+        <button class="btn ghost icon alarm" onclick={() => (store.dialog = 'integrity')} title="Archive integrity: {problemText}"><Icon name="shield-alert" /><span class="dot">{problems > 99 ? '99+' : problems}</span></button>
+      {/if}
       <button class="btn ghost icon" onclick={() => (store.dialog = 'journal')} title="History & undo (Ctrl+Z)"><Icon name="history" /></button>
       <Popover align="right">
         {#snippet trigger(toggle, open)}
@@ -104,6 +112,7 @@
         {#snippet children(close)}
           <button class="menu-item" onclick={() => { close(); store.dialog = 'keywords'; }}><Icon name="tags" />Keywords</button>
           <button class="menu-item" onclick={() => { close(); store.dialog = 'geotag'; }}><Icon name="route" />Geotag from a track</button>
+          {#if store.status?.integrity !== false}<button class="menu-item" onclick={() => { close(); store.dialog = 'integrity'; }}><Icon name="shield" />Archive integrity</button>{/if}
         {/snippet}
       </Popover>
       <button class="btn ghost icon" onclick={toggleTheme} title="Light / dark"><Icon name={store.settings.theme === 'light' ? 'moon' : 'sun'} /></button>
@@ -228,5 +237,24 @@
   }
   .warn {
     color: var(--negative);
+  }
+  .alarm {
+    position: relative;
+    color: var(--negative);
+  }
+  .alarm .dot {
+    position: absolute;
+    top: 0.125rem;
+    right: 0.0625rem;
+    min-width: 1rem;
+    height: 1rem;
+    padding: 0 0.25rem;
+    border-radius: 0.5rem;
+    background: var(--negative);
+    color: #fff;
+    font-size: 0.625rem;
+    font-weight: 700;
+    line-height: 1rem;
+    text-align: center;
   }
 </style>

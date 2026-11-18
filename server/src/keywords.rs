@@ -178,7 +178,7 @@ pub fn tree<'a>(photos: impl Iterator<Item = (&'a [String], &'a [String])>) -> V
         }
     }
     let mut out: Vec<(String, u64)> = counts.into_values().collect();
-    out.sort_by(|a, b| lower(&a.0).cmp(&lower(&b.0)));
+    out.sort_by_key(|a| lower(&a.0));
     out
 }
 

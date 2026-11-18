@@ -91,6 +91,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/rescan", post(rescan))
         .route("/settings", get(get_settings).post(set_settings))
         .merge(crate::geotag::routes())
+        .merge(crate::integrity::routes())
         .route("/login", post(login))
         .route("/logout", post(logout))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -168,7 +169,8 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
         let photos: i64 = c.query_row("SELECT COALESCE(sum(photo_count), 0) FROM folders", [], |r| r.get(0))?;
         let folders: i64 = c.query_row("SELECT count(*) FROM folders", [], |r| r.get(0))?;
         let geo: i64 = c.query_row("SELECT count(*) FROM photos WHERE lat IS NOT NULL AND pair_of IS NULL", [], |r| r.get(0))?;
-        Ok(json!({"photos": photos, "folders": folders, "geotagged": geo}))
+        let (changed, missing, unreadable) = crate::integrity::counts(&c)?;
+        Ok(json!({"photos": photos, "folders": folders, "geotagged": geo, "integrity": {"changed": changed, "missing": missing, "unreadable": unreadable}}))
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))??;
@@ -180,6 +182,7 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
         "counts": counts,
         "cache": state.images.cache_stats(),
         "decoders": state.decoders,
+        "integrity": state.cfg.integrity,
         "auth": state.cfg.password.is_some(),
         "logged_in": true,
     })))
@@ -697,8 +700,11 @@ async fn keywords(State(state): St, Query(q): Query<KwQuery>) -> ApiResult<Json<
     Ok(Json(v))
 }
 
-/// Every photo's keyword lists (pairs folded): (id, plain, hierarchical).
-fn keyword_rows(c: &Connection) -> anyhow::Result<Vec<(i64, Vec<String>, Vec<String>)>> {
+/// A photo's id and keyword lists (plain, hierarchical).
+type KeywordRow = (i64, Vec<String>, Vec<String>);
+
+/// Every photo's keyword lists (pairs folded).
+fn keyword_rows(c: &Connection) -> anyhow::Result<Vec<KeywordRow>> {
     let split = |s: Option<String>| -> Vec<String> { s.map(|s| s.split('\n').filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default() };
     let mut st = c.prepare("SELECT id, keywords, hkeywords FROM photos WHERE pair_of IS NULL AND (keywords IS NOT NULL OR hkeywords IS NOT NULL)")?;
     let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, split(r.get(1)?), split(r.get(2)?))))?;

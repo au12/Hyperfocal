@@ -34,6 +34,8 @@ pub enum Event {
     Collections,
     /// Progress of a background change.
     Job(crate::ops::JobStatus),
+    /// The archive integrity problems changed: how many of each there are now.
+    Integrity { changed: i64, missing: i64, unreadable: i64 },
 }
 
 pub enum ScanMsg {
@@ -64,6 +66,7 @@ pub struct AppState {
     pub jobs: Mutex<std::collections::HashMap<String, crate::ops::JobStatus>>,
     /// Track files uploaded for geotagging, by id (kept for a few hours).
     pub tracks: Mutex<std::collections::HashMap<String, crate::geotag::StoredTrack>>,
+    pub integrity: crate::integrity::Integrity,
 }
 
 impl AppState {

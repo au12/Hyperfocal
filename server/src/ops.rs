@@ -778,6 +778,9 @@ fn move_one(state: &AppState, id: i64, to_reject: bool, batch: &str, undo_of: Op
     for n in &names {
         tx.execute("DELETE FROM photos WHERE folder_id = ?1 AND name = ?2", params![dst_folder_id, n])?;
         tx.execute("UPDATE photos SET folder_id = ?1 WHERE folder_id = ?2 AND name = ?3", params![dst_folder_id, loc.rec.folder_id, n])?;
+        // The integrity monitor's record moves with the file (not missing here, not new there).
+        tx.execute("DELETE FROM originals WHERE folder = ?1 AND name = ?2", params![dst_rel, n])?;
+        tx.execute("UPDATE originals SET folder = ?1 WHERE folder = ?2 AND name = ?3", params![dst_rel, loc.folder_path, n])?;
     }
     let moved: Vec<(i64, PhotoRec)> = {
         let mut st = tx.prepare(&format!("SELECT {} FROM photos p WHERE p.folder_id = ?1", repo::PHOTO_COLS))?;

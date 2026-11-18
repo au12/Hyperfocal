@@ -18,6 +18,7 @@
   import LocationDialog from './components/LocationDialog.svelte';
   import KeywordManager from './components/KeywordManager.svelte';
   import GeotagDialog from './components/GeotagDialog.svelte';
+  import IntegrityDialog from './components/IntegrityDialog.svelte';
   import BulkBar from './components/BulkBar.svelte';
   import MobileNav from './components/MobileNav.svelte';
 
@@ -207,6 +208,7 @@
   {#if store.dialog === 'location'}<LocationDialog />{/if}
   {#if store.dialog === 'keywords'}<KeywordManager />{/if}
   {#if store.dialog === 'geotag'}<GeotagDialog />{/if}
+  {#if store.dialog === 'integrity'}<IntegrityDialog />{/if}
 {/if}
 <Toasts />
 
