@@ -191,7 +191,7 @@
           aria-selected={store.selected.has(id)}
           title={store.list.n[i]}
         >
-          <img src={urls.thumb(id, store.list.v[i])} alt="" loading="lazy" decoding="async" draggable="false" />
+          <img src={urls.thumb(id, store.list.v[i], store.thumbRev[id])} alt="" loading="lazy" decoding="async" draggable="false" />
           {#if store.list.lc[i] && _r >= 0}<span class="lc label-{store.list.lc[i]}"></span>{/if}
           {#if store.list.p[i] === 1}<span class="flag"><Icon name="flag" size={14} fill /></span>{/if}
           {#if store.selected.has(id)}<span class="check"><Icon name="check" size={14} /></span>{/if}

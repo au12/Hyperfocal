@@ -436,7 +436,8 @@ export const api = {
 };
 
 export const urls = {
-  thumb: (id: number, v: string) => apiUrl(`photo/${id}/thumb`, { v }),
+  /** `r`: bumped when a draft thumbnail (shown at once for a HEIC file) was replaced. */
+  thumb: (id: number, v: string, r?: number) => apiUrl(`photo/${id}/thumb`, { v, r: r || undefined }),
   preview: (id: number, v: string, w: number) => apiUrl(`photo/${id}/preview`, { v, w }),
   jpeg: (id: number, v: string) => apiUrl(`photo/${id}/jpeg`, { v }),
   raw: (id: number, v: string, o: { w: number; mode: ToneMode; ev: number; wb: WbMode; low?: boolean }) =>

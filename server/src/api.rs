@@ -896,9 +896,14 @@ struct ImgQuery {
 
 async fn thumb(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
     let loc = load(&state, id).await?;
-    let path = state.images.thumb(&state, &loc).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
+    let (path, draft) = state.images.thumb(&state, &loc).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
     let bytes = tokio::fs::read(path).await.map_err(|e| anyhow::anyhow!(e))?;
-    Ok(image_response(bytes, "image/jpeg", q.v.is_some()))
+    let mut resp = image_response(bytes, "image/jpeg", q.v.is_some() && !draft);
+    if draft {
+        // Shown until the full-quality thumbnail is ready (an event says when): never cached.
+        resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    Ok(resp)
 }
 
 async fn preview(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {

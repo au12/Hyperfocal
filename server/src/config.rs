@@ -21,6 +21,10 @@ pub struct Config {
     pub rescan_minutes: u64,
     /// Build thumbnails for the whole library in the background.
     pub pregen_thumbs: bool,
+    /// Make previews of recent imports ahead of the first look, at idle.
+    pub pregen_previews: bool,
+    /// How recent (days since indexed) an import is for that.
+    pub pregen_days: u32,
     /// RAM budget for developed RAW data (MB).
     pub raw_cache_mb: usize,
     /// Disk budget for medium-size previews (MB).
@@ -83,6 +87,8 @@ impl Config {
             reject_dir: "_Rejected".into(),
             rescan_minutes: 0,
             pregen_thumbs: false,
+            pregen_previews: false,
+            pregen_days: 14,
             raw_cache_mb: 16,
             preview_cache_mb: 16,
             index_threads: 2,
@@ -122,6 +128,8 @@ impl Config {
             reject_dir,
             rescan_minutes: env_num("HYPERFOCAL_RESCAN_MINUTES", 15),
             pregen_thumbs: env_bool("HYPERFOCAL_PREGEN_THUMBS", true),
+            pregen_previews: env_bool("HYPERFOCAL_PREGEN_PREVIEWS", true),
+            pregen_days: env_num("HYPERFOCAL_PREGEN_DAYS", 14u32).clamp(1, 365),
             raw_cache_mb: env_num("HYPERFOCAL_RAW_CACHE_MB", 1536),
             preview_cache_mb: env_num("HYPERFOCAL_PREVIEW_CACHE_MB", 4096),
             index_threads: env_num("HYPERFOCAL_INDEX_THREADS", cores.clamp(2, 8)),

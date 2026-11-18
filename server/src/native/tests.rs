@@ -73,7 +73,27 @@ mod heic {
     }
 
     #[test]
+    fn embedded_thumbnails() {
+        // 1200x800 with a 320x212 thumbnail, as phones embed (green left, orange right).
+        let f = fixture("thumbnail.heic");
+        // Big enough for what is asked: the thumbnail, fitted.
+        let (img, info) = testing::heic_thumb(&f, 256, 0).unwrap();
+        assert_eq!((info.source.as_str(), img.w, info.src_w, info.src_h), ("thumbnail", 256, 1200, 800));
+        assert!(near(px(&img, 20, 80), [40, 160, 60], 16) && near(px(&img, 236, 80), [240, 140, 20], 16), "{:?}", px(&img, 20, 80));
+        // Smaller than asked: a draft when one is welcome, else the primary image.
+        let (img, info) = testing::heic_thumb(&f, 512, 240).unwrap();
+        assert_eq!((info.source.as_str(), img.w, img.h), ("draft", 320, 212));
+        let (img, info) = testing::heic_thumb(&f, 512, 0).unwrap();
+        assert_eq!((info.source.as_str(), img.w, img.h), ("primary", 512, 341));
+        assert!(testing::heic_thumb(&f, 512, 400).map(|r| r.1.source).unwrap() == "primary", "no draft that big");
+        // Files without thumbnails decode as before.
+        let (_, info) = testing::heic_thumb(&fixture("rotated.heic"), 512, 240).unwrap();
+        assert_eq!(info.source, "primary");
+    }
+
+    #[test]
     fn not_heif() {
+        assert!(testing::heic_thumb(&fixture("tiny.dng"), 512, 240).is_err());
         assert!(testing::heic_decode(&fixture("tiny.dng"), 0).is_err());
         assert!(testing::heic_decode(&fixture("missing.heic"), 0).is_err());
     }

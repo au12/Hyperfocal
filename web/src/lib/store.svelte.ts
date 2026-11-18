@@ -322,6 +322,8 @@ class Store {
   locationTargets = $state.raw<number[]>([]);
   /** Track files loaded for geotagging (this page session). */
   tracks = $state<TrackInfo[]>([]);
+  /** Thumbnails replaced since they were first shown (a HEIC draft), by photo id. */
+  thumbRev = $state<Record<number, number>>({});
   /** Archive integrity problems (kept current by the event stream). */
   integrity = $state<IntegrityCounts>({ changed: 0, missing: 0, unreadable: 0 });
   mobile = $state(false);
@@ -444,6 +446,8 @@ class Store {
       } else if (e.type === 'job') {
         const { type, ...j } = e;
         this.onJob(j as JobStatus);
+      } else if (e.type === 'thumbs') {
+        for (const id of (e.ids ?? []) as number[]) this.thumbRev[id] = (this.thumbRev[id] ?? 0) + 1;
       } else if (e.type === 'integrity') {
         this.integrity = { changed: e.changed ?? 0, missing: e.missing ?? 0, unreadable: e.unreadable ?? 0 };
       }

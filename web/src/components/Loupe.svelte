@@ -654,7 +654,7 @@
           {@const j = i - filmHalf + k}
           {#if j >= 0 && j < L.id.length}
             <button class="fthumb" class:cur={j === i} onclick={() => store.goTo(j)} title={L.n[j]}>
-              <img src={urls.thumb(L.id[j], L.v[j])} alt="" loading="lazy" draggable="false" />
+              <img src={urls.thumb(L.id[j], L.v[j], store.thumbRev[L.id[j]])} alt="" loading="lazy" draggable="false" />
               {#if L.r[j] > 0}<span class="fs">{'★'.repeat(L.r[j])}</span>{/if}
               {#if L.lc[j]}<span class="flc label-{L.lc[j]}"></span>{/if}
             </button>

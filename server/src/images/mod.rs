@@ -24,7 +24,7 @@ use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tone::ToneMode;
 
 pub const THUMB_LONG: usize = 512;
@@ -144,7 +144,12 @@ pub struct Images {
     queue: Mutex<(VecDeque<i64>, HashSet<i64>)>,
     queue_cv: Condvar,
     interactive: AtomicUsize,
+    /// Preview requests per size, for pre-rendering at the size viewers use.
+    preview_sizes: Mutex<[u64; PREVIEW_SIZES.len()]>,
 }
+
+/// The preview sizes (long edge) the API serves.
+pub const PREVIEW_SIZES: [usize; 6] = [1024, 1600, 2048, 2560, 3200, 4096];
 
 /// Content signature of a photo for cache keys: changes when the file, its size or
 /// its effective orientation changes.
@@ -187,9 +192,14 @@ pub fn load_display_rgb(path: &Path, kind: Kind, min_long: usize) -> Result<Rgb>
             let (w, h) = (img.width() as usize, img.height() as usize);
             Ok(Rgb { w, h, px: img.into_raw() })
         }
-        Kind::Heic => Ok(native::heic_decode(path, min_long)?.0),
+        // An embedded thumbnail when it is big enough, else the primary image.
+        Kind::Heic => Ok(native::heic_thumb(path, min_long, 0)?.0),
     }
 }
+
+/// HEIC drafts: an embedded thumbnail at least this big is shown at once, while the
+/// full-quality thumbnail is made (iPhones embed 320x240).
+pub const DRAFT_MIN: usize = 240;
 
 /// An embedded preview at least this big (or `min_long`, if smaller) is good enough;
 /// otherwise the RAW data is developed.
@@ -286,11 +296,16 @@ impl Images {
             queue: Mutex::new((VecDeque::new(), HashSet::new())),
             queue_cv: Condvar::new(),
             interactive: AtomicUsize::new(0),
+            preview_sizes: Mutex::new([0; PREVIEW_SIZES.len()]),
         })
     }
 
     pub fn thumb_path(&self, rec: &PhotoRec) -> PathBuf {
         self.thumbs_dir.join(format!("{:02x}", rec.id % 256)).join(format!("{}_{}.jpg", rec.id, sig_str(rec)))
+    }
+
+    fn draft_path(&self, rec: &PhotoRec) -> PathBuf {
+        self.thumbs_dir.join(format!("{:02x}", rec.id % 256)).join(format!("{}_{}.draft.jpg", rec.id, sig_str(rec)))
     }
 
     fn preview_path(&self, rec: &PhotoRec, long: usize) -> PathBuf {
@@ -313,26 +328,91 @@ impl Images {
         self.interactive.load(Ordering::SeqCst) > 0 || self.gate.sem.available_permits() < self.gate.total
     }
 
-    /// Thumbnail file for a photo (generated on first request).
-    pub async fn thumb(&self, state: &AppState, loc: &Located) -> Result<PathBuf> {
+    /// Thumbnail file for a photo (generated on first request), and whether it is a
+    /// draft: for a HEIC file whose embedded thumbnail is smaller than a thumbnail,
+    /// that is shown at once while the full-quality one is made in the background.
+    pub async fn thumb(&self, state: &AppState, loc: &Located) -> Result<(PathBuf, bool)> {
         let path = self.thumb_path(&loc.rec);
         if path.exists() {
-            return Ok(path);
+            return Ok((path, false));
+        }
+        let kind = Kind::from_i32(loc.rec.kind);
+        let draft = self.draft_path(&loc.rec);
+        if kind == Kind::Heic && draft.exists() {
+            self.queue_first(loc.rec.id);
+            return Ok((draft, true));
         }
         self.interactive.fetch_add(1, Ordering::SeqCst);
         let _p = self.thumb_sem.acquire().await?;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
-        let (kind, orient, out) = (Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, path.clone());
-        let res = tokio::task::spawn_blocking(move || make_thumb(&src, kind, orient, &out)).await;
+        let (orient, out, dout) = (loc.rec.orientation as u8, path.clone(), draft.clone());
+        let res = tokio::task::spawn_blocking(move || -> Result<bool> {
+            if kind == Kind::Heic {
+                let (img, info) = native::heic_thumb(&src, THUMB_LONG, DRAFT_MIN)?;
+                let is_draft = info.source == "draft";
+                let img = jpeg::orient(jpeg::fit_long(img, THUMB_LONG)?, orient);
+                write_atomic(if is_draft { &dout } else { &out }, &jpeg::encode(&img, 78, false)?)?;
+                return Ok(is_draft);
+            }
+            make_thumb(&src, kind, orient, &out)?;
+            Ok(false)
+        })
+        .await;
         self.interactive.fetch_sub(1, Ordering::SeqCst);
-        res??;
-        Ok(path)
+        if res?? {
+            self.queue_first(loc.rec.id);
+            return Ok((draft, true));
+        }
+        Ok((path, false))
+    }
+
+    /// Put a photo at the front of the thumbnail queue.
+    fn queue_first(&self, id: i64) {
+        let mut q = self.queue.lock();
+        if q.1.insert(id) {
+            q.0.push_front(id);
+        } else if let Some(i) = q.0.iter().position(|x| *x == id) {
+            q.0.remove(i);
+            q.0.push_front(id);
+        }
+        self.queue_cv.notify_one();
+    }
+
+    /// The preview size viewers ask for most (2048 until anyone has asked).
+    pub fn preferred_preview_size(&self) -> usize {
+        let n = self.preview_sizes.lock();
+        let best = (0..n.len()).rev().max_by_key(|&i| n[i]).unwrap_or(2);
+        if n[best] == 0 { 2048 } else { PREVIEW_SIZES[best] }
+    }
+
+    /// Preview counts, as kept in the index between runs.
+    pub fn preview_size_counts(&self) -> Vec<u64> {
+        self.preview_sizes.lock().to_vec()
+    }
+
+    pub fn restore_preview_sizes(&self, counts: &[u64]) {
+        let mut n = self.preview_sizes.lock();
+        for (d, s) in n.iter_mut().zip(counts) {
+            *d = *s;
+        }
     }
 
     /// Medium preview (sensor orientation, long edge `long`), disk cached.
     pub async fn preview(&self, state: &AppState, loc: &Located, long: usize) -> Result<PathBuf> {
+        if let Some(i) = PREVIEW_SIZES.iter().position(|s| *s == long) {
+            let mut n = self.preview_sizes.lock();
+            n[i] += 1;
+            if n.iter().sum::<u64>() % 25 == 0 {
+                let counts = n.to_vec();
+                drop(n);
+                if let Ok(c) = state.db.get() {
+                    let _ = crate::db::set_meta(&c, "preview_sizes", &serde_json::to_string(&counts).unwrap_or_default());
+                }
+            }
+        }
         let path = self.preview_path(&loc.rec, long);
         if path.exists() {
+            touch(&path);
             return Ok(path);
         }
         self.interactive.fetch_add(1, Ordering::SeqCst);
@@ -340,12 +420,7 @@ impl Images {
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         let kind = Kind::from_i32(loc.rec.kind);
         let out = path.clone();
-        let res = tokio::task::spawn_blocking(move || -> Result<()> {
-            let img = load_display_rgb(&src, kind, long)?;
-            let img = jpeg::fit_long(img, long)?;
-            write_atomic(&out, &jpeg::encode(&img, 85, false)?)
-        })
-        .await;
+        let res = tokio::task::spawn_blocking(move || make_preview(&src, kind, long, &out)).await;
         self.interactive.fetch_sub(1, Ordering::SeqCst);
         res??;
         Ok(path)
@@ -478,9 +553,26 @@ impl Images {
         std::thread::Builder::new()
             .name("thumbs".into())
             .spawn(move || {
+                // Drafts replaced, told to viewers in batches.
+                let mut replaced: Vec<i64> = Vec::new();
+                let mut told = Instant::now();
                 loop {
+                    let flush = |replaced: &mut Vec<i64>, told: &mut Instant| {
+                        if !replaced.is_empty() {
+                            st.emit(crate::state::Event::Thumbs { ids: std::mem::take(replaced) });
+                            *told = Instant::now();
+                        }
+                    };
+                    if told.elapsed() > Duration::from_millis(500) {
+                        flush(&mut replaced, &mut told);
+                    }
                     let id = {
                         let mut q = st.images.queue.lock();
+                        if q.0.is_empty() && !replaced.is_empty() {
+                            drop(q);
+                            flush(&mut replaced, &mut told);
+                            q = st.images.queue.lock();
+                        }
                         while q.0.is_empty() {
                             st.images.queue_cv.wait_for(&mut q, Duration::from_secs(30));
                         }
@@ -495,20 +587,17 @@ impl Images {
                     while st.images.interactive.load(Ordering::SeqCst) > 0 {
                         std::thread::sleep(Duration::from_millis(40));
                     }
-                    let Ok(conn) = st.db.get() else { continue };
-                    let Ok(Some(loc)) = repo::load(&conn, id) else { continue };
-                    drop(conn);
-                    let out = st.images.thumb_path(&loc.rec);
-                    if out.exists() {
-                        continue;
-                    }
-                    let src = scan::photo_path(&st, &loc.folder_path, &loc.rec.name);
-                    if let Err(e) = raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, &out)) {
-                        tracing::debug!("thumbnail for {} failed: {e}", src.display());
+                    if build_thumb(&st, id) {
+                        replaced.push(id);
                     }
                 }
             })
             .expect("spawn thumbs");
+
+        if state.cfg.pregen_previews {
+            let st = state.clone();
+            std::thread::Builder::new().name("previews".into()).spawn(move || pregen_previews(&st)).expect("spawn previews");
+        }
 
         // Preview cache size limit.
         tokio::spawn(async move {
@@ -520,6 +609,130 @@ impl Images {
             }
         });
     }
+}
+
+/// Make a photo's thumbnail (queued work). True when it replaced a draft.
+pub fn build_thumb(st: &AppState, id: i64) -> bool {
+    let Ok(conn) = st.db.get() else { return false };
+    let Ok(Some(loc)) = repo::load(&conn, id) else { return false };
+    drop(conn);
+    let out = st.images.thumb_path(&loc.rec);
+    if out.exists() {
+        return false;
+    }
+    let draft = st.images.draft_path(&loc.rec);
+    let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
+    match raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, &out)) {
+        Ok(()) => std::fs::remove_file(&draft).is_ok(),
+        Err(e) => {
+            tracing::debug!("thumbnail for {} failed: {e}", src.display());
+            false
+        }
+    }
+}
+
+/// Previews of recent imports, made ahead of the first look while nothing else is going
+/// on (no viewer waiting, no thumbnails queued, no scan), at the size viewers ask for
+/// most, and only up to 70% of the preview cache, so they never push out what was
+/// actually viewed. Photos indexed before this ran (the library as it was) are left.
+fn pregen_previews(st: &Arc<AppState>) {
+    let since = {
+        let Ok(c) = st.db.get() else { return };
+        if let Some(v) = crate::db::get_meta(&c, "preview_sizes").and_then(|v| serde_json::from_str::<Vec<u64>>(&v).ok()) {
+            st.images.restore_preview_sizes(&v);
+        }
+        match crate::db::get_meta(&c, "pregen_since").and_then(|v| v.parse::<i64>().ok()) {
+            Some(v) => v,
+            None => {
+                let now = crate::db::now_ms();
+                let _ = crate::db::set_meta(&c, "pregen_since", &now.to_string());
+                now
+            }
+        }
+    };
+    let busy = || st.images.busy() || !st.images.queue.lock().0.is_empty() || st.progress.read().phase != "idle";
+    loop {
+        std::thread::sleep(Duration::from_secs(120));
+        if !busy() {
+            pregen_pass(st, since, &busy);
+        }
+    }
+}
+
+/// One pass of [`pregen_previews`]: returns how many previews it made.
+pub fn pregen_pass(st: &AppState, since: i64, busy: &dyn Fn() -> bool) -> usize {
+    let limit = st.images.preview_budget / 10 * 7;
+    let mut used = dir_size(&st.images.previews_dir);
+    let mut made = 0;
+    if used >= limit {
+        return 0;
+    }
+    {
+        let long = st.images.preferred_preview_size();
+        let from = (crate::db::now_ms() - st.cfg.pregen_days as i64 * 86_400_000).max(since + 3_600_000);
+        let ids: Vec<i64> = st
+            .db
+            .get()
+            .ok()
+            .and_then(|c| {
+                c.prepare(
+                    "SELECT p.id FROM photos p JOIN folders f ON f.id = p.folder_id
+                     WHERE p.added_at >= ?1 AND p.pair_of IS NULL AND f.is_reject = 0 ORDER BY p.added_at DESC LIMIT 2000",
+                )
+                .and_then(|mut q| q.query_map([from], |r| r.get(0))?.collect())
+                .ok()
+            })
+            .unwrap_or_default();
+        for id in ids {
+            while busy() {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            let Ok(conn) = st.db.get() else { break };
+            let Ok(Some(loc)) = repo::load(&conn, id) else { continue };
+            drop(conn);
+            let out = st.images.preview_path(&loc.rec, long);
+            if out.exists() {
+                continue;
+            }
+            let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
+            match raw::catch(|| make_preview(&src, Kind::from_i32(loc.rec.kind), long, &out)) {
+                Ok(()) => {
+                    used += std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+                    made += 1;
+                }
+                Err(e) => tracing::debug!("preview of {} not made ahead: {e}", src.display()),
+            }
+            if used >= limit {
+                break;
+            }
+        }
+    }
+    made
+}
+
+/// Total size of the files in a cache directory (one level of sub folders).
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .filter_map(|sub| std::fs::read_dir(sub.path()).ok())
+        .flat_map(|rd2| rd2.flatten().filter_map(|f| f.metadata().ok().filter(|m| m.is_file()).map(|m| m.len())))
+        .sum()
+}
+
+/// Mark a cached file as just used (the cache trims the least recently used first);
+/// at most once an hour per file.
+fn touch(path: &Path) {
+    let old = std::fs::metadata(path).and_then(|m| m.modified()).map(|t| t.elapsed().unwrap_or_default() > Duration::from_secs(3600)).unwrap_or(false);
+    if old && let Ok(f) = std::fs::File::options().write(true).open(path) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+}
+
+/// Write a preview of `src` (sensor orientation, long edge `long`) to `out`.
+fn make_preview(src: &Path, kind: Kind, long: usize, out: &Path) -> Result<()> {
+    let img = load_display_rgb(src, kind, long)?;
+    let img = jpeg::fit_long(img, long)?;
+    write_atomic(out, &jpeg::encode(&img, 85, false)?)
 }
 
 fn make_thumb(src: &Path, kind: Kind, orientation: u8, out: &Path) -> Result<()> {

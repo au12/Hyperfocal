@@ -36,6 +36,8 @@ pub enum Event {
     Job(crate::ops::JobStatus),
     /// The archive integrity problems changed: how many of each there are now.
     Integrity { changed: i64, missing: i64, unreadable: i64 },
+    /// Full-quality thumbnails replaced the drafts shown for these photos.
+    Thumbs { ids: Vec<i64> },
 }
 
 pub enum ScanMsg {

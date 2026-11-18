@@ -178,7 +178,12 @@ def main():
     png(src, 32, 32, ([(pq(203),) * 3] * 32 if r < 16 else [(pq(1000),) * 3] * 32 for r in range(32)), bits=16)
     run("heif-enc", "-L", "-p", "chroma=444", "-b", "10", "--matrix_coefficients", "9", "--colour_primaries", "9",
         "--transfer_characteristic", "16", "--full_range_flag", "1", src, "-o", os.path.join(HERE, "pq-hdr.heic"))
-    for f in ("rotated.heic", "display-p3.heic", "pq-hdr.heic", "tiny.dng"):
+    # 4. A phone-style file: 1200x800 primary image with an embedded 320 px thumbnail
+    #    (iPhones embed 320x240), left half green, right half orange.
+    src = os.path.join(tmp, "thumb.png")
+    png(src, 1200, 800, ([(40, 160, 60)] * 600 + [(240, 140, 20)] * 600 for _ in range(800)))
+    run("heif-enc", "-q", "60", "-t", "320", src, "-o", os.path.join(HERE, "thumbnail.heic"))
+    for f in ("rotated.heic", "display-p3.heic", "pq-hdr.heic", "thumbnail.heic", "tiny.dng"):
         print(f, os.path.getsize(os.path.join(HERE, f)), "bytes")
 
 

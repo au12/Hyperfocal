@@ -201,6 +201,10 @@ pub struct HeicInfo {
     pub bits: u8,
     /// What the colours were converted from.
     pub color: String,
+    /// Which image this is: `primary`, an embedded `thumbnail` (as big as asked), or a
+    /// smaller `draft`.
+    #[serde(default)]
+    pub source: String,
 }
 
 /// Decodes the primary image of a HEIC/HEIF file to sRGB, upright (the container's
@@ -210,6 +214,17 @@ pub fn heic_decode(path: &Path, max_long: usize) -> Result<(Rgb, HeicInfo)> {
         bail!("this build has no HEIC support");
     }
     let out = run(vec!["heic".into(), path.into(), max_long.to_string().into()], DECODE_TIMEOUT)?;
+    parse_heic(&out)
+}
+
+/// The image for a thumbnail of `want` pixels from a HEIC/HEIF file, as fast as it can
+/// be had: an embedded thumbnail at least that big, a smaller one of at least
+/// `draft_min` (marked `draft`), or the primary image.
+pub fn heic_thumb(path: &Path, want: usize, draft_min: usize) -> Result<(Rgb, HeicInfo)> {
+    if !HEIC {
+        bail!("this build has no HEIC support");
+    }
+    let out = run(vec!["heic-thumb".into(), path.into(), want.to_string().into(), draft_min.to_string().into()], DECODE_TIMEOUT)?;
     parse_heic(&out)
 }
 
@@ -428,6 +443,10 @@ pub mod testing {
 
     pub fn heic_decode(path: &Path, max_long: usize) -> Result<(Rgb, HeicInfo)> {
         parse_heic(&op(&["heic", path.to_str().unwrap(), &max_long.to_string()]))
+    }
+
+    pub fn heic_thumb(path: &Path, want: usize, draft_min: usize) -> Result<(Rgb, HeicInfo)> {
+        parse_heic(&op(&["heic-thumb", path.to_str().unwrap(), &want.to_string(), &draft_min.to_string()]))
     }
 
     pub fn libraw_meta(path: &Path) -> Result<LibrawMeta> {
