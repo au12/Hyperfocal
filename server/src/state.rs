@@ -51,6 +51,8 @@ pub struct AppState {
     pub busy_cv: Condvar,
     pub images: Images,
     pub readonly: AtomicBool,
+    /// The trigram index covers every photo, so search can match substrings.
+    pub trigram: AtomicBool,
     pub session_key: [u8; 32],
     /// RAW and HEIC decoders available to this build.
     pub decoders: crate::native::Decoders,
@@ -63,6 +65,10 @@ impl AppState {
 
     pub fn is_readonly(&self) -> bool {
         self.readonly.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn trigram_ready(&self) -> bool {
+        self.trigram.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn request_scan(&self, msg: ScanMsg) {

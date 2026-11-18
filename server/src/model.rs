@@ -116,20 +116,47 @@ pub fn taken_to_secs(s: &str) -> Option<i64> {
     if !(1800..=2200).contains(&y) || !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
         return None;
     }
-    // days_from_civil (Howard Hinnant)
-    let y2 = if mo <= 2 { y - 1 } else { y };
+    Some(days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + sec)
+}
+
+/// Days since 1970-01-01 of a civil date (Howard Hinnant's days_from_civil).
+pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y2 = if m <= 2 { y - 1 } else { y };
     let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
     let yoe = y2 - era * 400;
-    let mp = (mo + 9) % 12;
+    let mp = (m + 9) % 12;
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    Some(days * 86400 + h * 3600 + mi * 60 + sec)
+    era * 146097 + doe - 719468
+}
+
+/// The civil date (year, month, day) of a day number since 1970-01-01.
+pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn civil_dates() {
+        for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (1969, 12, 31), (2024, 7, 4), (1850, 3, 1)] {
+            let days = days_from_civil(y, m, d);
+            assert_eq!(civil_from_days(days), (y, m as u32, d as u32));
+        }
+        assert_eq!(days_from_civil(1970, 1, 2), 1);
+        assert_eq!(days_from_civil(1969, 12, 31), -1);
+    }
+
     #[test]
     fn taken() {
         assert_eq!(taken_to_secs("1970-01-01T00:00:00"), Some(0));

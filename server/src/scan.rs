@@ -120,6 +120,7 @@ pub fn sync_tree(state: &AppState) -> Result<bool> {
                 changed = true;
                 // Remove orphaned full-text rows.
                 tx.execute("DELETE FROM photos_fts WHERE rowid NOT IN (SELECT id FROM photos)", [])?;
+                tx.execute("DELETE FROM photos_tri WHERE rowid NOT IN (SELECT id FROM photos)", [])?;
             }
         }
     }

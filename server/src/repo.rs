@@ -93,9 +93,9 @@ pub fn upsert(c: &Connection, rec: &PhotoRec) -> Result<i64> {
         "INSERT INTO photos(folder_id, name, stem, ext, kind, size, mtime, sidecar, sidecar_mtime, width, height,
             orientation, taken, taken_str, make, model, lens, focal, fnum, exposure, iso, bias, rating, label, lcolor,
             pick, title, description, creator, rights, keywords, hkeywords, lat, lon, alt, city, state, country,
-            country_code, sublocation, meta_err, indexed_at)
+            country_code, sublocation, meta_err, indexed_at, added_at)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,
-            ?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39,?40,?41,?42)
+            ?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39,?40,?41,?42,?42)
          ON CONFLICT(folder_id, name) DO UPDATE SET stem=excluded.stem, ext=excluded.ext, kind=excluded.kind,
             size=excluded.size, mtime=excluded.mtime, sidecar=excluded.sidecar, sidecar_mtime=excluded.sidecar_mtime,
             width=excluded.width, height=excluded.height, orientation=excluded.orientation, taken=excluded.taken,
@@ -161,8 +161,37 @@ fn join_list(v: &[String]) -> Option<String> {
     if v.is_empty() { None } else { Some(v.join("\n")) }
 }
 
-/// Refresh the full-text index and keyword table for one photo.
+/// The text substring search looks through: every searchable field, one per line (a
+/// search word never spans two fields).
+fn search_text(rec: &PhotoRec, folder_path: &str) -> String {
+    let mut t = String::with_capacity(160);
+    let mut field = |v: &str| {
+        if !v.is_empty() {
+            t.push_str(v);
+            t.push('\n');
+        }
+    };
+    field(&rec.name);
+    field(folder_path);
+    for v in [&rec.title, &rec.description, &rec.sublocation, &rec.city, &rec.state, &rec.country, &rec.make, &rec.model, &rec.lens] {
+        field(v.as_deref().unwrap_or(""));
+    }
+    for k in rec.keywords.iter().chain(rec.hkeywords.iter()) {
+        field(k);
+    }
+    t
+}
+
+/// Refresh the trigram (substring search) row of one photo.
+pub fn index_trigram(c: &Connection, id: i64, rec: &PhotoRec, folder_path: &str) -> Result<()> {
+    c.prepare_cached("DELETE FROM photos_tri WHERE rowid = ?1")?.execute([id])?;
+    c.prepare_cached("INSERT INTO photos_tri(rowid, t) VALUES(?1, ?2)")?.execute(params![id, search_text(rec, folder_path)])?;
+    Ok(())
+}
+
+/// Refresh the full-text indexes and keyword table for one photo.
 pub fn index_text(c: &Connection, id: i64, rec: &PhotoRec, folder_path: &str) -> Result<()> {
+    index_trigram(c, id, rec, folder_path)?;
     c.execute("DELETE FROM photos_fts WHERE rowid = ?1", [id])?;
     let place = [&rec.sublocation, &rec.city, &rec.state, &rec.country]
         .iter()
@@ -201,6 +230,7 @@ pub fn index_text(c: &Connection, id: i64, rec: &PhotoRec, folder_path: &str) ->
 
 pub fn delete_photo(c: &Connection, id: i64) -> Result<()> {
     c.execute("DELETE FROM photos_fts WHERE rowid = ?1", [id])?;
+    c.execute("DELETE FROM photos_tri WHERE rowid = ?1", [id])?;
     c.execute("DELETE FROM photos WHERE id = ?1", [id])?;
     Ok(())
 }

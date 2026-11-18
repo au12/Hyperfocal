@@ -157,7 +157,8 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
     let st = state.clone();
     let counts = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
         let c = st.db.get()?;
-        let photos: i64 = c.query_row("SELECT count(*) FROM photos WHERE pair_of IS NULL", [], |r| r.get(0))?;
+        // Every folder keeps the count of its photos (pairs folded), so this is cheap.
+        let photos: i64 = c.query_row("SELECT COALESCE(sum(photo_count), 0) FROM folders", [], |r| r.get(0))?;
         let folders: i64 = c.query_row("SELECT count(*) FROM folders", [], |r| r.get(0))?;
         let geo: i64 = c.query_row("SELECT count(*) FROM photos WHERE lat IS NOT NULL AND pair_of IS NULL", [], |r| r.get(0))?;
         Ok(json!({"photos": photos, "folders": folders, "geotagged": geo}))
@@ -232,9 +233,20 @@ pub struct ListQuery {
     east: Option<f64>,
     north: Option<f64>,
     zoom: Option<u32>,
+    /// 1: only count the matching photos.
+    count: Option<u8>,
 }
 
-fn build_where(c: &Connection, q: &ListQuery) -> anyhow::Result<(String, Vec<Box<dyn ToSql>>)> {
+/// SQL for "this folder and everything below it" on `f.path`, as an index range (paths
+/// below `a` sort between `a/` and `a0`, since '0' follows '/').
+fn subtree(path: &str, a: &mut Vec<Box<dyn ToSql>>) -> String {
+    a.push(Box::new(path.to_string()));
+    a.push(Box::new(format!("{path}/")));
+    a.push(Box::new(format!("{path}0")));
+    "(f.path = ? OR (f.path >= ? AND f.path < ?))".into()
+}
+
+fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(String, Vec<Box<dyn ToSql>>)> {
     let mut w: Vec<String> = vec!["p.pair_of IS NULL".into()];
     let mut a: Vec<Box<dyn ToSql>> = Vec::new();
     let mut folder_is_reject = false;
@@ -243,10 +255,7 @@ fn build_where(c: &Connection, q: &ListQuery) -> anyhow::Result<(String, Vec<Box
         folder_is_reject = is_rej != 0;
         if q.rec.unwrap_or(0) == 1 {
             if !path.is_empty() {
-                w.push("(f.path = ? OR substr(f.path, 1, length(?) + 1) = ? || '/')".into());
-                a.push(Box::new(path.clone()));
-                a.push(Box::new(path.clone()));
-                a.push(Box::new(path));
+                w.push(subtree(&path, &mut a));
             }
         } else {
             w.push("p.folder_id = ?".into());
@@ -317,9 +326,16 @@ fn build_where(c: &Connection, q: &ListQuery) -> anyhow::Result<(String, Vec<Box
         w.push("p.id IN (SELECT photo_id FROM photo_keywords WHERE kw = ?)".into());
         a.push(Box::new(v.to_string()));
     }
-    if let Some(fq) = q.q.as_deref().and_then(crate::db::fts_query) {
-        w.push("p.id IN (SELECT rowid FROM photos_fts WHERE photos_fts MATCH ?)".into());
-        a.push(Box::new(fq));
+    if let Some(text) = q.q.as_deref() {
+        let s = crate::db::search_query(text, trigram);
+        if let Some(fq) = s.prefix {
+            w.push("p.id IN (SELECT rowid FROM photos_fts WHERE photos_fts MATCH ?)".into());
+            a.push(Box::new(fq));
+        }
+        if let Some(fq) = s.substring {
+            w.push("p.id IN (SELECT rowid FROM photos_tri WHERE photos_tri MATCH ?)".into());
+            a.push(Box::new(fq));
+        }
     }
     if let (Some(we), Some(s), Some(e), Some(n)) = (q.west, q.south, q.east, q.north) {
         w.push("p.lat BETWEEN ? AND ? AND p.lon BETWEEN ? AND ?".into());
@@ -345,18 +361,110 @@ fn order_by(q: &ListQuery) -> String {
 
 /// The file-type badge of a grid tile: `cr3`, or `cr3+jpg` / `cr3+jpg+hif` for a RAW
 /// with JPEG/HEIF files folded in (`companion` lists their names).
-fn file_label(ext: &str, companion: Option<&str>) -> String {
-    let mut label = ext.to_string();
+fn file_label_into(label: &mut String, ext: &str, companion: Option<&str>) {
+    label.push_str(ext);
     for name in companion.unwrap_or_default().split(',').filter(|n| !n.is_empty()) {
         label.push('+');
         label.push_str(&crate::model::split_name(name).1);
     }
+}
+
+#[cfg(test)]
+fn file_label(ext: &str, companion: Option<&str>) -> String {
+    let mut label = String::new();
+    file_label_into(&mut label, ext, companion);
     label
 }
 
-async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<Json<Value>> {
+/// A JSON string literal.
+fn json_str(out: &mut String, s: &str) {
+    use std::fmt::Write;
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// The columnar photo list, written straight into one string per column: a
+/// 300,000-photo list is 20 MB of JSON, and building it as `serde_json` values would
+/// allocate millions of small objects first.
+struct Columns {
+    cols: Vec<String>,
+    rows: usize,
+}
+
+impl Columns {
+    const NAMES: [&'static str; 14] = ["id", "n", "w", "h", "o", "t", "r", "lc", "p", "k", "f", "g", "v", "x"];
+
+    fn new() -> Columns {
+        Columns { cols: (0..Self::NAMES.len()).map(|_| String::with_capacity(4096)).collect(), rows: 0 }
+    }
+    fn row(&mut self) {
+        if self.rows > 0 {
+            for c in &mut self.cols {
+                c.push(',');
+            }
+        }
+        self.rows += 1;
+    }
+    fn int(&mut self, i: usize, v: i64) {
+        use std::fmt::Write;
+        let _ = write!(self.cols[i], "{v}");
+    }
+    fn opt_int(&mut self, i: usize, v: Option<i64>) {
+        match v {
+            Some(v) => self.int(i, v),
+            None => self.cols[i].push_str("null"),
+        }
+    }
+    fn str(&mut self, i: usize, v: &str) {
+        json_str(&mut self.cols[i], v);
+    }
+    fn opt_str(&mut self, i: usize, v: Option<&str>) {
+        match v {
+            Some(v) => self.str(i, v),
+            None => self.cols[i].push_str("null"),
+        }
+    }
+    fn finish(self) -> String {
+        let mut out = String::with_capacity(self.cols.iter().map(|c| c.len() + 8).sum::<usize>() + 2);
+        out.push('{');
+        for (i, (name, col)) in Self::NAMES.iter().zip(self.cols).enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('"');
+            out.push_str(name);
+            out.push_str("\":[");
+            out.push_str(&col);
+            out.push(']');
+        }
+        out.push('}');
+        out
+    }
+}
+
+fn json_response(body: String) -> Response {
+    let mut resp = Response::new(Body::from(body));
+    resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    resp
+}
+
+async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<Response> {
+    let count_only = q.count.unwrap_or(0) == 1;
     // First visit to a folder: index it right away; later visits re-check in the background.
-    if let Some(fid) = q.folder {
+    if let Some(fid) = q.folder.filter(|_| !count_only) {
         let st = state.clone();
         let scanned: i64 = {
             let c = state.db.get()?;
@@ -369,9 +477,17 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
         }
     }
     let st = state.clone();
-    let v = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+    let body = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
         let c = st.db.get()?;
-        let (wh, args) = build_where(&c, &q)?;
+        let (wh, args) = build_where(&c, &q, st.trigram_ready())?;
+        if count_only {
+            let n: i64 = c.query_row(
+                &format!("SELECT count(*) FROM photos p JOIN folders f ON f.id = p.folder_id WHERE {wh}"),
+                params_from_iter(args.iter().map(|b| b.as_ref())),
+                |r| r.get(0),
+            )?;
+            return Ok(format!("{{\"count\":{n}}}"));
+        }
         let limit = q.limit.unwrap_or(100_000).min(250_000);
         let sql = format!(
             "SELECT p.id, p.name, p.width, p.height, p.orientation, p.taken, p.rating, p.lcolor, p.pick, p.kind, p.folder_id,
@@ -380,34 +496,37 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
             order_by(&q)
         );
         let mut s = c.prepare(&sql)?;
-        let mut cols: [Vec<Value>; 14] = Default::default();
+        let mut cols = Columns::new();
         let mut rows = s.query(params_from_iter(args.iter().map(|b| b.as_ref())))?;
+        let mut label = String::new();
         while let Some(r) = rows.next()? {
             let id: i64 = r.get(0)?;
             let (w, h): (Option<i64>, Option<i64>) = (r.get(2)?, r.get(3)?);
             let o: i32 = r.get(4)?;
             let rec = crate::model::PhotoRec { id, size: r.get(12)?, mtime: r.get(13)?, orientation: o, ..Default::default() };
-            cols[0].push(json!(id));
-            cols[1].push(json!(r.get::<_, String>(1)?));
-            cols[2].push(json!(w.unwrap_or(3)));
-            cols[3].push(json!(h.unwrap_or(2)));
-            cols[4].push(json!(o));
-            cols[5].push(json!(r.get::<_, Option<i64>>(5)?));
-            cols[6].push(json!(r.get::<_, i32>(6)?));
-            cols[7].push(json!(r.get::<_, Option<String>>(7)?));
-            cols[8].push(json!(r.get::<_, i32>(8)?));
-            cols[9].push(json!(r.get::<_, i32>(9)?));
-            cols[10].push(json!(r.get::<_, i64>(10)?));
-            cols[11].push(json!(r.get::<_, bool>(11)? as u8));
-            cols[12].push(json!(images::sig_str(&rec)));
-            cols[13].push(json!(file_label(&r.get::<_, String>(15)?, r.get::<_, Option<String>>(14)?.as_deref())));
+            cols.row();
+            cols.int(0, id);
+            cols.str(1, r.get_ref(1)?.as_str()?);
+            cols.int(2, w.unwrap_or(3));
+            cols.int(3, h.unwrap_or(2));
+            cols.int(4, o as i64);
+            cols.opt_int(5, r.get(5)?);
+            cols.int(6, r.get::<_, i64>(6)?);
+            cols.opt_str(7, r.get_ref(7)?.as_str_or_null()?);
+            cols.int(8, r.get::<_, i64>(8)?);
+            cols.int(9, r.get::<_, i64>(9)?);
+            cols.int(10, r.get::<_, i64>(10)?);
+            cols.int(11, r.get::<_, bool>(11)? as i64);
+            cols.str(12, &images::sig_str(&rec));
+            label.clear();
+            file_label_into(&mut label, r.get_ref(15)?.as_str()?, r.get_ref(14)?.as_str_or_null()?);
+            cols.str(13, &label);
         }
-        let [id, n, w, h, o, t, r, lc, p, k, f, g, v, x] = cols;
-        Ok(json!({ "id": id, "n": n, "w": w, "h": h, "o": o, "t": t, "r": r, "lc": lc, "p": p, "k": k, "f": f, "g": g, "v": v, "x": x }))
+        Ok(cols.finish())
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))??;
-    Ok(Json(v))
+    Ok(json_response(body))
 }
 
 async fn facets(State(state): St) -> ApiResult<Json<Value>> {
@@ -419,16 +538,38 @@ async fn facets(State(state): St) -> ApiResult<Json<Value>> {
             let rows = s.query_map([], |r| Ok(json!([r.get::<_, String>(0)?, r.get::<_, i64>(1)?])))?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         };
+        // Years from day buckets: integer division walks the covering index, where
+        // strftime() on 300,000 rows costs more than the scan itself.
+        let mut years: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+        for (day, n) in day_counts(&c, false)? {
+            *years.entry(crate::model::civil_from_days(day).0).or_default() += n;
+        }
+        let years: Vec<Value> = years.into_iter().rev().map(|(y, n)| json!([y.to_string(), n])).collect();
         Ok(json!({
             "cameras": group("SELECT model, count(*) n FROM photos WHERE model IS NOT NULL AND pair_of IS NULL GROUP BY model ORDER BY n DESC LIMIT 200")?,
             "lenses": group("SELECT lens, count(*) n FROM photos WHERE lens IS NOT NULL AND pair_of IS NULL GROUP BY lens ORDER BY n DESC LIMIT 300")?,
-            "years": group("SELECT strftime('%Y', taken, 'unixepoch') y, count(*) n FROM photos WHERE taken IS NOT NULL AND pair_of IS NULL GROUP BY y ORDER BY y DESC")?,
+            "years": years,
             "labels": group("SELECT lcolor, count(*) n FROM photos WHERE lcolor IS NOT NULL AND pair_of IS NULL GROUP BY lcolor")?,
         }))
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))??;
     Ok(Json(v))
+}
+
+/// Photos per capture day (days since 1970-01-01, camera clock), optionally without
+/// the reject folders.
+fn day_counts(c: &Connection, skip_rejects: bool) -> anyhow::Result<Vec<(i64, i64)>> {
+    // Floor division, so photos from before 1970 land on the right day.
+    let day = "(p.taken / 86400) - (p.taken % 86400 < 0)";
+    let sql = if skip_rejects {
+        format!("SELECT {day} d, count(*) FROM photos p JOIN folders f ON f.id = p.folder_id WHERE p.pair_of IS NULL AND p.taken IS NOT NULL AND f.is_reject = 0 GROUP BY d")
+    } else {
+        format!("SELECT {day} d, count(*) FROM photos p WHERE p.pair_of IS NULL AND p.taken IS NOT NULL GROUP BY d")
+    };
+    let mut st = c.prepare(&sql)?;
+    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 #[derive(Deserialize)]
@@ -466,7 +607,7 @@ async fn geo_clusters(State(state): St, Query(q): Query<ListQuery>) -> ApiResult
             q2.south = Some(-90.0);
             q2.north = Some(90.0);
         }
-        let (wh, mut args) = build_where(&c, &q2)?;
+        let (wh, mut args) = build_where(&c, &q2, st.trigram_ready())?;
         let sql = format!(
             "SELECT CAST((p.lat + 90.0) / ? AS INT) gy, CAST((p.lon + 180.0) / ? AS INT) gx, count(*), avg(p.lat), avg(p.lon),
                     max(p.rating * 4294967296 + p.id), min(p.lat), min(p.lon), max(p.lat), max(p.lon)
@@ -736,7 +877,31 @@ async fn set_settings(State(state): St, Json(v): Json<Value>) -> ApiResult<Json<
 
 #[cfg(test)]
 mod tests {
-    use super::file_label;
+    use super::{Columns, file_label};
+
+    #[test]
+    fn columns_are_valid_json() {
+        let mut c = Columns::new();
+        for (i, name) in ["IMG_1.CR3", "quote \" back\\slash\n\t\u{1}", "Zürich ✓"].iter().enumerate() {
+            c.row();
+            for col in 0..Columns::NAMES.len() {
+                match col {
+                    1 | 12 | 13 => c.str(col, name),
+                    5 => c.opt_int(col, (i % 2 == 0).then_some(-5)),
+                    7 => c.opt_str(col, (i == 1).then_some("red")),
+                    _ => c.int(col, i as i64 * 1000 - 1),
+                }
+            }
+        }
+        let v: serde_json::Value = serde_json::from_str(&c.finish()).unwrap();
+        assert_eq!(v["n"][1], "quote \" back\\slash\n\t\u{1}");
+        assert_eq!(v["n"][2], "Zürich ✓");
+        assert_eq!(v["t"], serde_json::json!([-5, null, -5]));
+        assert_eq!(v["lc"], serde_json::json!([null, "red", null]));
+        assert_eq!(v["id"], serde_json::json!([-1, 999, 1999]));
+        let empty: serde_json::Value = serde_json::from_str(&Columns::new().finish()).unwrap();
+        assert_eq!(empty["x"], serde_json::json!([]));
+    }
 
     #[test]
     fn badges() {

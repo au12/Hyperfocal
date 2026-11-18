@@ -19,25 +19,7 @@ fn exiftool_available() -> bool {
 }
 
 fn test_config(root: &Path) -> Config {
-    Config {
-        photos_root: root.join("photos"),
-        config_dir: root.join("config"),
-        cache_dir: root.join("config").join("cache"),
-        web_dir: root.join("web"),
-        port: 0,
-        readonly: false,
-        reject_dir: "_Rejected".into(),
-        rescan_minutes: 0,
-        pregen_thumbs: false,
-        raw_cache_mb: 16,
-        preview_cache_mb: 16,
-        index_threads: 2,
-        decode_concurrency: 1,
-        password: None,
-        exiftool: "exiftool".into(),
-        rename_sidecars: true,
-        raw_decoder_libraw: false,
-    }
+    Config::for_tests(root)
 }
 
 /// Deterministic, file-specific bytes: the contents only need to be unique.
