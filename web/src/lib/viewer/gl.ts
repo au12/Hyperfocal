@@ -53,8 +53,17 @@ uniform vec2 u_full;       // full-resolution size (sensor orientation), px
 uniform float u_tile;      // tile size, px
 uniform float u_apron;     // neighbouring pixels around each tile in its layer
 uniform float u_layer;     // layer size, px
+uniform float u_gain;      // exposure correction for images not rendered with it (1 = none)
 
-vec3 img(vec2 st, float bias) {
+// Exposure correction in linear light on sRGB display values.
+vec3 expose(vec3 c) {
+  if (u_gain == 1.0) return c;
+  vec3 lin = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+  lin = min(lin * u_gain, 1.0);
+  return mix(lin * 12.92, 1.055 * pow(lin, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, lin));
+}
+
+vec3 imgSrc(vec2 st, float bias) {
   if (u_detail) {
     vec2 px = clamp(st, 0.0, 1.0) * u_full;
     ivec2 t = min(ivec2(px / u_tile), textureSize(u_page, 0) - 1);
@@ -65,7 +74,9 @@ vec3 img(vec2 st, float bias) {
     }
   }
   return texture(u_img, st, bias).rgb;
-}`;
+}
+
+vec3 img(vec2 st, float bias) { return expose(imgSrc(st, bias)); }`;
 
 // Pass 1 of screen sharpening: the plain view, edges extended past the image so the blur
 // does not pull the background in.
@@ -238,6 +249,9 @@ export interface ViewParams {
   underSolid: boolean;
   underColor: [number, number, number];
   bg: [number, number, number];
+  /** Exposure gain applied on screen (2^EV), for images the server did not render with
+   * the correction (JPEG previews, thumbnails). 1 or absent = none. */
+  gain?: number;
 }
 
 export function hexToRgb(h: string): [number, number, number] {
@@ -308,7 +322,7 @@ export class GLView {
       return [p, u];
     };
     const mapU = ['u_canvas', 'u_disp', 'u_center', 'u_scale', 'u_orient'];
-    const imgU = ['u_img', 'u_atlas', 'u_page', 'u_detail', 'u_full', 'u_tile', 'u_apron', 'u_layer'];
+    const imgU = ['u_img', 'u_atlas', 'u_page', 'u_detail', 'u_full', 'u_tile', 'u_apron', 'u_layer', 'u_gain'];
     [this.prog, this.u] = program(FS, [
       ...imgU, 'u_mask', 'u_blurH', 'u_hasImg', 'u_hasMask', 'u_maskOnly', 'u_overLod', 'u_underLod', ...mapU, 'u_texel', 'u_sharpen', 'u_sigma', 'u_invert',
       'u_peak', 'u_peakColor', 'u_over', 'u_under', 'u_overSolid', 'u_underSolid', 'u_underColor', 'u_bg',
@@ -554,8 +568,9 @@ export class GLView {
     return this.targets;
   }
 
-  private setDetail(u: Uniforms) {
+  private setDetail(u: Uniforms, gain = 1) {
     const gl = this.gl;
+    gl.uniform1f(u.u_gain, gain);
     const d = this.detail;
     const on = this.detailOn && !!d;
     gl.uniform1i(u.u_detail, on ? 1 : 0);
@@ -599,7 +614,7 @@ export class GLView {
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.view, 0);
       gl.useProgram(this.progView);
       this.setMap(this.uView, v);
-      this.setDetail(this.uView);
+      this.setDetail(this.uView, v.gain);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       // Pass 2: horizontal blur of pass 1.
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.blurH, 0);
@@ -615,7 +630,7 @@ export class GLView {
     gl.viewport(0, 0, cw, ch);
     gl.useProgram(this.prog);
     this.setMap(u, v);
-    this.setDetail(u);
+    this.setDetail(u, v.gain);
     gl.uniform1i(u.u_hasImg, this.hasImg ? 1 : 0);
     gl.uniform1i(u.u_hasMask, this.hasMask ? 1 : 0);
     gl.uniform1i(u.u_maskOnly, v.maskOnly ? 1 : 0);

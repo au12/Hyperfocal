@@ -14,6 +14,8 @@ export const compareCtl = {
 };
 export const gridCtl = {
   vertical: (_d: number) => {},
+  /** The photo a row above (-1) or below (1) a grid index, nearest by centre, or null. */
+  rowNeighbor: (_i: number, _d: number): number | null => null,
   page: (_d: number) => {},
   reveal: (_i: number) => {},
 };

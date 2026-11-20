@@ -12,7 +12,7 @@ export type Action =
   | 'rate0' | 'rate1' | 'rate2' | 'rate3' | 'rate4' | 'rate5' | 'rateReject' | 'rateUp' | 'rateDown'
   | 'labelRed' | 'labelYellow' | 'labelGreen' | 'labelBlue' | 'labelPurple'
   | 'pick' | 'unflag' | 'reject' | 'editTitle' | 'keywords' | 'location'
-  | 'selectToggle' | 'selectNext' | 'selectPrev' | 'selectAll' | 'selectNone' | 'selectInvert'
+  | 'selectToggle' | 'selectNext' | 'selectPrev' | 'selectDown' | 'selectUp' | 'selectAll' | 'selectNone' | 'selectInvert'
   | 'rotateCcw' | 'rotateCw' | 'rotate180'
   | 'histogram' | 'info' | 'filmstrip' | 'folders' | 'hidePanels' | 'help' | 'search' | 'undo' | 'map';
 
@@ -82,6 +82,8 @@ const FRV: Bindings = {
   selectToggle: ['Ctrl+Slash'],
   selectNext: ['Shift+ArrowRight', 'Ctrl+Period'],
   selectPrev: ['Shift+ArrowLeft', 'Ctrl+Comma'],
+  selectDown: ['Shift+ArrowDown'],
+  selectUp: ['Shift+ArrowUp'],
   selectAll: ['Ctrl+A'],
   selectNone: ['Ctrl+D'],
   selectInvert: ['Ctrl+I'],
@@ -135,7 +137,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['rotateCcw', 'Rotate left'], ['rotateCw', 'Rotate right'], ['rotate180', 'Rotate 180°'], ['undo', 'Undo last change'],
   ]],
   ['Selection & search', [
-    ['selectToggle', 'Select / deselect'], ['selectNext', 'Select and next'], ['selectPrev', 'Previous and select'], ['selectAll', 'Select all'], ['selectNone', 'Select none'], ['selectInvert', 'Invert selection'],
+    ['selectToggle', 'Select / deselect'], ['selectNext', 'Select and next'], ['selectPrev', 'Previous and select'], ['selectDown', 'Extend selection a row down'], ['selectUp', 'Extend selection a row up'], ['selectAll', 'Select all'], ['selectNone', 'Select none'], ['selectInvert', 'Invert selection'],
     ['search', 'Search'], ['map', 'Map view'], ['help', 'Keyboard shortcuts'],
   ]],
 ];

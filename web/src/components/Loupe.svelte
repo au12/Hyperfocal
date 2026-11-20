@@ -279,6 +279,8 @@
       underSolid: s.underDisplay === 'solid',
       underColor: hexToRgb(s.underColor),
       bg: s.bgGray ? [0.36, 0.36, 0.36] : [0.055, 0.07, 0.086],
+      // RAW renders carry the correction already; JPEGs and thumbnails get it on screen.
+      gain: shownKind === 'raw' ? 1 : 2 ** ev,
     });
   }
 
@@ -471,6 +473,7 @@
     void store.settings.sharpen1;
     void store.settings.sharpen2;
     void o;
+    void ev;
     requestDraw();
   });
 
@@ -549,7 +552,9 @@
         } else {
           lastTap = now;
           setTimeout(() => {
-            if (lastTap === now) chrome = !chrome;
+            if (lastTap !== now) return;
+            if (sheet === 'tools') sheet = null;
+            else chrome = !chrome;
           }, 310);
         }
       }
@@ -592,9 +597,55 @@
   const halfRes = $derived(shownKind === 'raw' && !fit && curScale > 0.55 && !detailOn);
   /** Whether zooming in further brings the full-resolution RAW view. */
   const fullResAhead = $derived(!!detailPath && !!rawInfo?.full);
+
+  // ---------------------------------------------------------------- exposure
+  const EV_STEP = 1 / 3;
+  /** "+1⅓", "−⅔", "0": exposure in thirds of a stop. */
+  function fmtEv(x: number): string {
+    const t = Math.round(Math.abs(x) * 3);
+    if (Math.abs(Math.abs(x) * 3 - t) > 0.01) return (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toFixed(2);
+    if (t === 0) return '0';
+    const whole = Math.floor(t / 3);
+    const frac = ['', '⅓', '⅔'][t % 3];
+    return (x > 0 ? '+' : '−') + (whole || !frac ? whole : '') + frac;
+  }
+  let evWheelAt = 0;
+  function onEvWheel(e: WheelEvent) {
+    e.preventDefault();
+    const d = e.deltaY || e.deltaX;
+    const now = performance.now();
+    if (Math.abs(d) < 1 || now < evWheelAt) return;
+    evWheelAt = now + 90;
+    store.bumpEv(d < 0 ? EV_STEP : -EV_STEP);
+  }
+
+  // ---------------------------------------------------------------- mobile tools tray
+  // While the tools are open the image stays live (pinch, pan, double-tap) and the page
+  // itself must not zoom: lock the viewport and swallow browser pinch gestures outside
+  // the canvas (iOS ignores user-scalable=no, but honours cancelled gesture events).
+  const toolsOpen = $derived(store.mobile && sheet === 'tools');
+  $effect(() => {
+    if (!toolsOpen) return;
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    const prev = meta?.content ?? '';
+    if (meta) meta.content = `${prev}, maximum-scale=1, user-scalable=no`;
+    const stop = (e: Event) => e.preventDefault();
+    const multi = (e: TouchEvent) => {
+      if (e.touches.length > 1 && e.target !== canvas) e.preventDefault();
+    };
+    document.addEventListener('gesturestart', stop);
+    document.addEventListener('gesturechange', stop);
+    document.addEventListener('touchmove', multi, { passive: false });
+    return () => {
+      if (meta) meta.content = prev;
+      document.removeEventListener('gesturestart', stop);
+      document.removeEventListener('gesturechange', stop);
+      document.removeEventListener('touchmove', multi);
+    };
+  });
 </script>
 
-<div class="loupe" class:chrome-off={!chrome}>
+<div class="loupe" class:chrome-off={!chrome} class:no-zoom={toolsOpen}>
   <header class="top">
     <button class="btn ghost icon" onclick={() => store.closeLoupe()} title="Back to grid (G / Esc)"><Icon name="arrow-left" /></button>
     <div class="title">
@@ -619,9 +670,18 @@
         <button class="btn sm icon" class:on={store.viewer.tone === 'highlights'} onclick={() => store.toggleTone('highlights')} title={'Highlight inspection' + store.keyHint('highlights')}><Icon name="highlights" /></button>
         <button class="btn sm icon" class:on={store.viewer.tone === 'linear'} onclick={() => store.toggleTone('linear')} title={'Linear' + store.keyHint('linear')}><Icon name="linear" /></button>
         <button class="btn sm icon" class:on={store.viewer.invert} onclick={() => store.setViewer('invert', !store.viewer.invert)} title={'Invert colours' + store.keyHint('invert')}><Icon name="invert" /></button>
-        <button class="btn sm" class:on={store.viewer.ev !== 0 && store.viewer.evOn} onclick={() => store.setViewer('evOn', !store.viewer.evOn)} title="Exposure correction (A, Alt+= / Alt+−)">
-          {store.viewer.ev > 0 ? '+' : ''}{store.viewer.ev.toFixed(1)} EV
-        </button>
+        <div class="evctl" onwheel={onEvWheel} role="group" aria-label="Exposure correction">
+          <button class="btn sm icon" onclick={() => store.bumpEv(-EV_STEP)} title={'Exposure −⅓ EV' + store.keyHint('evDown')}><Icon name="minus" /></button>
+          <button
+            class="btn sm evval tnum"
+            class:on={store.viewer.ev !== 0 && store.viewer.evOn}
+            class:off={store.viewer.ev !== 0 && !store.viewer.evOn}
+            onclick={() => store.setViewer('evOn', !store.viewer.evOn)}
+            oncontextmenu={(e) => { e.preventDefault(); store.setViewer('ev', 0); }}
+            title={'Exposure correction on/off' + store.keyHint('evToggle') + ' · scroll to adjust · right-click to reset' + store.keyHint('evReset')}
+          >{fmtEv(store.viewer.ev)} EV</button>
+          <button class="btn sm icon" onclick={() => store.bumpEv(EV_STEP)} title={'Exposure +⅓ EV' + store.keyHint('evUp')}><Icon name="plus" /></button>
+        </div>
       </div>
     {/if}
 
@@ -673,6 +733,7 @@
         {#if halfRes}<span class="chip" title={fullResAhead ? 'RAW view at half resolution: zoom in to 75% or more for the full sensor resolution' : 'RAW view is rendered at half resolution; switch to JPEG' + store.keyHint('source') + ' for full-resolution focus checks'}>RAW ½ res</span>{/if}
         {#if toneLabel[store.viewer.tone] && useRaw}<span class="chip">{toneLabel[store.viewer.tone]}</span>{/if}
         {#if wbLabel[store.viewer.wb] && useRaw}<span class="chip">{wbLabel[store.viewer.wb]}</span>{/if}
+        {#if ev !== 0}<span class="chip tnum">{fmtEv(ev)} EV{#if !useRaw}{' (JPEG)'}{/if}</span>{/if}
         {#if store.viewer.sharpen}<span class="chip">Sharpen {store.viewer.sharpen}</span>{/if}
         {#if store.viewer.invert}<span class="chip">Inverted</span>{/if}
         {#if store.viewer.peaking}<span class="chip">{peakLabel[store.viewer.peaking]}</span>{/if}
@@ -733,6 +794,30 @@
       </div>
     {/if}
   {:else}
+    {#if sheet === 'tools'}
+      <!-- In the layout, not over it: the image shrinks to fit above and stays zoomable. -->
+      <div class="tray">
+        <div class="mtools">
+          <button class="tool" class:on={store.viewer.sharpen > 0} onclick={() => store.setViewer('sharpen', ((store.viewer.sharpen + 1) % 3) as 0 | 1 | 2)}><Icon name="sharpen" /><span>Sharpen {store.viewer.sharpen || ''}</span></button>
+          <button class="tool" class:on={store.viewer.peaking > 0} onclick={() => store.setViewer('peaking', ((store.viewer.peaking + 1) % 4) as 0 | 1 | 2 | 3)}><Icon name="peaking" /><span>Peaking</span></button>
+          <button class="tool" class:on={store.viewer.over} onclick={() => store.setViewer('over', !store.viewer.over)}><Icon name="over" /><span>Overexposed</span></button>
+          <button class="tool" class:on={store.viewer.under} onclick={() => store.setViewer('under', !store.viewer.under)}><Icon name="shadows" /><span>Underexposed</span></button>
+          <button class="tool" class:on={store.viewer.tone === 'shadows'} onclick={() => store.toggleTone('shadows')}><Icon name="shadows" /><span>Shadow boost</span></button>
+          <button class="tool" class:on={store.viewer.tone === 'highlights'} onclick={() => store.toggleTone('highlights')}><Icon name="highlights" /><span>Highlights</span></button>
+          <button class="tool" class:on={store.viewer.tone === 'linear'} onclick={() => store.toggleTone('linear')}><Icon name="linear" /><span>Linear</span></button>
+          <button class="tool" class:on={store.viewer.invert} onclick={() => store.setViewer('invert', !store.viewer.invert)}><Icon name="invert" /><span>Invert</span></button>
+          <button class="tool" onclick={() => { const order = ['asshot', 'daylight', 'auto'] as const; store.setViewer('wb', order[(order.indexOf(store.viewer.wb) + 1) % 3]); store.setViewer('source', 'raw'); }}><Icon name="wb" /><span>WB {({ asshot: 'as shot', daylight: 'daylight', auto: 'auto' })[store.viewer.wb]}</span></button>
+          <button class="tool" onclick={() => store.rotate(90)}><Icon name="rotate-cw" /><span>Rotate</span></button>
+          <button class="tool" onclick={() => { sheet = null; store.openLocation(); }}><Icon name="pin" /><span>Location</span></button>
+        </div>
+        <div class="evrow">
+          <button class="btn" onclick={() => store.bumpEv(-EV_STEP)} aria-label="Exposure −⅓ EV"><Icon name="minus" /></button>
+          <button class="btn ghost tnum evval" class:off={store.viewer.ev !== 0 && !store.viewer.evOn} onclick={() => store.setViewer('evOn', !store.viewer.evOn)}>{fmtEv(store.viewer.ev)} EV</button>
+          <button class="btn" onclick={() => store.bumpEv(EV_STEP)} aria-label="Exposure +⅓ EV"><Icon name="plus" /></button>
+          <button class="btn ghost" onclick={() => store.setViewer('ev', 0)}>Reset</button>
+        </div>
+      </div>
+    {/if}
     <footer class="mbar">
       <button class="mb danger" onclick={() => store.reject()}><Icon name={inReject ? 'restore' : 'reject'} size={22} /><span>{inReject ? 'Restore' : 'Reject'}</span></button>
       <button class="mb" class:on={(L.r[i] ?? 0) > 0} onclick={() => (sheet = sheet === 'rate' ? null : 'rate')}>
@@ -744,7 +829,7 @@
       </button>
       <button class="mb" class:on={sheet === 'tools'} onclick={() => (sheet = sheet === 'tools' ? null : 'tools')}><Icon name="sliders" size={22} /><span>Tools</span></button>
     </footer>
-    {#if sheet}
+    {#if sheet === 'info' || sheet === 'rate'}
       <div class="sheet-scrim" onclick={() => (sheet = null)} role="presentation"></div>
       <div class="sheet" class:tall={sheet === 'info'}>
         <div class="grip"></div>
@@ -762,26 +847,6 @@
             {/each}
           </div>
           <button class="btn" onclick={() => { store.rate(0); sheet = null; }}>Clear rating</button>
-        {:else if sheet === 'tools'}
-          <div class="mtools">
-            <button class="tool" class:on={store.viewer.sharpen > 0} onclick={() => store.setViewer('sharpen', ((store.viewer.sharpen + 1) % 3) as 0 | 1 | 2)}><Icon name="sharpen" /><span>Sharpen {store.viewer.sharpen || ''}</span></button>
-            <button class="tool" class:on={store.viewer.peaking > 0} onclick={() => store.setViewer('peaking', ((store.viewer.peaking + 1) % 4) as 0 | 1 | 2 | 3)}><Icon name="peaking" /><span>Peaking</span></button>
-            <button class="tool" class:on={store.viewer.over} onclick={() => store.setViewer('over', !store.viewer.over)}><Icon name="over" /><span>Overexposed</span></button>
-            <button class="tool" class:on={store.viewer.under} onclick={() => store.setViewer('under', !store.viewer.under)}><Icon name="shadows" /><span>Underexposed</span></button>
-            <button class="tool" class:on={store.viewer.tone === 'shadows'} onclick={() => store.toggleTone('shadows')}><Icon name="shadows" /><span>Shadow boost</span></button>
-            <button class="tool" class:on={store.viewer.tone === 'highlights'} onclick={() => store.toggleTone('highlights')}><Icon name="highlights" /><span>Highlights</span></button>
-            <button class="tool" class:on={store.viewer.tone === 'linear'} onclick={() => store.toggleTone('linear')}><Icon name="linear" /><span>Linear</span></button>
-            <button class="tool" class:on={store.viewer.invert} onclick={() => store.setViewer('invert', !store.viewer.invert)}><Icon name="invert" /><span>Invert</span></button>
-            <button class="tool" onclick={() => { const order = ['asshot', 'daylight', 'auto'] as const; store.setViewer('wb', order[(order.indexOf(store.viewer.wb) + 1) % 3]); store.setViewer('source', 'raw'); }}><Icon name="wb" /><span>WB {({ asshot: 'as shot', daylight: 'daylight', auto: 'auto' })[store.viewer.wb]}</span></button>
-            <button class="tool" onclick={() => store.rotate(90)}><Icon name="rotate-cw" /><span>Rotate</span></button>
-            <button class="tool" onclick={() => { sheet = null; store.openLocation(); }}><Icon name="pin" /><span>Location</span></button>
-          </div>
-          <div class="evrow">
-            <button class="btn" onclick={() => { store.setViewer('ev', +(store.viewer.ev - 1 / 3).toFixed(2)); store.setViewer('evOn', true); }}><Icon name="minus" /></button>
-            <span class="tnum">{store.viewer.ev > 0 ? '+' : ''}{store.viewer.ev.toFixed(2)} EV</span>
-            <button class="btn" onclick={() => { store.setViewer('ev', +(store.viewer.ev + 1 / 3).toFixed(2)); store.setViewer('evOn', true); }}><Icon name="plus" /></button>
-            <button class="btn ghost" onclick={() => store.setViewer('ev', 0)}>Reset</button>
-          </div>
         {/if}
       </div>
     {/if}
@@ -837,6 +902,19 @@
   .tools sup {
     font-size: 0.625rem;
     margin-left: -0.125rem;
+  }
+  .evctl {
+    display: flex;
+    align-items: center;
+    gap: 0.125rem;
+  }
+  .evctl .evval {
+    min-width: 4.25rem;
+    justify-content: center;
+  }
+  .evval.off {
+    text-decoration: line-through;
+    opacity: 0.6;
   }
   .vsep {
     width: 1px;
@@ -1134,6 +1212,26 @@
   .srcbadge.raw {
     color: #ffb84d;
   }
+  .loupe.no-zoom {
+    touch-action: none;
+  }
+  .tray {
+    flex: none;
+    max-height: 45vh;
+    overflow: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    padding: 0.75rem 0.75rem 0.5rem;
+    background: var(--surface);
+    color: var(--text);
+    border-top: 1px solid var(--border);
+    animation: up 0.18s var(--ease);
+  }
+  :global([data-theme='light']) .tray {
+    --text: #131e29;
+    --text-2: #475e75;
+    --text-3: #556b82;
+  }
   .chrome-off .top,
   .chrome-off .mbar,
   .chrome-off .chips {
@@ -1235,7 +1333,10 @@
     align-items: center;
     justify-content: center;
     gap: 0.75rem;
-    margin-top: 1rem;
+    margin-top: 0.75rem;
+  }
+  .evrow .evval {
+    min-width: 5rem;
   }
   @media (max-width: 760px) {
     .top {

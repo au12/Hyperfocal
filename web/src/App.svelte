@@ -69,7 +69,7 @@
       case 'zoomOut': compareCtl.zoomOut(); return true;
       // Moving through the folder, selection and side panels do not apply here.
       case 'next2': case 'prev2': case 'next3': case 'prev3': case 'first': case 'last': case 'pageDown': case 'pageUp':
-      case 'selectToggle': case 'selectNext': case 'selectPrev': case 'selectAll': case 'selectNone': case 'selectInvert': case 'map':
+      case 'selectToggle': case 'selectNext': case 'selectPrev': case 'selectDown': case 'selectUp': case 'selectAll': case 'selectNone': case 'selectInvert': case 'map':
         return true;
     }
     return null;
@@ -127,10 +127,10 @@
       }
       case 'evToggle': store.setViewer('evOn', !v.evOn); break;
       case 'evReset': store.setViewer('ev', 0); break;
-      case 'evUp': store.setViewer('ev', Math.min(5, +(v.ev + EV_STEP).toFixed(2))); store.setViewer('evOn', true); break;
-      case 'evDown': store.setViewer('ev', Math.max(-5, +(v.ev - EV_STEP).toFixed(2))); store.setViewer('evOn', true); break;
-      case 'evUpBig': store.setViewer('ev', Math.min(5, v.ev + 1)); store.setViewer('evOn', true); break;
-      case 'evDownBig': store.setViewer('ev', Math.max(-5, v.ev - 1)); store.setViewer('evOn', true); break;
+      case 'evUp': store.bumpEv(EV_STEP); break;
+      case 'evDown': store.bumpEv(-EV_STEP); break;
+      case 'evUpBig': store.bumpEv(1); break;
+      case 'evDownBig': store.bumpEv(-1); break;
       case 'rate0': store.rate(0); break;
       case 'rate1': store.rate(1); break;
       case 'rate2': store.rate(2); break;
@@ -154,6 +154,12 @@
       case 'selectToggle': store.select(inLoupe ? store.current : store.cursor, 'toggle'); break;
       case 'selectNext': store.select(inLoupe ? store.current : store.cursor, 'toggle'); store.go(1); break;
       case 'selectPrev': store.go(-1); store.select(inLoupe ? store.current : store.cursor, 'toggle'); break;
+      case 'selectDown': case 'selectUp': {
+        if (inLoupe) return false;
+        const to = gridCtl.rowNeighbor(store.cursor, a === 'selectDown' ? 1 : -1);
+        if (to != null) store.extendTo(to);
+        break;
+      }
       case 'selectAll': store.selectAll(); break;
       case 'selectNone': store.clearSelection(); break;
       case 'selectInvert': store.invertSelection(); break;

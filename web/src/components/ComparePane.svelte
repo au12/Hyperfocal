@@ -52,6 +52,8 @@
   let cw = $state(1);
   let ch = $state(1);
   let shownUrl = '';
+  /** The shown image is a RAW render (exposure correction already applied). */
+  let shownRaw = false;
   let shownId = -1;
   let loadError = $state('');
   let maskShown = '';
@@ -88,10 +90,11 @@
     return { url: urls.preview(id, v, SIZES.find((s) => s >= need) ?? 2048), kind: 'preview' };
   }
 
-  function show(d: Decoded) {
+  function show(d: Decoded, raw = false) {
     if (!gl) return;
     gl.setImage(d.bmp, d.w, d.h);
     shownUrl = d.url;
+    shownRaw = raw;
     loadError = '';
     requestDraw();
   }
@@ -102,7 +105,7 @@
     const want = wanted();
     if (!want || shownUrl === want.url) return;
     const hit = cache.peek(want.url);
-    if (hit) return show(hit);
+    if (hit) return show(hit, want.kind === 'raw');
     if (shownId !== pid) {
       // The thumbnail first (stored upright: only for unrotated photos).
       gl.setImage(null);
@@ -116,7 +119,7 @@
     }
     try {
       const d = await cache.get(want.url);
-      if (id === pid && wanted()?.url === want.url) show(d);
+      if (id === pid && wanted()?.url === want.url) show(d, want.kind === 'raw');
     } catch (e) {
       if (id !== pid) return;
       loadError = (e as Error).message;
@@ -229,6 +232,7 @@
       underSolid: s.underDisplay === 'solid',
       underColor: hexToRgb(s.underColor),
       bg: s.bgGray ? [0.36, 0.36, 0.36] : [0.055, 0.07, 0.086],
+      gain: shownRaw ? 1 : 2 ** ev,
     });
   }
 
@@ -447,6 +451,7 @@
     void store.settings.sharpen2;
     void o;
     void dispW;
+    void ev;
     requestDraw();
   });
 </script>

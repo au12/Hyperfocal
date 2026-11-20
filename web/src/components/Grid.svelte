@@ -47,12 +47,11 @@
       viewH = scroller.clientHeight;
     });
     if (scroller) ro.observe(scroller);
-    gridCtl.vertical = (d: number) => {
-      const i = store.cursor;
+    gridCtl.rowNeighbor = (i: number, d: number) => {
       const r = layout.rowOf[i] ?? 0;
       const row = layout.rows[r];
       const next = layout.rows[r + d];
-      if (!row || !next) return;
+      if (!row || !next) return null;
       const cx = row.x[i - row.start] + row.w[i - row.start] / 2;
       let best = next.start;
       let bd = Infinity;
@@ -63,7 +62,11 @@
           best = k;
         }
       }
-      store.cursor = best;
+      return best;
+    };
+    gridCtl.vertical = (d: number) => {
+      const to = gridCtl.rowNeighbor(store.cursor, d);
+      if (to != null) store.cursor = to;
     };
     gridCtl.page = (d: number) => {
       if (!scroller) return;

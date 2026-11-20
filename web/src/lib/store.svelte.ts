@@ -918,6 +918,34 @@ class Store {
     this.cursor = i;
   };
 
+  /** Shift+arrow extension: the selection when it began, its fixed end, and where it
+   * last moved to. A new extension starts whenever the cursor has moved some other way
+   * or the selection was cleared. */
+  private ext: { list: PhotoList; anchor: number; head: number; base: Set<number> } | null = null;
+
+  /** Moves the cursor to `to`, selecting every photo between it and where the extension
+   * began (that photo included), on top of what was selected before it began. Moving
+   * back towards the start deselects again what the extension added. */
+  extendTo = (to: number) => {
+    const L = this.list;
+    if (to < 0 || to >= L.id.length) return;
+    let e = this.ext;
+    if (!e || e.list !== L || e.head !== this.cursor || !this.selected.has(L.id[e.head])) {
+      e = { list: L, anchor: this.cursor, head: this.cursor, base: new Set(this.selected) };
+      this.ext = e;
+    }
+    const [a0, b0] = e.anchor < e.head ? [e.anchor, e.head] : [e.head, e.anchor];
+    const [a1, b1] = e.anchor < to ? [e.anchor, to] : [to, e.anchor];
+    for (let k = a0; k <= b0; k++) {
+      const id = L.id[k];
+      if ((k < a1 || k > b1) && !e.base.has(id)) this.selected.delete(id);
+    }
+    for (let k = a1; k <= b1; k++) this.selected.add(L.id[k]);
+    e.head = to;
+    this.anchor = e.anchor;
+    this.cursor = to;
+  };
+
   selectAll = () => {
     for (const id of this.list.id) this.selected.add(id);
   };
@@ -1271,6 +1299,13 @@ class Store {
   // ------------------------------------------------------------ viewer toggles
   setViewer = <K extends keyof ViewerState>(k: K, v: ViewerState[K]) => {
     this.viewer[k] = v;
+    this.persist();
+  };
+
+  /** Steps the exposure correction (turning it on), within ±5 EV. */
+  bumpEv = (d: number) => {
+    this.viewer.ev = Math.max(-5, Math.min(5, +(this.viewer.ev + d).toFixed(2)));
+    this.viewer.evOn = true;
     this.persist();
   };
 
