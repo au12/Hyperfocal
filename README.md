@@ -11,11 +11,12 @@
 
 ![Hyperfocal library view](docs/screenshots/desktop-library.jpg)
 
-Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, DNG, NEF, ARW, RAF, RW2, PEF and more), JPEG and HEIC/HEIF, and lets you browse, check and cull it from any browser on your LAN, including your phone. It never modifies or deletes an original image file. Ratings, labels, picks, keywords, captions and locations go into standard XMP sidecars, and rejected photos are moved into a `_Rejected` sub-folder.
+Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, DNG, NEF, ARW, RAF, RW2, PEF and more), JPEG and HEIC/HEIF, and lets you browse, check and cull it from any browser on your LAN, including your phone. It never modifies or deletes an original image file. Ratings, labels, picks, keywords, captions and locations go into standard XMP sidecars, and rejected photos are moved into a `_Rejected` sub-folder. With an optional companion container it also finds the people, dogs and cats in your photos, groups them by who they are, and writes the names you give them to the sidecars.
 
 ## Contents
 
 - [Features](#features)
+- [People & pets](#people--pets)
 - [Safety](#safety)
 - [Screenshots](#screenshots)
 - [Install on Unraid](#install-on-unraid)
@@ -86,6 +87,13 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 - **History.** Every change is journaled with what it changed from and to, and can be undone from the History dialog.
 - **Live updates.** Changes made in another tab, or picked up from disk, appear immediately.
 
+### People & pets
+
+- **Faces, dogs and cats, recognised on your server.** An optional companion container (`hyperfocal-ml`, CPU or NVIDIA GPU) finds them, and Hyperfocal matches each one against every face it knows. Nothing leaves your network. See [People & pets](#people--pets).
+- **Name a group once.** Its photos get the name, and new photos of that person or pet are suggested for a yes or no. Merge, split, hide strangers, and filter the grid by a person.
+- **Names go to the sidecars,** as `People|Name` and `Pets|Name` keywords, MWG face regions (Lightroom, digiKam) and IPTC "person shown", undoable like every other edit. Names other apps already wrote come in.
+- **On the photo.** The info panel lists who is in a photo; `Shift+F` draws the faces and pets on the single view, where you can name them.
+
 ### Interface
 
 - Dark and light themes. The design uses SAP's Horizon colours and the 72 typeface, with layout ideas from [Augenblick](https://github.com/orohde/Augenblick).
@@ -97,6 +105,88 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 - Can be added to the home screen as an app (web app manifest; browsers require HTTPS for this, for example through your reverse proxy).
 - **Offline copies.** Over HTTPS, the thumbnails, previews and folder lists you looked at stay viewable when the server cannot be reached (Settings → Offline; signing out clears them).
 - Optional password. All URLs are relative, so it also works under a sub-path.
+
+## People & pets
+
+Hyperfocal finds the faces, dogs and cats in your photos, groups them by who they are and lets you name them. Names you confirm go to the sidecars, where Lightroom, digiKam and Excire read them. It is optional: without the companion container, everything else works as before, and names other apps wrote are still read.
+
+### How it works
+
+- **The models run in a companion container, `hyperfocal-ml`** (Python and ONNX Runtime, on the CPU or an NVIDIA GPU). Hyperfocal sends it a 2048-pixel upright JPEG of each photo and gets back boxes and embeddings. The container doesn't mount your library, keeps nothing and needs no internet: the models are inside the image.
+- **Faces:** YuNet at three scales (faces from about 0.6% to the whole of the frame), aligned on five landmarks, then AuraFace embeddings. Each face gets a quality from how recognisable it is: masked, blurred, tiny and turned-away faces must match much more closely to count.
+- **Dogs and cats:** RF-DETR Small finds them, and a pet re-identification model (DINOv2-based) tells individual animals apart. A cat the detector took for a dog still finds its look-alikes.
+- **Who is who is decided in Hyperfocal.** Every face is compared with every known face (int8 vectors in memory, AVX2: 300 MB for 600,000 faces). Its closest look-alikes vote, confirmed faces count more, and a clear winner is needed: a near tie between two people is left for you. A person is in a photo at most once, and "not this person" is never overruled. Faces that match nobody form unnamed groups with their look-alikes. After the first analysis the groups are formed again, best faces first, which gives cleaner groups than the order the photos happened to be analysed in.
+- **Photos on screen come first,** then the rest of the library. The analysis pauses while you view photos, can be paused from the People view, and resumes after a restart. A photo is analysed again only when the file, its orientation or the models change; names carry over.
+
+### Naming and reviewing
+
+- **People & pets** (sidebar, or `Shift+P`) shows the named people and pets, then the unnamed groups, most photos first. Open a group, type a name, press Enter: its photos are named and the next group opens. Typing a name that already exists merges the two.
+- **New photos of someone you named are suggested** ("Anna?") until you say yes or no. Each person has a *To review* list, least sure first, with *Yes, all* and per-face ✓ / ✕. Select faces to move them to someone else or to ignore them.
+- **On a photo:** the info panel lists who is in it, with suggestions to confirm and unknown faces to name; `Shift+F` draws the boxes on the single view, where you can name them too. Click a name to see all of that person's photos (a filter you can combine with the others).
+- **Hide** a group of strangers (it keeps collecting them, out of sight), **remove** a group, or **ignore** a false detection.
+- **Every sidecar change is a history entry,** written in batches shortly after you name or confirm. Undoing one restores the sidecars and the names follow them back.
+
+### What is written
+
+Only confirmed, named faces and pets are written, to the photo's sidecar:
+
+| What | Where |
+| --- | --- |
+| A person | keyword `People\|Name` (`lr:hierarchicalSubject`, and `Name` in `dc:subject`) |
+| A pet | keyword `Pets\|Name` |
+| Where they are | MWG region (`mwg-rs:Regions`) of type `Face` or `Pet`, with the name |
+| Who is shown | `Iptc4xmpExt:PersonInImage` (people) |
+
+Going the other way, named face regions that Lightroom, digiKam or another app wrote name the face they cover when Hyperfocal analyses the photo, so names you already have carry over. A `People|Name` keyword with no region becomes a suggestion for the photo's only face. Taking a person's keyword off a photo by hand (in the info panel) means "not them": that face goes back to unknown. People and pets are renamed and merged in the People view, not in the keyword manager. Set `HYPERFOCAL_PEOPLE_XMP=false` to keep the names in Hyperfocal only.
+
+### Setting it up
+
+**Unraid:**
+
+1. Save the companion template:
+   ```bash
+   wget -O /boot/config/plugins/dockerMan/templates-user/my-Hyperfocal-ML.xml \
+     https://raw.githubusercontent.com/au12/Hyperfocal/main/unraid/hyperfocal-ml.xml
+   ```
+2. **Docker → Add Container → Hyperfocal-ML**, and **Apply**. It has no web UI and needs no paths.
+3. In the Hyperfocal container, set **People and pets: ML service URL** to `http://<server-ip>:8090`, and **Apply**. The People & pets entry appears in the sidebar, and the analysis starts.
+
+**NVIDIA GPU:** install the *Nvidia Driver* plugin (driver 580 or newer), then in the Hyperfocal-ML template set the repository to `ghcr.io/au12/hyperfocal-ml:cuda`, add `--runtime=nvidia` under **Extra Parameters**, and put your GPU's UUID (from the plugin's page) in **NVIDIA_VISIBLE_DEVICES**. The models are about 0.7 GB, so a 4 GB card is plenty, and the GPU can be shared with Plex or Immich. With the GPU, set **photos in flight** to 3 or 4 in Hyperfocal.
+
+**Docker Compose:** see the commented `hyperfocal-ml` service in the [example above](#docker-compose), and set `HYPERFOCAL_ML_URL: "http://hyperfocal-ml:8090"` on Hyperfocal.
+
+`hyperfocal-ml` settings:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `HFML_PORT` | `8090` | HTTP port |
+| `HFML_TOKEN` | – | Shared secret: requests must carry it (set the same value as `HYPERFOCAL_ML_TOKEN`) |
+| `HFML_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` (the GPU when the `cuda` image can reach one) |
+| `HFML_THREADS` | all cores | Threads per model on the CPU |
+| `HFML_WORKERS` | 1 (CPU), 2 (GPU) | Photos analysed at once |
+| `HFML_ANIMAL_DETECTOR` | `auto` | `rfdetr-small.onnx`, or `rfdetr-nano.onnx`: fewer small or half-hidden pets found, about 0.3 s a photo faster on a weak CPU |
+| `HFML_FACE_SCALES` | `1600,640,320` | Sizes faces are looked for at (long side, px) |
+| `HFML_GPU_MEM_MB` | – | Cap on the GPU memory ONNX Runtime takes |
+| `HFML_LOG` | `info` | `debug` for a line per photo |
+
+### Speed
+
+On the 2-vCPU test VM, a photo takes about 1–1.5 s on the CPU (faces at three scales, then dogs and cats), so a first pass over 100,000 photos takes a day and a half; a server CPU with more cores is proportionally faster, and new imports are analysed within minutes. The GPU variant was not measured on this VM.
+
+Matching a new face against 600,000 known faces takes 25 ms there (the 300 MB of vectors are read once); forming the groups again matches faces in batches at 7 ms a face against 600,000, so about 2 minutes for 100,000 faces and an hour for 600,000. It runs after the first analysis and at most once a day after that, a chunk at a time, so your edits never wait for it.
+
+### Models and licences
+
+Every model is licensed for commercial use, downloaded when the image is built and checked against its sha256 (`ml/models.json`):
+
+| Model | Does | Licence |
+| --- | --- | --- |
+| [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) 2026may (OpenCV Zoo) | finds faces and their landmarks | MIT |
+| [AuraFace v1](https://huggingface.co/fal/AuraFace-v1) (ResNet100, ArcFace loss) | tells faces apart | Apache-2.0 |
+| [RF-DETR](https://github.com/roboflow/rf-detr) Small / Nano (COCO) | finds dogs and cats | Apache-2.0 |
+| [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) | tells pets apart | Apache-2.0 |
+
+The face models most self-hosted apps use (InsightFace's `buffalo_l` and friends) are for non-commercial research only, so they are not used. AuraFace was trained on commercially licensed data and is a little less accurate than those on the hardest benchmarks; the matching thresholds were tuned on two weddings' worth of photos (crowds, veils, masks, profiles) to make few wrong suggestions rather than many groups.
 
 ## Safety
 
@@ -117,7 +207,8 @@ Hyperfocal was written for an archive that must not be damaged. These rules are 
    - libheif (HEIC) and LibRaw run only in a short-lived helper process that reads one file and exits. It is killed if it takes longer than three minutes.
    - If one of them crashes or hangs on a damaged file, only that request fails: the server, the indexer and your files are unaffected. These libraries do get security fixes from time to time, which is why they are kept at arm's length.
    - FlashRaw, the JPEG code and the HEIF metadata reader are memory-safe Rust and run in-process. A decoder that panics on a malformed file is caught too.
-8. **Read-only mode** turns every write off. It is used automatically when the library is mounted read-only or ExifTool is unavailable, and can be forced with `HYPERFOCAL_READONLY=true`.
+8. **The face and pet analysis sees copies, not your files.** Hyperfocal sends the `hyperfocal-ml` container a 2048-pixel JPEG of each photo over HTTP. The container never mounts your library, keeps nothing and makes no connection of its own (its models are inside the image). Names reach the sidecars only once you confirm them, through the same journaled, backed-up writes as everything else.
+9. **Read-only mode** turns every write off. It is used automatically when the library is mounted read-only or ExifTool is unavailable, and can be forced with `HYPERFOCAL_READONLY=true`.
 
 The readers of file contents that run in-process (HEIF, XMP, JPEG and TIFF/DNG headers, GPS tracks, the helper's output) are fuzzed with cargo-fuzz every week, and a smoke test of them runs on every push.
 
@@ -142,7 +233,15 @@ Mobile: grid, single view with the culling bar, view tools:
 
 ![Mobile layout](docs/screenshots/mobile.jpg)
 
-<sub>The demo library is made of CC0 sample files from [raw.pixls.us](https://raw.pixls.us/).</sub>
+People & pets: the people and groups found, and a pet named in the single view (`Shift+F` shows the boxes):
+
+| People | Pets |
+| --- | --- |
+| ![People & pets view](docs/screenshots/desktop-people.jpg) | ![A cat named in the single view](docs/screenshots/desktop-pets.jpg) |
+
+![People & pets on a phone](docs/screenshots/mobile-people.jpg)
+
+<sub>The demo library is made of CC0 sample files from [raw.pixls.us](https://raw.pixls.us/). The People & pets screenshots use CC0 and public-domain photos from [Openverse](https://openverse.org/); faces are blurred and people are given generic names.</sub>
 
 ## Install on Unraid
 
@@ -180,7 +279,23 @@ services:
       PGID: "100"
       UMASK: "000"
       # HYPERFOCAL_PASSWORD: "change-me"
+      # People & pets (optional, see below):
+      # HYPERFOCAL_ML_URL: "http://hyperfocal-ml:8090"
     restart: unless-stopped
+
+  # Optional: face and pet recognition. Use image ghcr.io/au12/hyperfocal-ml:cuda and the
+  # `deploy` block for an NVIDIA GPU.
+  # hyperfocal-ml:
+  #   image: ghcr.io/au12/hyperfocal-ml:latest
+  #   container_name: hyperfocal-ml
+  #   restart: unless-stopped
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: 1
+  #   #           capabilities: [gpu]
 ```
 
 ## Behind Nginx Proxy Manager
@@ -204,6 +319,7 @@ Hyperfocal reads EXIF, embedded XMP and sidecar XMP, in that order, so sidecar v
 | Keywords | `dc:subject` and `lr:hierarchicalSubject` | all of the above |
 | Title, caption, creator, copyright | `dc:title`, `dc:description`, `dc:creator`, `dc:rights` | all of the above |
 | Location | `exif:GPS*`, `photoshop:City/State/Country`, `Iptc4xmpCore:Location/CountryCode` | all of the above |
+| People and pets | `People\|Name` and `Pets\|Name` keywords; MWG regions (`mwg-rs:Regions`, type `Face` or `Pet`); `Iptc4xmpExt:PersonInImage` | Keywords: all of the above. Regions: Lightroom Classic, digiKam |
 
 Sidecars are named `IMG_1234.xmp`, the Adobe convention that Excire also uses. Darktable- and digiKam-style `IMG_1234.CR3.xmp` sidecars are renamed to `IMG_1234.xmp` when the folder is scanned, so Excire and Lightroom see their ratings and keywords too. The content is not touched. A sidecar is only renamed when nothing can mix: the photo is the only one with that name (apart from its JPEG/HEIF twin) in its folder and `_Rejected`, and no `IMG_1234.xmp` exists yet. When one does, both files stay and `IMG_1234.xmp` is used. Each rename shows up in the history and can be undone, which keeps the old name for good. Set `HYPERFOCAL_RENAME_SIDECARS=false` if you still edit in darktable: it keeps its edit history in that file and only looks for it under the darktable name.
 
@@ -243,6 +359,8 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | Keywords / location / title | `K` / `L` / `Alt+D` | same |
 | Undo | `Ctrl+Z` | `Ctrl+Z` |
 | Map | `M` | `M` |
+| People & pets | `Shift+P` | `Shift+Y` |
+| Faces and pets on the photo | `Shift+F` | `Shift+F` |
 | Search | `/` | `/` |
 
 ## Configuration
@@ -274,6 +392,11 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | `HYPERFOCAL_ALERT_URL` | – | Where integrity alerts go: an ntfy topic URL, a Gotify `…/message` URL, or any webhook |
 | `HYPERFOCAL_ALERT_FORMAT` | `auto` | `ntfy`, `gotify` or `json` (`auto` decides from the URL) |
 | `HYPERFOCAL_ALERT_TOKEN` | – | Access token for the alert service (ntfy token, Gotify app token, or a bearer token for a webhook) |
+| `HYPERFOCAL_ML_URL` | – | The `hyperfocal-ml` companion container for People & pets, e.g. `http://hyperfocal-ml:8090` |
+| `HYPERFOCAL_ML_TOKEN` | – | Its `HFML_TOKEN`, if set |
+| `HYPERFOCAL_PEOPLE_XMP` | `true` | Write confirmed names to the sidecars (`false`: names stay in the index) |
+| `HYPERFOCAL_ML_SIZE` | `2048` | Long side of the image sent for analysis, px |
+| `HYPERFOCAL_ML_CONCURRENCY` | `2` | Photos prepared and in flight to the ML service at once |
 | `TZ` | `UTC` | Time zone of the container, for the nightly window (for example `Europe/Lisbon`) |
 | `PUID` / `PGID` | `99` / `100` | User and group the app runs as (Unraid `nobody:users`) |
 | `UMASK` | `000` | `000` matches Unraid share permissions, so Excire can still edit sidecars over SMB |
@@ -304,7 +427,8 @@ On the same VM, the LibRaw helper starts in a few milliseconds, and a LibRaw dev
 - Fujifilm X-Trans, monochrome and linear DNG files use an approximate development path, about 0.6–0.9 s.
 - HEIC/HEIF files get the image view, metadata and every culling feature, but none of the RAW tools: they hold no sensor data.
 - LibRaw 0.21, the version in the Docker image, has no colour data for some cameras released after 2022. FlashRaw handles those, but if LibRaw has to take over for one, its RAW view can look flat in colour.
-- Hyperfocal does no AI tagging, face recognition, similarity search or duplicate detection. Keep Excire for those for now.
+- People & pets needs the companion container, and a first analysis takes a while on a CPU (see [Speed](#speed)). Telling apart two pets of the same breed and colour is harder than telling people apart: expect more suggestions to review.
+- Hyperfocal does no AI keywording, similarity search or duplicate detection yet. Keep Excire for those for now.
 
 ## Troubleshooting a file
 
@@ -337,9 +461,16 @@ cargo +nightly fuzz run xmp corpus/xmp seeds/xmp -- -max_total_time=60
 
 # image
 docker build -t hyperfocal .
+
+# People & pets service (Python 3.12): models into ./models, then serve on :8090
+cd ml && pip install -r requirements.txt && python fetch_models.py ../models
+HFML_MODELS=../models python -m hyperfocal_ml
+python -m pytest tests            # with HFML_MODELS set, the model tests run too
+docker build -f ml/Dockerfile -t hyperfocal-ml .                          # CPU
+docker build -f ml/Dockerfile --build-arg VARIANT=cuda -t hyperfocal-ml:cuda .   # NVIDIA
 ```
 
-The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a smoke test of every fuzz target on mutated inputs) and the 300,000-photo library test, builds the image and publishes it to GHCR. `.github/workflows/fuzz.yml` fuzzes the parsers weekly. The HEIC and DNG test fixtures are generated by `server/tests/fixtures/make_fixtures.py`.
+The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a smoke test of every fuzz target on mutated inputs) and the 300,000-photo library test, builds the image and publishes it to GHCR, and does the same for `hyperfocal-ml` (`latest` for the CPU, `cuda` for NVIDIA GPUs). `.github/workflows/fuzz.yml` fuzzes the parsers weekly. The HEIC and DNG test fixtures are generated by `server/tests/fixtures/make_fixtures.py`.
 
 ## Credits
 
@@ -353,6 +484,7 @@ The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a 
 - [SAP 72 font](https://github.com/SAP/theming-base-content) (Apache-2.0) and Horizon design tokens
 - [Augenblick](https://github.com/orohde/Augenblick): design inspiration
 - [FastRawViewer](https://www.fastrawviewer.com/) and [Excire Foto](https://excire.com/): the workflows this follows
+- People & pets models: [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT), [AuraFace](https://huggingface.co/fal/AuraFace-v1) (Apache-2.0), [RF-DETR](https://github.com/roboflow/rf-detr) (Apache-2.0), [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) (Apache-2.0), run with [ONNX Runtime](https://onnxruntime.ai/) (MIT) and [OpenCV](https://opencv.org/) (Apache-2.0)
 - Sample photos in the screenshots: [raw.pixls.us](https://raw.pixls.us/) (CC0)
 
 ## License

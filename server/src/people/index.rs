@@ -5,7 +5,6 @@
 //! index (HNSW) would only pay off at several million faces.
 
 use super::DIM;
-use crate::images::simd::dispatch;
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -17,18 +16,110 @@ pub fn quantize(v: &[f32]) -> Vec<i8> {
     v.iter().map(|x| (x * s).round().clamp(-127.0, 127.0) as i8).collect()
 }
 
+/// Dot product of two int8 vectors of the same length: the inner loop of every search,
+/// written out for AVX2 and SSE2 (the compiler's own vectorisation of the plain loop
+/// widens to 32 bits first and runs several times slower).
+#[inline]
+pub fn dot(a: &[i8], b: &[i8]) -> i32 {
+    debug_assert_eq!(a.len(), b.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if crate::images::simd::avx2() {
+            // SAFETY: the CPU has AVX2.
+            return unsafe { dot_avx2(a, b) };
+        }
+        // SAFETY: SSE2 is part of x86-64.
+        unsafe { dot_sse2(a, b) }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    dot_scalar(a, b)
+}
+
+#[allow(dead_code)]
 #[inline(always)]
-fn dot_imp(a: &[i8], b: &[i8]) -> i32 {
+fn dot_scalar(a: &[i8], b: &[i8]) -> i32 {
     let mut acc = [0i32; 16];
-    for (x, y) in a.chunks_exact(16).zip(b.chunks_exact(16)) {
+    let n = a.len() / 16 * 16;
+    for (x, y) in a[..n].chunks_exact(16).zip(b[..n].chunks_exact(16)) {
         for i in 0..16 {
             acc[i] += x[i] as i32 * y[i] as i32;
         }
     }
-    acc.iter().sum()
+    acc.iter().sum::<i32>() + a[n..].iter().zip(&b[n..]).map(|(&x, &y)| x as i32 * y as i32).sum::<i32>()
 }
 
-dispatch!(pub fn dot = dot_imp(a: &[i8], b: &[i8]) -> i32);
+/// 32 bytes at a time: sign-extend to 16 bits (vpmovsxbw) and multiply-add pairs into
+/// 32-bit sums (vpmaddwd). Products of two int8 fit 16 bits, pairs of them 32.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_avx2(a: &[i8], b: &[i8]) -> i32 {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let mut acc0 = _mm256_setzero_si256();
+    let mut acc1 = _mm256_setzero_si256();
+    let mut i = 0;
+    // SAFETY (all loads): i + 32 <= n.
+    unsafe {
+        while i + 32 <= n {
+            let a0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(pa.add(i) as *const __m128i));
+            let b0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(pb.add(i) as *const __m128i));
+            let a1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(pa.add(i + 16) as *const __m128i));
+            let b1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(pb.add(i + 16) as *const __m128i));
+            acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(a0, b0));
+            acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(a1, b1));
+            i += 32;
+        }
+    }
+    let acc = _mm256_add_epi32(acc0, acc1);
+    let s = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256::<1>(acc));
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b01_00_11_10>(s));
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b10_11_00_01>(s));
+    let mut r = _mm_cvtsi128_si32(s);
+    while i < n {
+        r += a[i] as i32 * b[i] as i32;
+        i += 1;
+    }
+    r
+}
+
+/// 16 bytes at a time: sign-extend by unpacking with the sign masks, then pmaddwd.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn dot_sse2(a: &[i8], b: &[i8]) -> i32 {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let zero = _mm_setzero_si128();
+    let mut acc0 = _mm_setzero_si128();
+    let mut acc1 = _mm_setzero_si128();
+    let mut i = 0;
+    // SAFETY (all loads): i + 16 <= n.
+    unsafe {
+        while i + 16 <= n {
+            let va = _mm_loadu_si128(pa.add(i) as *const __m128i);
+            let vb = _mm_loadu_si128(pb.add(i) as *const __m128i);
+            let sa = _mm_cmpgt_epi8(zero, va);
+            let sb = _mm_cmpgt_epi8(zero, vb);
+            let a0 = _mm_unpacklo_epi8(va, sa);
+            let a1 = _mm_unpackhi_epi8(va, sa);
+            let b0 = _mm_unpacklo_epi8(vb, sb);
+            let b1 = _mm_unpackhi_epi8(vb, sb);
+            acc0 = _mm_add_epi32(acc0, _mm_madd_epi16(a0, b0));
+            acc1 = _mm_add_epi32(acc1, _mm_madd_epi16(a1, b1));
+            i += 16;
+        }
+    }
+    let s = _mm_add_epi32(acc0, acc1);
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b01_00_11_10>(s));
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b10_11_00_01>(s));
+    let mut r = _mm_cvtsi128_si32(s);
+    while i < n {
+        r += a[i] as i32 * b[i] as i32;
+        i += 1;
+    }
+    r
+}
 
 pub fn norm(v: &[i8]) -> f32 {
     (dot(v, v) as f32).sqrt()
@@ -210,6 +301,51 @@ impl Space {
         hits.truncate(k);
         hits
     }
+
+    /// `search` for many queries at once (the same results): each stored vector is read
+    /// once for all of them, so a batch costs about one pass over memory instead of
+    /// one per query. In parallel over the stored vectors.
+    pub fn search_many(&self, qs: &[&[i8]], floor: f32, k: usize) -> Vec<Vec<Hit>> {
+        let nq = qs.len();
+        if nq == 0 || self.is_empty() {
+            return vec![Vec::new(); nq];
+        }
+        let qn: Vec<f32> = qs.iter().map(|q| norm(q)).collect();
+        let n = self.len();
+        const CHUNK: usize = 4096;
+        let parts: Vec<Vec<Vec<Hit>>> = (0..n.div_ceil(CHUNK))
+            .into_par_iter()
+            .map(|c| {
+                let mut out: Vec<Vec<Hit>> = vec![Vec::new(); nq];
+                for i in c * CHUNK..((c + 1) * CHUNK).min(n) {
+                    let v = &self.vecs[i * DIM..(i + 1) * DIM];
+                    let vn = self.norms[i];
+                    for (j, q) in qs.iter().enumerate() {
+                        let den = qn[j] * vn;
+                        if den <= 0.0 {
+                            continue;
+                        }
+                        let d = dot(q, v) as f32;
+                        if d >= floor * den {
+                            out[j].push(Hit { slot: i, sim: d / den });
+                        }
+                    }
+                }
+                out
+            })
+            .collect();
+        let mut res: Vec<Vec<Hit>> = vec![Vec::new(); nq];
+        for part in parts {
+            for (j, h) in part.into_iter().enumerate() {
+                res[j].extend(h);
+            }
+        }
+        for h in res.iter_mut() {
+            h.sort_by(|a, b| b.sim.total_cmp(&a.sim).then(a.slot.cmp(&b.slot)));
+            h.truncate(k);
+        }
+        res
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +385,36 @@ mod tests {
     }
 
     #[test]
+    fn kernels_agree() {
+        let mut x: u64 = 7;
+        for len in [0usize, 1, 15, 16, 31, 32, 33, 512, 515] {
+            let mut gen_v = || -> Vec<i8> {
+                (0..len)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        (x % 256) as u8 as i8
+                    })
+                    .collect()
+            };
+            let (a, b) = (gen_v(), gen_v());
+            let want = dot_scalar(&a, &b);
+            assert_eq!(dot(&a, &b), want, "len {len}");
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                assert_eq!(dot_sse2(&a, &b), want, "sse2 len {len}");
+                if std::arch::is_x86_feature_detected!("avx2") {
+                    assert_eq!(dot_avx2(&a, &b), want, "avx2 len {len}");
+                }
+            }
+        }
+        // The extremes: -128 * -128 everywhere.
+        let a = vec![-128i8; 512];
+        assert_eq!(dot(&a, &a), 512 * 16384);
+    }
+
+    #[test]
     fn search_insert_remove() {
         let mut s = Space::default();
         for i in 0..100 {
@@ -272,5 +438,49 @@ mod tests {
         s.relabel_subject(7, 0);
         assert_eq!(s.members(7).count(), 0);
         assert_eq!(s.len(), 99);
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// `cargo test --release --lib people::index::bench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn search_600k() {
+        let n = 600_000;
+        let mut s = Space::default();
+        let mut x: u64 = 0x9E3779B97F4A7C15;
+        let mut v = vec![0i8; DIM];
+        for i in 0..n {
+            for e in v.iter_mut() {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                *e = (x % 255) as i8;
+            }
+            s.insert(i as i64, i as i64 / 2, &v, 0.8, 0, false);
+        }
+        let q = v.clone();
+        let t = std::time::Instant::now();
+        let runs = 50;
+        let mut found = 0;
+        for _ in 0..runs {
+            found += s.search(&q, 0.37, 64).len();
+        }
+        let per = t.elapsed().as_secs_f64() / runs as f64;
+        println!("{n} vectors: {:.2} ms a search ({} level), {found} hits", per * 1000.0, crate::images::simd::level());
+        // Batched: 64 queries a pass.
+        let qs: Vec<Vec<i8>> = (0..64).map(|i| s.vector(i * 1000).to_vec()).collect();
+        let refs: Vec<&[i8]> = qs.iter().map(|q| q.as_slice()).collect();
+        let t = std::time::Instant::now();
+        let r = s.search_many(&refs, 0.37, 64);
+        let per = t.elapsed().as_secs_f64() / refs.len() as f64;
+        println!("batched: {:.2} ms a query", per * 1000.0);
+        for (j, q) in refs.iter().enumerate().take(4) {
+            let one = s.search(q, 0.37, 64);
+            assert_eq!(one.iter().map(|h| h.slot).collect::<Vec<_>>(), r[j].iter().map(|h| h.slot).collect::<Vec<_>>());
+        }
     }
 }

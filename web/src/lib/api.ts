@@ -332,6 +332,78 @@ export interface GeotagPreview {
   span: [number, number] | null;
 }
 
+// ---------------------------------------------------------------- people & pets
+
+export type SubjectKind = 'person' | 'dog' | 'cat';
+export type DetKind = 'face' | 'dog' | 'cat';
+
+/** A face, dog or cat found in a photo. `box` is [x, y, w, h] on the upright photo
+ * (0..1); state 0: found or suggested, 1: confirmed; src 1: a region from another app. */
+export interface Detection {
+  id: number;
+  photo: number;
+  kind: DetKind;
+  box: [number, number, number, number];
+  q: number;
+  state: 0 | 1;
+  sim: number | null;
+  src: 0 | 1;
+  subject: number | null;
+  score: number;
+  /** Version for the crop URL. */
+  v: string;
+  who?: { id: number; name: string | null; kind: SubjectKind; hidden: boolean };
+  /** In a subject's list: the photo's version, file name and capture time. */
+  pv?: string;
+  file?: string;
+  taken?: number | null;
+}
+
+/** A person, a pet, or an unnamed group of either. */
+export interface Subject {
+  id: number;
+  kind: SubjectKind;
+  name: string | null;
+  hidden: boolean;
+  photos: number;
+  confirmed: number;
+  /** Suggestions waiting for a yes or no. */
+  review: number;
+  cover: Detection | null;
+  keyword?: string;
+}
+
+export interface PeopleStatus {
+  status: {
+    enabled: boolean;
+    phase: 'off' | 'connecting' | 'offline' | 'analysing' | 'idle' | 'paused' | 'grouping' | 'error' | string;
+    service: { version: string; device: string; models: Record<string, { file: string }> } | null;
+    error: string | null;
+    analyzed: number;
+    pending: number;
+    failed: number;
+    rate: number;
+    current: string | null;
+    regroup: number | null;
+  };
+  people: number;
+  pets: number;
+  groups: number;
+  faces: number;
+  animals: number;
+  review: number;
+  paused: boolean;
+  /** Names are written to the sidecars. */
+  xmp: boolean;
+}
+
+export interface PhotoPeople {
+  analyzed: boolean;
+  error: string | null;
+  detections: Detection[];
+  ignored: number;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -452,6 +524,24 @@ export const api = {
   integrityForget: (ids: number[]) => req<{ forgotten: number }>('POST', 'integrity/forget', { ids }),
   integrityRun: (o: { all?: boolean; stop?: boolean }) => req<{ ok: boolean }>('POST', 'integrity/run', o),
   integrityTestAlert: () => req<{ ok: boolean }>('POST', 'integrity/test-alert', {}),
+  peopleStatus: () => req<PeopleStatus>('GET', 'people/status'),
+  subjects: (p: { kind: 'person' | 'pet'; hidden?: boolean; named?: 'named' | 'unnamed'; min?: number; q?: string; limit?: number }, signal?: AbortSignal) =>
+    req<{ subjects: Subject[]; total: number }>('GET', 'people', undefined, { ...p, hidden: p.hidden ? 1 : undefined }, signal),
+  subject: (id: number) => req<Subject>('GET', `people/${id}`),
+  subjectDetections: (id: number, p: { state?: 'auto' | 'confirmed' | 'all'; limit?: number; offset?: number }, signal?: AbortSignal) =>
+    req<Detection[]>('GET', `people/${id}/detections`, undefined, p, signal),
+  updateSubject: (id: number, b: { name?: string | null; hidden?: boolean }) => req<{ ok: boolean }>('POST', `people/${id}`, b),
+  deleteSubject: (id: number) => req<{ freed: number }>('DELETE', `people/${id}`),
+  mergeSubjects: (from: number[], into: number) => req<{ subject: number; moved: number }>('POST', 'people/merge', { from, into }),
+  assign: (ids: number[], who: { subject?: number; name?: string }) => req<{ subject: number }>('POST', 'people/assign', { ids, ...who }),
+  confirm: (b: { ids?: number[]; subject?: number }) => req<{ confirmed: number }>('POST', 'people/confirm', b),
+  rejectDetections: (ids: number[]) => req<{ rejected: number }>('POST', 'people/reject', { ids }),
+  ignore: (ids: number[], ignored = true) => req<{ changed: number }>('POST', 'people/ignore', { ids, ignored }),
+  peopleNames: (q: string, kind: DetKind | 'pet', signal?: AbortSignal) =>
+    req<{ id: number; name: string; kind: SubjectKind; photos: number }[]>('GET', 'people/names', undefined, { q, kind }, signal),
+  peopleAnalyze: (ids: number[]) => req<{ ok: boolean }>('POST', 'people/analyze', { ids }),
+  peopleControl: (b: { pause?: boolean; regroup?: boolean; reanalyze?: number }) => req<{ ok: boolean; paused: boolean }>('POST', 'people/control', b),
+  photoPeople: (id: number, signal?: AbortSignal) => req<PhotoPeople>('GET', `photo/${id}/people`, undefined, undefined, signal),
   login: (password: string) => req<{ ok: boolean }>('POST', 'login', { password }),
   logout: () => req<{ ok: boolean }>('POST', 'logout', {}),
 };
@@ -472,4 +562,6 @@ export const urls = {
   /** The tone curve of a RAW view (65536 bytes), for the GPU path. */
   lut: (mode: ToneMode, ev: number, ver: string) => apiUrl('lut', { mode: mode === 'normal' ? undefined : mode, ev: ev ? ev.toFixed(2) : undefined, v: ver || undefined }),
   events: () => apiUrl('events'),
+  /** A face or animal, cropped square (JPEG). */
+  crop: (d: { id: number; v: string }) => apiUrl(`detection/${d.id}/crop`, { v: d.v }),
 };

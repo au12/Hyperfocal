@@ -639,10 +639,70 @@ fn drain_gone(state: &AppState) {
     }
 }
 
+/// Person and pet keywords someone took off photos (in the keyword editor): the faces
+/// they named are not them after all. They become unknown again (never suggested as
+/// that name again) and their regions lose the name.
+fn unnames(state: &Arc<AppState>) {
+    let items: Vec<(i64, Vec<String>)> = std::mem::take(&mut state.people.ctl.lock().unname).into_iter().collect();
+    if items.is_empty() {
+        return;
+    }
+    let mut photos = Vec::new();
+    for (photo, keywords) in items {
+        let mut g = state.people.engine.lock();
+        let eng = g.get_or_insert_with(Engine::empty);
+        let Ok(mut c) = state.db.get() else { return };
+        let r = (|| -> Result<bool> {
+            let tx = c.transaction()?;
+            let mut freed = Vec::new();
+            for k in &keywords {
+                let Some((kind, name)) = super::parse_keyword(k) else { continue };
+                let Some(s) = tx
+                    .query_row("SELECT id FROM subjects WHERE kind = ?1 AND name = ?2 COLLATE NOCASE", params![kind, name], |r| r.get::<_, i64>(0))
+                    .optional()?
+                else {
+                    continue;
+                };
+                let ids: Vec<i64> = tx
+                    .prepare("SELECT id FROM detections WHERE photo_id = ?1 AND subject_id = ?2")?
+                    .query_map(params![photo, s], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                for d in ids {
+                    tx.execute("UPDATE detections SET subject_id = NULL, state = ?2, sim = NULL WHERE id = ?1", params![d, AUTO])?;
+                    tx.execute("INSERT OR IGNORE INTO detection_rejects(detection_id, subject_id) VALUES(?1, ?2)", params![d, s])?;
+                    eng.add_reject(d, s);
+                    freed.push(d);
+                }
+            }
+            eng.refresh(&tx, &freed)?;
+            tx.commit()?;
+            Ok(!freed.is_empty())
+        })();
+        match r {
+            Ok(true) => photos.push(photo),
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!("people: taking names off photo {photo}: {e:#}");
+                // The in-memory index may have moved on: back to what the database says.
+                if let Ok(c) = state.db.get()
+                    && let Ok(e) = Engine::load(&c)
+                {
+                    *eng = e;
+                }
+            }
+        }
+    }
+    if !photos.is_empty() {
+        state.people.write(photos.iter().map(|&p| (p, Vec::new())));
+        super::emit_changed(state, photos);
+    }
+}
+
 /// Names from sidecars that changed (or were restored by an undo), without the ML
-/// service; and detections deleted elsewhere.
+/// service; names taken off by hand; and detections deleted elsewhere.
 fn resyncs(state: &Arc<AppState>) {
     drain_gone(state);
+    unnames(state);
     loop {
         let (ids, exact): (Vec<i64>, bool) = {
             let mut c = state.people.ctl.lock();
@@ -702,17 +762,21 @@ fn run_regroup(state: &Arc<AppState>) {
         }
     };
     let r = (|| -> Result<()> {
-        let mut g = state.people.engine.lock();
-        let eng = g.get_or_insert_with(Engine::empty);
         let mut c = state.db.get()?;
-        let out = eng.regroup(&mut c, &progress)?;
-        let faces = eng.faces.len();
-        crate::db::set_meta(&c, "people_regrouped", &format!("{faces}/{}", crate::db::now_ms()))?;
-        tracing::info!("people: regrouped {faces} faces into {} new groups in {:.0}s", out.new_groups, t.elapsed().as_secs_f64());
+        let out = super::engine::regroup(&state.people.engine, &mut c, &progress)?;
+        let n = state.people.engine.lock().as_ref().map(|e| e.faces.len() + e.pets.len()).unwrap_or(0);
+        crate::db::set_meta(&c, "people_regrouped", &format!("{n}/{}", crate::db::now_ms()))?;
+        tracing::info!("people: regrouped {n} faces and animals into {} new groups in {:.0}s", out.new_groups, t.elapsed().as_secs_f64());
         Ok(())
     })();
     if let Err(e) = r {
         tracing::warn!("people: regrouping failed: {e:#}");
+        // The in-memory index may have moved on: back to what the database says.
+        if let Ok(c) = state.db.get()
+            && let Ok(e) = Engine::load(&c)
+        {
+            *state.people.engine.lock() = Some(e);
+        }
     }
     state.people.status.write().regroup = None;
     super::emit_changed(state, Vec::new());

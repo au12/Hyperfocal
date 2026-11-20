@@ -97,9 +97,9 @@ async fn status(State(state): St) -> ApiResult<Json<Value>> {
         let s = st.people.status.read().clone();
         Ok(json!({
             "status": s,
-            "people": count("SELECT count(*) FROM subjects WHERE kind = 1 AND name IS NOT NULL"),
-            "pets": count("SELECT count(*) FROM subjects WHERE kind = 2 AND name IS NOT NULL"),
-            "groups": count("SELECT count(*) FROM subjects WHERE name IS NULL AND hidden = 0"),
+            "people": count("SELECT count(*) FROM subjects s WHERE kind = 1 AND name IS NOT NULL AND EXISTS (SELECT 1 FROM detections d WHERE d.subject_id = s.id)"),
+            "pets": count("SELECT count(*) FROM subjects s WHERE kind = 2 AND name IS NOT NULL AND EXISTS (SELECT 1 FROM detections d WHERE d.subject_id = s.id)"),
+            "groups": count("SELECT count(*) FROM subjects s WHERE name IS NULL AND hidden = 0 AND EXISTS (SELECT 1 FROM detections d WHERE d.subject_id = s.id)"),
             "faces": count("SELECT count(*) FROM detections WHERE kind = 1 AND state != 3"),
             "animals": count("SELECT count(*) FROM detections WHERE kind IN (2, 3) AND state != 3"),
             "review": count("SELECT count(*) FROM detections d JOIN subjects s ON s.id = d.subject_id WHERE d.state = 0 AND s.name IS NOT NULL AND s.hidden = 0"),
@@ -129,13 +129,17 @@ struct ListQuery {
 }
 
 /// People, pets and unnamed groups: named first, then by number of photos.
+///
+/// Counted from the index of detections by subject, less the detections in reject
+/// folders (few, found from those folders): a join of every detection with its photo
+/// and folder would take a second on a 300,000-photo library. A person is in a photo
+/// at most once, so detections count photos.
 async fn list(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<Json<Value>> {
     let st = state.clone();
     blocking(move || {
         let c = st.db.get()?;
         let kind = if q.kind.as_deref() == Some("pet") { PET } else { PERSON };
-        // Photos in reject folders do not count (as in the photo grid).
-        let mut w = vec!["s.kind = ?".to_string(), "s.hidden = ?".to_string(), "d.state != 3".to_string(), "f.is_reject = 0".to_string()];
+        let mut w = vec!["s.kind = ?".to_string(), "s.hidden = ?".to_string()];
         let mut a: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(kind), Box::new(q.hidden.unwrap_or(0) as i64)];
         match q.named.as_deref() {
             Some("named") => w.push("s.name IS NOT NULL".into()),
@@ -146,48 +150,77 @@ async fn list(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<Json<Va
             w.push("s.name LIKE ? ESCAPE '\\'".into());
             a.push(Box::new(format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))));
         }
-        let join = " JOIN photos p ON p.id = d.photo_id JOIN folders f ON f.id = p.folder_id";
-        if let Some(fid) = q.folder {
-            let path: String = c.query_row("SELECT path FROM folders WHERE id = ?1", [fid], |r| r.get(0)).map_err(|_| anyhow::anyhow!("no such folder"))?;
-            if !path.is_empty() {
-                w.push("(f.path = ? OR (f.path >= ? AND f.path < ?))".into());
-                a.push(Box::new(path.clone()));
-                a.push(Box::new(format!("{path}/")));
-                a.push(Box::new(format!("{path}0")));
+        // Detections that count: not ignored, not in a reject folder, and in the folder
+        // asked for (and below it).
+        let (scope, scope_args): (String, Vec<String>) = match q.folder {
+            Some(fid) => {
+                let path: String = c.query_row("SELECT path FROM folders WHERE id = ?1", [fid], |r| r.get(0)).map_err(|_| anyhow::anyhow!("no such folder"))?;
+                if path.is_empty() {
+                    (String::new(), Vec::new())
+                } else {
+                    ("AND (f.path = ? OR (f.path >= ? AND f.path < ?))".into(), vec![path.clone(), format!("{path}/"), format!("{path}0")])
+                }
+            }
+            None => (String::new(), Vec::new()),
+        };
+        let mut counts: HashMap<i64, (i64, i64, i64)> = HashMap::new();
+        if scope.is_empty() {
+            let mut st = c.prepare_cached(
+                "SELECT subject_id, count(*), sum(state = 1), sum(state = 0) FROM detections WHERE subject_id IS NOT NULL AND state != 3 GROUP BY subject_id",
+            )?;
+            for r in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))? {
+                let (s, n) = r?;
+                counts.insert(s, n);
+            }
+            let mut st = c.prepare_cached(
+                "SELECT d.subject_id, count(*), sum(d.state = 1), sum(d.state = 0) FROM folders f JOIN photos p ON p.folder_id = f.id
+                 JOIN detections d ON d.photo_id = p.id WHERE f.is_reject = 1 AND d.subject_id IS NOT NULL AND d.state != 3 GROUP BY d.subject_id",
+            )?;
+            for r in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))))? {
+                let (s, (n, cf, au)) = r?;
+                if let Some(e) = counts.get_mut(&s) {
+                    e.0 -= n;
+                    e.1 -= cf;
+                    e.2 -= au;
+                }
+            }
+        } else {
+            let mut st = c.prepare(&format!(
+                "SELECT d.subject_id, count(*), sum(d.state = 1), sum(d.state = 0) FROM detections d JOIN photos p ON p.id = d.photo_id
+                 JOIN folders f ON f.id = p.folder_id WHERE d.subject_id IS NOT NULL AND d.state != 3 AND f.is_reject = 0 {scope} GROUP BY d.subject_id"
+            ))?;
+            for r in st.query_map(params_from_iter(scope_args.iter()), |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))? {
+                let (s, n) = r?;
+                counts.insert(s, n);
             }
         }
         let min = q.min.unwrap_or(1).max(1);
-        let limit = q.limit.unwrap_or(300).clamp(1, 5000);
-        let offset = q.offset.unwrap_or(0).max(0);
-        let sql = format!(
-            "SELECT s.id, s.kind, s.species, s.name, s.hidden, count(DISTINCT d.photo_id) n, sum(d.state = 1), sum(d.state = 0)
-             FROM subjects s JOIN detections d ON d.subject_id = s.id{join}
-             WHERE {} GROUP BY s.id HAVING n >= {min}
-             ORDER BY s.name IS NULL, n DESC, s.name COLLATE NOCASE LIMIT {limit} OFFSET {offset}",
-            w.join(" AND ")
-        );
-        let mut stmt = c.prepare(&sql)?;
+        let limit = q.limit.unwrap_or(300).clamp(1, 5000) as usize;
+        let offset = q.offset.unwrap_or(0).max(0) as usize;
+        let mut stmt = c.prepare(&format!("SELECT s.id, s.kind, s.species, s.name, s.hidden FROM subjects s WHERE {}", w.join(" AND ")))?;
         #[allow(clippy::type_complexity)]
-        let rows: Vec<(i64, i64, i64, Option<String>, i64, i64, i64, i64)> = stmt
-            .query_map(params_from_iter(a.iter().map(|b| b.as_ref())), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (id, k, species, name, hidden, n, confirmed, auto) in rows {
+        let mut rows: Vec<(i64, i64, i64, Option<String>, i64, (i64, i64, i64))> = stmt
+            .query_map(params_from_iter(a.iter().map(|b| b.as_ref())), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+            .filter_map(|r| r.ok())
+            .filter_map(|(id, k, sp, name, hidden)| counts.get(&id).filter(|n| n.0 > 0).map(|n| (id, k, sp, name, hidden, *n)))
+            .collect();
+        let total = rows.len();
+        rows.retain(|r| r.5.0 >= min);
+        rows.sort_by(|x, y| {
+            x.3.is_none()
+                .cmp(&y.3.is_none())
+                .then(y.5.0.cmp(&x.5.0))
+                .then_with(|| x.3.as_deref().unwrap_or("").to_lowercase().cmp(&y.3.as_deref().unwrap_or("").to_lowercase()))
+                .then(x.0.cmp(&y.0))
+        });
+        let mut out = Vec::new();
+        for (id, k, species, name, hidden, (n, confirmed, auto)) in rows.into_iter().skip(offset).take(limit) {
             out.push(json!({
                 "id": id, "kind": kind_label(k, species), "name": name, "hidden": hidden != 0,
                 "photos": n, "confirmed": confirmed, "review": if name.is_some() { auto } else { 0 },
                 "cover": cover(&c, id)?,
             }));
         }
-        // How many more there are below `min` (the UI offers to show them).
-        let total: i64 = c.query_row(
-            &format!(
-                "SELECT count(*) FROM (SELECT s.id FROM subjects s JOIN detections d ON d.subject_id = s.id{join} WHERE {} GROUP BY s.id)",
-                w.join(" AND ")
-            ),
-            params_from_iter(a.iter().map(|b| b.as_ref())),
-            |r| r.get(0),
-        )?;
         Ok(json!({ "subjects": out, "total": total }))
     })
     .await
@@ -195,19 +228,25 @@ async fn list(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<Json<Va
 }
 
 /// The detection that best shows a subject: a confirmed one if any, the best view.
+/// (Walks the subject's detections best first, `detections_best`: no sort.)
 fn cover(c: &Connection, subject: i64) -> anyhow::Result<Value> {
-    let row = c
-        .prepare_cached(&format!(
-            "SELECT {DET_COLS} FROM detections d JOIN photos p ON p.id = d.photo_id JOIN folders f ON f.id = p.folder_id
-             WHERE d.subject_id = ?1 AND d.state != 3 AND d.source = ?2 AND f.is_reject = 0
-             ORDER BY d.state = 1 DESC, d.quality DESC LIMIT 1"
-        ))?
-        .query_row(params![subject, SRC_DETECTED], |r| {
-            let photo: i64 = r.get(1)?;
-            det_json(r, &photo_sig(c, photo))
-        })
-        .optional()?;
-    Ok(row.unwrap_or(Value::Null))
+    let mut st = c.prepare_cached(&format!(
+        "SELECT {DET_COLS} FROM detections d JOIN photos p ON p.id = d.photo_id JOIN folders f ON f.id = p.folder_id
+         WHERE d.subject_id = ?1 AND d.state = ?2 AND d.source = ?3 AND f.is_reject = 0
+         ORDER BY d.quality DESC LIMIT 1"
+    ))?;
+    for state in [CONFIRMED, AUTO] {
+        let row = st
+            .query_row(params![subject, state, SRC_DETECTED], |r| {
+                let photo: i64 = r.get(1)?;
+                det_json(r, &photo_sig(c, photo))
+            })
+            .optional()?;
+        if let Some(v) = row {
+            return Ok(v);
+        }
+    }
+    Ok(Value::Null)
 }
 
 async fn subject(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
@@ -334,6 +373,7 @@ async fn names(State(state): St, Query(q): Query<NamesQuery>) -> ApiResult<Json<
         let mut stmt = c.prepare(
             "SELECT s.id, s.name, s.kind, s.species, (SELECT count(DISTINCT photo_id) FROM detections WHERE subject_id = s.id AND state = 1) n
              FROM subjects s WHERE s.kind = ?1 AND s.name IS NOT NULL AND (s.name LIKE ?2 || '%' ESCAPE '\\' OR s.name LIKE '% ' || ?2 || '%' ESCAPE '\\')
+               AND EXISTS (SELECT 1 FROM detections d WHERE d.subject_id = s.id)
              ORDER BY n DESC, s.name COLLATE NOCASE LIMIT 20",
         )?;
         let rows: Vec<Value> = stmt

@@ -16,7 +16,7 @@
 //! overruled. A face with no named or grouped neighbour forms a new unnamed group with
 //! the ungrouped faces close to it (one per photo).
 
-use super::index::{Space, from_blob};
+use super::index::{Hit, Space, from_blob};
 use super::{AUTO, CONFIRMED, DOG, FACE, IGNORED, PERSON, PET};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -195,6 +195,7 @@ impl Engine {
     }
 
     /// Match the given detections (already in the index, not yet assigned), best first.
+    /// Their neighbours are found in one pass over each index.
     pub fn assign(&mut self, c: &Connection, ids: &[i64]) -> Result<Assigned> {
         let mut out = Assigned::default();
         let mut order: Vec<(i64, i64, f32)> = Vec::new();
@@ -209,13 +210,37 @@ impl Engine {
             }
         }
         order.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+        order.dedup_by_key(|o| o.0);
+        let mut hits = self.neighbours(order.iter().map(|o| (o.0, o.1)), 64);
         for (id, kind, _) in order {
-            self.assign_one(c, id, kind, &mut out)?;
+            if let Some(h) = hits.remove(&id) {
+                self.assign_hits(c, id, kind, &h, &mut out)?;
+            }
         }
         Ok(out)
     }
 
-    fn assign_one(&mut self, c: &Connection, id: i64, kind: i64, out: &mut Assigned) -> Result<()> {
+    /// The neighbours (similarity of at least the lowest threshold, best first) of these
+    /// detections, in one pass over each index.
+    fn neighbours(&self, items: impl Iterator<Item = (i64, i64)>, k: usize) -> HashMap<i64, Vec<Hit>> {
+        let items: Vec<(i64, i64)> = items.collect();
+        let mut out = HashMap::new();
+        for kind in SPACES {
+            let sp = self.space_ref(kind);
+            let ids: Vec<(i64, usize)> = items.iter().filter(|i| i.1 == kind).filter_map(|i| sp.slot(i.0).map(|s| (i.0, s))).collect();
+            if ids.is_empty() {
+                continue;
+            }
+            let qs: Vec<&[i8]> = ids.iter().map(|&(_, s)| sp.vector(s)).collect();
+            for ((id, _), h) in ids.iter().zip(sp.search_many(&qs, floor(kind), k)) {
+                out.insert(*id, h);
+            }
+        }
+        out
+    }
+
+    /// Match one detection, given its neighbours.
+    fn assign_hits(&mut self, c: &Connection, id: i64, kind: i64, hits: &[Hit], out: &mut Assigned) -> Result<()> {
         let sp = self.space_ref(kind);
         let Some(slot) = sp.slot(id) else { return Ok(()) };
         if sp.subject(slot) != 0 {
@@ -223,8 +248,6 @@ impl Engine {
         }
         let photo = sp.photo(slot);
         let qa = sp.quality(slot);
-        let q = sp.vector(slot).to_vec();
-        let hits = sp.search(&q, floor(kind), 64);
         let rejected: HashSet<i64> = self.rejects.get(&id).map(|v| v.iter().copied().collect()).unwrap_or_default();
         // A person (or pet) is in a photo once: subjects other detections of this photo
         // have are out of the question.
@@ -234,7 +257,7 @@ impl Engine {
         };
         let mut votes: HashMap<i64, (f32, f32)> = HashMap::new();
         let mut loose: Vec<(usize, f32)> = Vec::new();
-        for h in &hits {
+        for h in hits {
             if h.slot == slot {
                 continue;
             }
@@ -308,19 +331,27 @@ impl Engine {
     }
 
     /// Faces just confirmed for a subject may decide faces that had no match: those
-    /// close to them are matched again.
+    /// close to them are matched again. (From the best 512 of them when there are more:
+    /// plenty to find the look-alikes, and an edit never waits long.)
     pub fn propagate(&mut self, c: &Connection, ids: &[i64]) -> Result<Assigned> {
-        let mut cand: Vec<i64> = Vec::new();
+        let mut from: Vec<(f32, i64, i64)> = Vec::new();
         for &id in ids {
             for kind in SPACES {
                 let sp = self.space_ref(kind);
-                let Some(slot) = sp.slot(id) else { continue };
-                let q = sp.vector(slot).to_vec();
-                let qa = sp.quality(slot);
-                for h in sp.search(&q, floor(kind), 256) {
-                    if sp.subject(h.slot) == 0 && h.sim >= link(kind, qa, sp.quality(h.slot)) {
-                        cand.push(sp.id(h.slot));
-                    }
+                if let Some(s) = sp.slot(id) {
+                    from.push((sp.quality(s), id, kind));
+                }
+            }
+        }
+        from.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        from.truncate(512);
+        let hits = self.neighbours(from.iter().map(|f| (f.1, f.2)), 256);
+        let mut cand: Vec<i64> = Vec::new();
+        for (qa, id, kind) in from {
+            let sp = self.space_ref(kind);
+            for h in hits.get(&id).into_iter().flatten() {
+                if sp.subject(h.slot) == 0 && h.sim >= link(kind, qa, sp.quality(h.slot)) {
+                    cand.push(sp.id(h.slot));
                 }
             }
         }
@@ -328,47 +359,67 @@ impl Engine {
         cand.dedup();
         self.assign(c, &cand)
     }
+}
 
-    /// Form the unnamed groups and the suggestions again from scratch, best faces first
-    /// (they make the best seeds). Named people and pets, their confirmed faces and
-    /// hidden groups stay as they are. `progress` gets 0..1.
-    pub fn regroup(&mut self, conn: &mut Connection, progress: &dyn Fn(f64)) -> Result<Assigned> {
-        {
-            let tx = conn.transaction()?;
-            tx.execute("UPDATE detections SET subject_id = NULL, sim = NULL WHERE state = ?1 AND subject_id IS NOT NULL", [AUTO])?;
-            tx.execute(
-                "DELETE FROM subjects WHERE name IS NULL AND hidden = 0 AND NOT EXISTS (SELECT 1 FROM detections d WHERE d.subject_id = subjects.id)",
-                [],
-            )?;
-            tx.commit()?;
-        }
-        for s in [&mut self.faces, &mut self.pets] {
+/// Form the unnamed groups and the suggestions again from scratch, best faces first
+/// (they make the best seeds). Named people and pets, their confirmed faces and hidden
+/// groups stay as they are. `progress` gets 0..1.
+///
+/// The faces go in chunks: the neighbours of a chunk are found in one pass over the
+/// index (`search_many`), then the chunk is matched in order. The engine is locked one
+/// chunk at a time, so edits made meanwhile wait a moment at most.
+pub fn regroup(lock: &parking_lot::Mutex<Option<Engine>>, conn: &mut Connection, progress: &dyn Fn(f64)) -> Result<Assigned> {
+    let todo: Vec<(i64, i64)> = {
+        let mut g = lock.lock();
+        let eng = g.get_or_insert_with(Engine::empty);
+        let tx = conn.transaction()?;
+        tx.execute("UPDATE detections SET subject_id = NULL, sim = NULL WHERE state = ?1 AND subject_id IS NOT NULL", [AUTO])?;
+        tx.execute(
+            "DELETE FROM subjects WHERE name IS NULL AND hidden = 0 AND NOT EXISTS (SELECT 1 FROM detections d WHERE d.subject_id = subjects.id)",
+            [],
+        )?;
+        tx.commit()?;
+        for s in [&mut eng.faces, &mut eng.pets] {
             let ids: Vec<i64> = (0..s.len()).filter(|&i| !s.confirmed(i)).map(|i| s.id(i)).collect();
             for id in ids {
                 s.set_label(id, 0, false);
             }
         }
         // Subjects that only kept confirmed faces keep those labels; the rest is free.
-        let mut todo: Vec<(f32, i64)> = Vec::new();
+        let mut todo: Vec<(f32, i64, i64)> = Vec::new();
         for kind in SPACES {
-            let s = self.space_ref(kind);
-            todo.extend((0..s.len()).filter(|&i| s.subject(i) == 0).map(|i| (s.quality(i), s.id(i))));
+            let s = eng.space_ref(kind);
+            todo.extend((0..s.len()).filter(|&i| s.subject(i) == 0).map(|i| (s.quality(i), s.id(i), kind)));
         }
         todo.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-        let total = todo.len().max(1);
-        let mut out = Assigned::default();
-        for (n, chunk) in todo.chunks(500).enumerate() {
-            let tx = conn.transaction()?;
-            let ids: Vec<i64> = chunk.iter().map(|x| x.1).collect();
-            for id in ids {
-                let kind = SPACES.into_iter().find(|&k| self.space_ref(k).contains(id)).unwrap_or(FACE);
-                self.assign_one(&tx, id, kind, &mut out)?;
+        todo.into_iter().map(|(_, id, kind)| (id, kind)).collect()
+    };
+    let total = todo.len().max(1);
+    let mut out = Assigned::default();
+    const CHUNK: usize = 256;
+    for (n, chunk) in todo.chunks(CHUNK).enumerate() {
+        let mut g = lock.lock();
+        let eng = g.get_or_insert_with(Engine::empty);
+        let mut hits: HashMap<i64, Vec<Hit>> = HashMap::new();
+        for kind in SPACES {
+            let sp = eng.space_ref(kind);
+            let ids: Vec<i64> = chunk.iter().filter(|c| c.1 == kind && sp.contains(c.0)).map(|c| c.0).collect();
+            let qs: Vec<&[i8]> = ids.iter().filter_map(|&id| sp.slot(id)).map(|s| sp.vector(s)).collect();
+            for (id, h) in ids.iter().zip(sp.search_many(&qs, floor(kind), 64)) {
+                hits.insert(*id, h);
             }
-            tx.commit()?;
-            progress(((n + 1) * 500).min(total) as f64 / total as f64);
         }
-        Ok(out)
+        let tx = conn.transaction()?;
+        for &(id, kind) in chunk {
+            if let Some(h) = hits.remove(&id) {
+                eng.assign_hits(&tx, id, kind, &h, &mut out)?;
+            }
+        }
+        tx.commit()?;
+        drop(g);
+        progress(((n + 1) * CHUNK).min(total) as f64 / total as f64);
     }
+    Ok(out)
 }
 
 /// The subject a name belongs to (for this kind of detection), made when new.
@@ -488,7 +539,8 @@ mod tests {
         c.execute("UPDATE subjects SET name = 'Ann' WHERE id = ?1", [g]).unwrap();
         c.execute("UPDATE detections SET state = 1 WHERE id IN (?1, ?2)", params![ids[0], ids[1]]).unwrap();
         e.refresh(&c, &ids).unwrap();
-        e.regroup(&mut c, &|_| {}).unwrap();
+        let lock = parking_lot::Mutex::new(Some(e));
+        regroup(&lock, &mut c, &|_| {}).unwrap();
         // The confirmed ones stay; the others come back as suggestions for Ann.
         assert!(ids.iter().all(|&i| subject_of(&c, i) == Some(g)));
         let states: Vec<i64> = ids.iter().map(|&i| c.query_row("SELECT state FROM detections WHERE id = ?1", [i], |r| r.get(0)).unwrap()).collect();

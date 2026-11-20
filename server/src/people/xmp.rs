@@ -225,6 +225,11 @@ pub fn sync(c: &Connection, eng: &mut Engine, loc: &Located, exact: bool) -> Res
                 let d = dets.iter().find(|d| d.id == id).unwrap();
                 let subject = subject_by_name(c, name, d.kind)?;
                 named.insert(subject);
+                // "Not this person" was said here: a name left in the sidecar (by another
+                // app, or not yet rewritten) does not overrule it.
+                if rejected(c, id, subject)? {
+                    continue;
+                }
                 if d.subject != Some(subject) || d.state != CONFIRMED {
                     c.execute("UPDATE detections SET subject_id = ?2, state = ?3, sim = NULL WHERE id = ?1", params![id, subject, CONFIRMED])?;
                     c.execute("DELETE FROM detection_rejects WHERE detection_id = ?1 AND subject_id = ?2", params![id, subject])?;
@@ -265,15 +270,7 @@ pub fn sync(c: &Connection, eng: &mut Engine, loc: &Located, exact: bool) -> Res
     }
     // People keywords without a region: a suggestion for the photo's only face (or pet).
     for kw in &loc.rec.hkeywords {
-        let (skind, name) = match kw.split_once('|') {
-            Some((root, rest)) if root.eq_ignore_ascii_case("People") && !rest.contains('|') => (PERSON, rest),
-            Some((root, rest)) if root.eq_ignore_ascii_case("Pets") && !rest.contains('|') => (PET, rest),
-            _ => continue,
-        };
-        let name = name.trim();
-        if name.is_empty() {
-            continue;
-        }
+        let Some((skind, name)) = super::parse_keyword(kw) else { continue };
         let candidates: Vec<&Det> = dets.iter().filter(|d| d.state != IGNORED && ((d.kind == FACE) == (skind == PERSON))).collect();
         let existing: Option<i64> =
             c.query_row("SELECT id FROM subjects WHERE kind = ?1 AND name = ?2 COLLATE NOCASE", params![skind, name], |r| r.get(0)).ok();
@@ -287,6 +284,11 @@ pub fn sync(c: &Connection, eng: &mut Engine, loc: &Located, exact: bool) -> Res
             continue;
         }
         let d = candidates[0];
+        if let Some(s) = existing
+            && rejected(c, d.id, s)?
+        {
+            continue;
+        }
         if d.state == CONFIRMED || (d.subject.is_some() && existing.is_some_and(|s| d.subject != Some(s)) && d.state == CONFIRMED) {
             continue;
         }
@@ -325,6 +327,10 @@ pub fn sync(c: &Connection, eng: &mut Engine, loc: &Located, exact: bool) -> Res
     }
     let _ = named;
     Ok(!changed.is_empty())
+}
+
+fn rejected(c: &Connection, detection: i64, subject: i64) -> Result<bool> {
+    Ok(c.prepare_cached("SELECT 1 FROM detection_rejects WHERE detection_id = ?1 AND subject_id = ?2")?.exists(params![detection, subject])?)
 }
 
 #[cfg(test)]
@@ -405,6 +411,14 @@ mod tests {
         sync(&c, &mut e, &l3, true).unwrap();
         assert_eq!(who(a), (Some("Ann".into()), AUTO));
         assert_eq!(who(pet).1, CONFIRMED, "Rex keeps his keyword");
+        // "Not Ann": a sidecar that still names her there does not bring her back.
+        let ann: i64 = c.query_row("SELECT id FROM subjects WHERE name = 'Ann'", [], |r| r.get(0)).unwrap();
+        c.execute("UPDATE detections SET subject_id = NULL, state = 0 WHERE id = ?1", [a]).unwrap();
+        c.execute("INSERT INTO detection_rejects VALUES(?1, ?2)", params![a, ann]).unwrap();
+        sync(&c, &mut e, &l, false).unwrap();
+        assert_eq!(who(a), (None, AUTO));
+        let rej: i64 = c.query_row("SELECT count(*) FROM detection_rejects WHERE detection_id = ?1", [a], |r| r.get(0)).unwrap();
+        assert_eq!(rej, 1, "the rejection stands");
     }
 
     #[test]

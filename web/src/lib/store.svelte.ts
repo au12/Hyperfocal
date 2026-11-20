@@ -23,6 +23,7 @@ import {
 } from './api';
 import { keysFor, prettyKey, type Action, type KeyOverrides, type Preset } from './keys';
 import { setOffline } from './offline';
+import { people } from './people.svelte';
 
 export const LABELS: { color: LabelColor; name: string; key: string }[] = [
   { color: 'red', name: 'Red', key: '6' },
@@ -51,6 +52,8 @@ export interface Filters {
   /** Capture date filter, 'YYYY-MM-DD' or '' (both ends inclusive). */
   dateFrom: string;
   dateTo: string;
+  /** People and pets (subject ids): photos with all of them. */
+  subj: number[];
 }
 
 export const DEFAULT_FILTERS: Filters = {
@@ -69,13 +72,15 @@ export const DEFAULT_FILTERS: Filters = {
   kw: '',
   dateFrom: '',
   dateTo: '',
+  subj: [],
 };
 
 /** The filters that narrow what is shown (sort order and "show rejected" aside). */
 export function activeFilterCount(f: Filters): number {
   return (
     (f.rmin > 0 ? 1 : 0) + (f.unrated ? 1 : 0) + (f.lc.length ? 1 : 0) + (f.pick != null ? 1 : 0) + (f.kinds.length ? 1 : 0) +
-    (f.gps != null ? 1 : 0) + (f.cam ? 1 : 0) + (f.lens ? 1 : 0) + (f.kw ? 1 : 0) + (f.onlyRejected ? 1 : 0) + (f.dateFrom || f.dateTo ? 1 : 0)
+    (f.gps != null ? 1 : 0) + (f.cam ? 1 : 0) + (f.lens ? 1 : 0) + (f.kw ? 1 : 0) + (f.onlyRejected ? 1 : 0) + (f.dateFrom || f.dateTo ? 1 : 0) +
+    (f.subj?.length ? 1 : 0)
   );
 }
 
@@ -154,6 +159,7 @@ export function viewParams(v: {
     cam: f.cam || undefined,
     lens: f.lens || undefined,
     kw: f.kw || undefined,
+    subj: f.subj?.length ? f.subj.join(',') : undefined,
     nodate: d?.nodate ? 1 : undefined,
     from,
     to,
@@ -288,7 +294,7 @@ class Store {
   folderId = $state<number | null>(null);
   recursive = $state(false);
   query = $state('');
-  view = $state<'grid' | 'map'>('grid');
+  view = $state<'grid' | 'map' | 'people'>('grid');
   filters = $state<Filters>(loadLocal('hf.filters', { ...DEFAULT_FILTERS }));
   /** A timeline period being browsed (whole library), or null. */
   dateRange = $state<DateRange | null>(null);
@@ -325,7 +331,7 @@ class Store {
   viewer = $state<ViewerState>(
     loadLocal('hf.viewer', { source: 'jpeg', tone: 'normal', wb: 'asshot', ev: 0, evOn: true, sharpen: 0, peaking: 0, over: false, under: false, invert: false } as ViewerState),
   );
-  panels = $state(loadLocal('hf.panels', { sidebar: true, info: true, histogram: false, filmstrip: true, hidden: false }));
+  panels = $state(loadLocal('hf.panels', { sidebar: true, info: true, histogram: false, filmstrip: true, hidden: false, faces: false }));
 
   settings = $state<Settings>(migrateSettings(loadLocal('hf.settings', DEFAULT_SETTINGS)));
   toasts = $state<Toast[]>([]);
@@ -345,6 +351,8 @@ class Store {
   busy = $state(0);
   /** Showing offline copies: the server could not be reached. */
   offline = $state(false);
+  /** Names of the people and pets in the photo filter, by id. */
+  subjLabels = $state<Record<number, string>>(loadLocal('hf.subj', {} as Record<number, string>));
 
   private es: EventSource | null = null;
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -406,6 +414,7 @@ class Store {
     }
     await this.loadTree();
     this.connectEvents();
+    people.loadStatus();
     await this.loadCollections().catch(() => {});
     this.loadTimeline();
     const hash = new URLSearchParams(location.hash.slice(1));
@@ -483,6 +492,8 @@ class Store {
         for (const id of (e.ids ?? []) as number[]) this.thumbRev[id] = (this.thumbRev[id] ?? 0) + 1;
       } else if (e.type === 'integrity') {
         this.integrity = { changed: e.changed ?? 0, missing: e.missing ?? 0, unreadable: e.unreadable ?? 0 };
+      } else if (e.type === 'people' || e.type === 'people_status') {
+        people.onEvent(e);
       }
     };
     es.onerror = () => {
@@ -659,6 +670,24 @@ class Store {
     await this.reload();
     this.cursor = 0;
     this.writeHash();
+  };
+
+  /** The photos of a person or pet (a group), across the library. */
+  showSubject = (id: number, label: string) => {
+    this.subjLabels[id] = label;
+    saveLocal('hf.subj', this.subjLabels);
+    this.view = 'grid';
+    return this.openLibrary(() => {
+      this.filters.subj = [id];
+      this.persist();
+    });
+  };
+
+  /** Switch to (or leave) the People & pets view. */
+  openPeople = () => {
+    this.loupe = false;
+    this.compare = null;
+    this.view = 'people';
   };
 
   /** The photos with a keyword (or one below it), across the library. */

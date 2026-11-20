@@ -14,7 +14,7 @@ export type Action =
   | 'pick' | 'unflag' | 'reject' | 'editTitle' | 'keywords' | 'location'
   | 'selectToggle' | 'selectNext' | 'selectPrev' | 'selectDown' | 'selectUp' | 'selectAll' | 'selectNone' | 'selectInvert'
   | 'rotateCcw' | 'rotateCw' | 'rotate180'
-  | 'histogram' | 'info' | 'filmstrip' | 'folders' | 'hidePanels' | 'help' | 'search' | 'undo' | 'map';
+  | 'histogram' | 'info' | 'filmstrip' | 'folders' | 'hidePanels' | 'help' | 'search' | 'undo' | 'map' | 'faces' | 'people';
 
 type Bindings = Partial<Record<Action, string[]>>;
 export type KeyOverrides = Partial<Record<Action, string[]>>;
@@ -99,6 +99,8 @@ const FRV: Bindings = {
   search: ['Ctrl+F', 'Slash'],
   undo: ['Ctrl+Z'],
   map: ['M'],
+  faces: ['Shift+F'],
+  people: ['Shift+P'],
 };
 
 const LR: Bindings = {
@@ -108,6 +110,7 @@ const LR: Bindings = {
   reject: ['X', 'Delete', 'Ctrl+Shift+Delete'],
   peaking: ['Shift+P'],
   under: ['Shift+U'],
+  people: ['Shift+Y'],
 };
 
 export const PRESETS = { frv: FRV, lr: LR };
@@ -128,6 +131,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['wb', 'White balance (as shot / daylight / auto)'], ['evToggle', 'Exposure correction on/off'],
     ['evUp', 'Exposure +⅓ EV'], ['evDown', 'Exposure −⅓ EV'], ['evUpBig', 'Exposure +1 EV'], ['evDownBig', 'Exposure −1 EV'], ['evReset', 'Reset exposure'],
     ['histogram', 'Histogram'], ['info', 'Info & metadata panel'], ['filmstrip', 'Filmstrip'], ['folders', 'Folders panel'], ['hidePanels', 'Hide all panels'],
+    ['faces', 'Show faces and pets on the photo'],
   ]],
   ['Culling & metadata', [
     ['rate1', 'Rating 1'], ['rate2', 'Rating 2'], ['rate3', 'Rating 3'], ['rate4', 'Rating 4'], ['rate5', 'Rating 5'], ['rate0', 'Clear rating'], ['rateUp', 'Rating +1'], ['rateDown', 'Rating −1'],
@@ -138,7 +142,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
   ]],
   ['Selection & search', [
     ['selectToggle', 'Select / deselect'], ['selectNext', 'Select and next'], ['selectPrev', 'Previous and select'], ['selectDown', 'Extend selection a row down'], ['selectUp', 'Extend selection a row up'], ['selectAll', 'Select all'], ['selectNone', 'Select none'], ['selectInvert', 'Invert selection'],
-    ['search', 'Search'], ['map', 'Map view'], ['help', 'Keyboard shortcuts'],
+    ['search', 'Search'], ['map', 'Map view'], ['people', 'People & pets'], ['help', 'Keyboard shortcuts'],
   ]],
 ];
 

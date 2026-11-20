@@ -810,6 +810,18 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
             "before": snapshot(&cur), "after": snapshot(&after),
         }),
     )?;
+    // A person's (or pet's) keyword taken off by hand: that face is not them after all.
+    if undo_of.is_none() && patch.people.is_none() {
+        let gone: Vec<String> = cur
+            .hkeywords
+            .iter()
+            .filter(|k| crate::people::is_name_keyword(k) && !after.hkeywords.iter().any(|a| a.eq_ignore_ascii_case(k)))
+            .cloned()
+            .collect();
+        if !gone.is_empty() {
+            state.people.unname(id, gone);
+        }
+    }
     Ok(loc.rec.folder_id)
 }
 

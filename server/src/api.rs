@@ -751,6 +751,11 @@ async fn keyword_move(State(state): St, Json(b): Json<KwMoveBody>) -> ApiResult<
     let from = crate::keywords::split(&b.from);
     let to = b.to.as_deref().map(crate::keywords::split);
     crate::keywords::check_move(&from, to.as_deref()).map_err(bad)?;
+    // Names of people and pets go with face regions and the index: they are renamed,
+    // merged and removed in the People view.
+    if from.first().is_some_and(|r| r.eq_ignore_ascii_case("People") || r.eq_ignore_ascii_case("Pets")) {
+        return Err(bad("people and pets are renamed, merged and removed in the People & pets view"));
+    }
     let st = state.clone();
     let from2 = from.clone();
     let ids = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<i64>> {

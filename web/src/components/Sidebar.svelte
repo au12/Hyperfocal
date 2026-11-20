@@ -4,6 +4,7 @@
   import type { Collection, Folder } from '../lib/api';
   import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
+  import { people } from '../lib/people.svelte';
 
   let { onpick }: { onpick?: () => void } = $props();
 
@@ -24,7 +25,8 @@
   });
 
   const root = $derived(store.roots[0]);
-  const inFolders = $derived(!store.query && !store.dateRange && !store.collection);
+  const inFolders = $derived(store.view !== 'people' && !store.query && !store.dateRange && !store.collection);
+  const peopleCount = $derived(people.status ? people.status.people + people.status.pets : undefined);
 
   function toggle(f: Folder, e: MouseEvent) {
     e.stopPropagation();
@@ -32,24 +34,37 @@
     else store.expanded.add(f.id);
   }
 
+  /** Leave the People view for the photos (the map stays the map). */
+  function toPhotos() {
+    if (store.view === 'people') store.view = 'grid';
+  }
+
   function open(f: Folder) {
-    store.view = store.view === 'map' ? 'map' : 'grid';
+    toPhotos();
     store.openFolder(f.id);
     onpick?.();
   }
 
   function openAll() {
+    toPhotos();
     store.openLibrary();
     onpick?.();
   }
 
   function quick(q: (typeof QUICK)[number]) {
+    toPhotos();
     store.applyCollection({ id: q.id, name: q.name, spec: q.spec });
     onpick?.();
   }
 
   function openSaved(c: Collection) {
+    toPhotos();
     store.applyCollection({ id: c.id, name: c.name, spec: c.spec });
+    onpick?.();
+  }
+
+  function openPeople() {
+    store.openPeople();
     onpick?.();
   }
 
@@ -145,8 +160,13 @@
     <button class="item" class:active={inFolders && store.folderId === root?.id} onclick={openAll}>
       <Icon name="library" size={16} /><span class="grow ellipsis">All photos</span><span class="count">{root ? fmt(root.total) : ''}</span>
     </button>
+    {#if people.enabled}
+      <button class="item" class:active={store.view === 'people'} onclick={openPeople}>
+        <Icon name="users" size={16} /><span class="grow ellipsis">People & pets</span><span class="count">{fmt(peopleCount)}</span>
+      </button>
+    {/if}
     {#each QUICK as q (q.id)}
-      <button class="item" class:active={store.collection?.id === q.id} onclick={() => quick(q)}>
+      <button class="item" class:active={store.view !== 'people' && store.collection?.id === q.id} onclick={() => quick(q)}>
         <Icon name={q.icon} size={16} /><span class="grow">{q.name}</span><span class="count">{fmt(store.counts[q.id])}</span>
       </button>
     {/each}
@@ -156,7 +176,7 @@
     <div class="section">
       <div class="sec-title">Collections</div>
       {#each store.collections as c (c.id)}
-        <div class="item coll" class:active={store.collection?.id === c.id}>
+        <div class="item coll" class:active={store.view !== 'people' && store.collection?.id === c.id}>
           {#if renaming === c.id}
             <Icon name="bookmark" size={16} />
             <!-- svelte-ignore a11y_autofocus -->

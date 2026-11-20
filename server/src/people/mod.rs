@@ -68,6 +68,24 @@ pub fn keyword(subject_kind: i64, name: &str) -> String {
     if subject_kind == PET { format!("Pets|{leaf}") } else { format!("People|{leaf}") }
 }
 
+/// A person's or a pet's keyword (`People|Name`, `Pets|Name`): the subject kind and name.
+pub fn parse_keyword(k: &str) -> Option<(i64, &str)> {
+    let (root, name) = k.split_once('|')?;
+    let kind = if root.eq_ignore_ascii_case("People") {
+        PERSON
+    } else if root.eq_ignore_ascii_case("Pets") {
+        PET
+    } else {
+        return None;
+    };
+    let name = name.trim();
+    (!name.is_empty() && !name.contains('|')).then_some((kind, name))
+}
+
+pub fn is_name_keyword(k: &str) -> bool {
+    parse_keyword(k).is_some()
+}
+
 pub fn migrate(c: &Connection) -> Result<()> {
     c.execute_batch(
         r#"
@@ -103,6 +121,7 @@ pub fn migrate(c: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS detections_photo ON detections(photo_id);
         CREATE INDEX IF NOT EXISTS detections_subject ON detections(subject_id, state, photo_id) WHERE subject_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS detections_best ON detections(subject_id, state, quality) WHERE subject_id IS NOT NULL;
 
         -- Detections deleted (with their photo, folder or a new analysis), however that
         -- happened: the worker takes them out of the in-memory index and the crops.
@@ -169,6 +188,8 @@ pub struct Ctl {
     pub exact: VecDeque<i64>,
     pub regroup: bool,
     pub wake: bool,
+    /// Person and pet keywords taken off photos by hand: (photo, keywords).
+    pub unname: VecDeque<(i64, Vec<String>)>,
 }
 
 pub struct People {
@@ -215,6 +236,15 @@ impl People {
                 c.priority_set.remove(&id);
             }
         }
+        c.wake = true;
+        drop(c);
+        self.cv.notify_all();
+    }
+
+    /// Someone took these person or pet keywords off a photo: its faces are not them.
+    pub fn unname(&self, photo: i64, keywords: Vec<String>) {
+        let mut c = self.ctl.lock();
+        c.unname.push_back((photo, keywords));
         c.wake = true;
         drop(c);
         self.cv.notify_all();

@@ -22,6 +22,7 @@
   import IntegrityDialog from './components/IntegrityDialog.svelte';
   import BulkBar from './components/BulkBar.svelte';
   import MobileNav from './components/MobileNav.svelte';
+  import PeopleView from './components/PeopleView.svelte';
 
   let drawer = $state(false);
 
@@ -81,6 +82,17 @@
     if (store.compare) {
       const r = runCompare(a);
       if (r != null) return r;
+    }
+    // The People view has no photo under the cursor: only a few keys apply there.
+    if (store.view === 'people' && !inLoupe) {
+      switch (a) {
+        case 'people': case 'toggleGrid': case 'escape': store.view = 'grid'; return true;
+        case 'map': store.view = 'map'; return true;
+        case 'help': store.dialog = 'help'; return true;
+        case 'folders': store.panels.sidebar = !store.panels.sidebar; store.persist(); return true;
+        case 'undo': store.undo(); return true;
+        default: return false;
+      }
     }
     switch (a) {
       case 'next': store.go(1); break;
@@ -175,6 +187,8 @@
       case 'search': uiCtl.focusSearch(); break;
       case 'undo': store.undo(); break;
       case 'map': store.view = store.view === 'map' ? 'grid' : 'map'; store.loupe = false; break;
+      case 'faces': store.panels.faces = !store.panels.faces; store.persist(); break;
+      case 'people': store.openPeople(); break;
     }
     void e;
     return true;
@@ -216,13 +230,17 @@
         <Sidebar />
       {/if}
       <section class="content">
-        <Toolbar />
-        {#if store.view === 'map'}
-          <MapView />
+        {#if store.view === 'people'}
+          <PeopleView />
         {:else}
-          <Grid />
+          <Toolbar />
+          {#if store.view === 'map'}
+            <MapView />
+          {:else}
+            <Grid />
+          {/if}
+          <BulkBar />
         {/if}
-        <BulkBar />
       </section>
       {#if !store.mobile && store.panels.info && !store.panels.hidden && store.view === 'grid'}
         <aside class="info">

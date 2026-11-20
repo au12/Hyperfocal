@@ -9,6 +9,8 @@
   import Icon from './Icon.svelte';
   import Histogram from './Histogram.svelte';
   import InfoPanel from './InfoPanel.svelte';
+  import FaceOverlay from './FaceOverlay.svelte';
+  import { people } from '../lib/people.svelte';
 
   let stage: HTMLDivElement | undefined = $state();
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -36,6 +38,8 @@
   let rawInfo = $state<RawInfo | null>(null);
   let jpegHist = $state<Uint32Array[] | null>(null);
   let chrome = $state(true);
+  /** Where the image is on screen (CSS px in the stage), for the face overlay. */
+  let imgRect = $state<{ x: number; y: number; w: number; h: number } | null>(null);
   let sheet = $state<null | 'info' | 'tools' | 'rate'>(null);
   let currentBmp: Decoded | null = null;
 
@@ -260,6 +264,12 @@
       detailOn = detail.update({ orientation: o, dispW, dispH, scale: curScale, cx, cy }, cw, ch);
       detailPath = detail.path;
     }
+    if (store.panels.faces) {
+      const dpr = window.devicePixelRatio || 1;
+      const sc = curScale;
+      const r = { x: (cw / 2 - cx * sc) / dpr, y: (ch / 2 - cy * sc) / dpr, w: (dispW * sc) / dpr, h: (dispH * sc) / dpr };
+      if (!imgRect || Math.abs(imgRect.x - r.x) + Math.abs(imgRect.y - r.y) + Math.abs(imgRect.w - r.w) + Math.abs(imgRect.h - r.h) > 0.25) imgRect = r;
+    }
     gl.draw({
       orientation: o,
       dispW,
@@ -405,6 +415,11 @@
       syncDetail();
       requestDraw();
     });
+  });
+
+  // The face overlay needs to know where the image is.
+  $effect(() => {
+    if (store.panels.faces) untrack(() => requestDraw());
   });
 
   // Reload when the photo, the source or any server-side render parameter changes.
@@ -691,6 +706,9 @@
         <button class="btn sm icon" onclick={() => store.rotate(-90)} title={'Rotate left' + store.keyHint('rotateCcw')}><Icon name="rotate-ccw" /></button>
         <button class="btn sm icon" onclick={() => store.rotate(90)} title={'Rotate right' + store.keyHint('rotateCw')}><Icon name="rotate-cw" /></button>
         <button class="btn sm icon" onclick={() => store.openLocation()} title={'Set location' + store.keyHint('location')}><Icon name="pin" /></button>
+        {#if people.enabled}
+          <button class="btn sm icon" class:on={store.panels.faces} onclick={() => { store.panels.faces = !store.panels.faces; store.persist(); requestDraw(); }} title={'Faces and pets' + store.keyHint('faces')}><Icon name="scan-face" /></button>
+        {/if}
         <button class="btn sm {inReject ? '' : 'danger'}" onclick={() => store.reject()} title={inReject ? 'Restore from reject folder' : 'Move to reject folder (Del / Ctrl+Shift+Del)'}>
           <Icon name={inReject ? 'restore' : 'reject'} /> {inReject ? 'Restore' : 'Reject'}
         </button>
@@ -698,6 +716,9 @@
         <button class="btn sm icon" onclick={toggleFullscreen} title={'Full screen' + store.keyHint('fullscreen')}><Icon name="fullscreen" /></button>
       {:else}
         <button class="btn ghost icon" class:on={store.panels.histogram} onclick={() => (store.panels.histogram = !store.panels.histogram)} aria-label="Histogram"><Icon name="histogram" /></button>
+        {#if people.enabled}
+          <button class="btn ghost icon" class:on={store.panels.faces} onclick={() => { store.panels.faces = !store.panels.faces; store.persist(); requestDraw(); }} aria-label="Faces and pets"><Icon name="scan-face" /></button>
+        {/if}
         <button class="btn ghost icon" onclick={() => (sheet = sheet === 'info' ? null : 'info')} aria-label="Info"><Icon name="info" /></button>
       {/if}
     </div>
@@ -720,6 +741,10 @@
           {#if id != null}<img src={urls.preview(id, v, 2048)} alt="" style:transform={o === 6 ? 'rotate(90deg)' : o === 8 ? 'rotate(-90deg)' : o === 3 ? 'rotate(180deg)' : ''} />{/if}
           <p class="dim">View tools need WebGL2 ({glError}).</p>
         </div>
+      {/if}
+
+      {#if store.panels.faces && id != null && people.enabled}
+        <FaceOverlay photo={id} rect={imgRect} />
       {/if}
 
       {#if store.panels.histogram}

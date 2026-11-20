@@ -43,7 +43,15 @@
 
   const p = $derived(store.status?.progress);
   const indexing = $derived(p && p.phase !== 'idle' && p.phase !== 'starting');
-  const folderName = $derived(store.query ? 'Search' : (store.folders.get(store.folderId ?? -1)?.name ?? 'Hyperfocal'));
+  const folderName = $derived(
+    store.view === 'people'
+      ? 'People & pets'
+      : store.query
+        ? 'Search'
+        : store.filters.subj?.length === 1 && store.subjLabels[store.filters.subj[0]]
+          ? store.subjLabels[store.filters.subj[0]]
+          : (store.folders.get(store.folderId ?? -1)?.name ?? 'Hyperfocal'),
+  );
   const running = $derived(store.runningJobs());
   const problems = $derived(store.integrity.changed + store.integrity.missing + store.integrity.unreadable);
   const problemText = $derived(

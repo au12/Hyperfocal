@@ -28,7 +28,7 @@
   }
 
   function clearFilters() {
-    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '' });
+    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '', subj: [] });
     store.persist();
     store.reload();
   }
@@ -43,6 +43,7 @@
     if (f.pick === 0) parts.push('Unflagged');
     for (const c of f.lc) parts.push(c === 'none' ? 'No label' : (LABELS.find((l) => l.color === c)?.name ?? c));
     if (f.kw) parts.push(f.kw.split('|').pop() ?? f.kw);
+    for (const id of f.subj ?? []) parts.push(store.subjLabels[id] ?? 'Person');
     if (f.cam) parts.push(f.cam);
     if (f.lens) parts.push(f.lens);
     if (f.gps === 0) parts.push('No location');
@@ -97,7 +98,7 @@
       <span class="crumb"><Icon name="calendar" size={14} /> Timeline</span>
       <Icon name="chevron" size={14} class="sep" />
       <span class="crumb current">{store.dateRange.label}</span>
-    {:else}
+    {:else if !(f.subj?.length && crumbs.length === 1)}
       {#each crumbs as c, i (c.id)}
         {#if i > 0}<Icon name="chevron" size={14} class="sep" />{/if}
         <button class="crumb" class:current={i === crumbs.length - 1} onclick={() => store.openFolder(c.id)}>
@@ -105,6 +106,9 @@
         </button>
       {/each}
     {/if}
+    {#each f.subj ?? [] as sid (sid)}
+      <span class="chip who" title="Photos with this person or pet"><Icon name="user" size={12} /><span class="ellipsis">{store.subjLabels[sid] ?? 'Person'}</span><button onclick={() => store.setFilter('subj', f.subj.filter((x) => x !== sid))} aria-label="Remove"><Icon name="x" size={12} /></button></span>
+    {/each}
     <span class="count tnum">{count.toLocaleString()} {count === 1 ? 'photo' : 'photos'}</span>
     {#if store.loading}<span class="spinner"></span>{/if}
   </div>
@@ -296,6 +300,12 @@
     color: var(--text);
     font-size: 1.0625rem;
     font-weight: 700;
+  }
+  .chip.who {
+    margin-left: 0.25rem;
+    flex: none;
+    max-width: 14rem;
+    font-weight: 600;
   }
   .count {
     margin-left: 0.5rem;
