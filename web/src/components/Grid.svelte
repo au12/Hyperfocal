@@ -11,7 +11,6 @@
   let width = $state(0);
   let viewH = $state(0);
   let scrollTop = $state(0);
-  let selecting = $state(false);
   const PAD = 12;
 
   const gap = $derived(store.mobile ? 3 : 6);
@@ -103,6 +102,12 @@
       viewH = scroller.clientHeight;
     });
     if (scroller) ro.observe(scroller);
+    // While a hold-and-slide selection is on, the finger selects instead of scrolling.
+    // This has to be a non-passive listener that exists before the touch starts.
+    const noPan = (e: TouchEvent) => {
+      if (press?.held && e.cancelable) e.preventDefault();
+    };
+    scroller?.addEventListener('touchmove', noPan, { passive: false });
     gridCtl.rowNeighbor = (i: number, d: number) => {
       const r = layout.rowOf[i] ?? 0;
       const row = layout.rows[r];
@@ -155,6 +160,8 @@
     gridCtl.reveal = reveal;
     return () => {
       ro.disconnect();
+      scroller?.removeEventListener('touchmove', noPan);
+      endPress();
       thumbs.ahead([]);
       if (thumbs.rank === rank) thumbs.rank = (i) => i;
     };
@@ -188,22 +195,178 @@
     lastFolder = f;
   });
 
-  let pressTimer: ReturnType<typeof setTimeout> | undefined;
+  // ------------------------------------------------------------ touch selection
+  // Hold a photo to select it. Keep holding and slide: everything from that photo to the
+  // one under the finger is selected, in grid order (sliding back shrinks it), and the
+  // grid scrolls near the top and bottom edges. Starting on a selected photo deselects
+  // instead. A new hold keeps what was already selected, so separate ranges add up.
+  // When exactly one photo is selected, holding another and letting go without sliding
+  // also selects everything between the two; sliding instead starts a separate range.
+  // Taps still add or remove single photos.
+
+  const HOLD_MS = 450;
+  const SLOP = 10; // px the finger may wander before the hold counts as a scroll
+  const TOUCH_EDGE = 52;
+
+  type Press = {
+    pointer: number;
+    i: number;
+    sx: number;
+    sy: number;
+    cx: number;
+    cy: number;
+    timer: ReturnType<typeof setTimeout>;
+    held: boolean;
+    anchor: number;
+    to: number;
+    base: Set<number>;
+    remove: boolean;
+    /** The one photo selected before this hold: letting go without sliding fills the
+     * gap from it. Cleared as soon as the finger slides onto another photo. */
+    fill: number | null;
+    raf: number;
+  };
+  let press: Press | null = null;
   let longPressed = false;
 
   function onDown(i: number, e: PointerEvent) {
-    if (e.pointerType !== 'mouse') {
-      longPressed = false;
-      pressTimer = setTimeout(() => {
-        longPressed = true;
-        selecting = true;
-        store.select(i, 'toggle');
-        navigator.vibrate?.(15);
-      }, 450);
+    if (e.pointerType === 'mouse') return;
+    longPressed = false;
+    // A second finger (a pinch) ends a hold that hasn't fired yet.
+    if (press) {
+      if (!press.held) endPress();
+      return;
     }
+    press = {
+      pointer: e.pointerId,
+      i,
+      sx: e.clientX,
+      sy: e.clientY,
+      cx: e.clientX,
+      cy: e.clientY,
+      timer: setTimeout(onHold, HOLD_MS),
+      held: false,
+      anchor: i,
+      to: i,
+      base: new Set(),
+      remove: false,
+      fill: null,
+      raf: 0,
+    };
+    window.addEventListener('pointermove', onPressMove);
+    window.addEventListener('pointerup', onPressUp);
+    window.addEventListener('pointercancel', onPressUp);
+    window.addEventListener('blur', endPress);
   }
-  function onUp() {
-    clearTimeout(pressTimer);
+
+  function onHold() {
+    const p = press;
+    if (!p) return;
+    const L = store.list;
+    const id = L.id[p.i];
+    if (id == null) return endPress();
+    p.held = true;
+    longPressed = true;
+    const sel = store.selected;
+    const only = sel.size === 1 ? [...sel][0] : null;
+    const from = only != null && only !== id ? store.index.get(only) : undefined;
+    p.fill = from ?? null;
+    p.anchor = p.i;
+    p.base = new Set(sel);
+    p.remove = sel.has(id);
+    p.to = p.i;
+    navigator.vibrate?.(15);
+    store.pressRange(p.anchor, p.to, p.base, p.remove);
+    store.cursor = p.i;
+    document.body.classList.add('no-select');
+  }
+
+  function onPressMove(e: PointerEvent) {
+    const p = press;
+    if (!p || e.pointerId !== p.pointer) return;
+    p.cx = e.clientX;
+    p.cy = e.clientY;
+    if (!p.held) {
+      // Moved before the hold fired: it's a scroll, not a selection.
+      if (Math.hypot(p.cx - p.sx, p.cy - p.sy) > SLOP) endPress();
+      return;
+    }
+    updatePress();
+    pressScroll();
+  }
+
+  function onPressUp(e: PointerEvent) {
+    const p = press;
+    if (!p || e.pointerId !== p.pointer) return;
+    // Held a second photo and let go without sliding: fill the gap from the first.
+    if (e.type === 'pointerup' && p.held && p.fill != null && p.to === p.i) {
+      store.pressRange(p.fill, p.i, new Set(), false);
+      navigator.vibrate?.([12, 40, 12]);
+    }
+    endPress();
+  }
+
+  function endPress() {
+    window.removeEventListener('pointermove', onPressMove);
+    window.removeEventListener('pointerup', onPressUp);
+    window.removeEventListener('pointercancel', onPressUp);
+    window.removeEventListener('blur', endPress);
+    if (press) {
+      clearTimeout(press.timer);
+      if (press.raf) cancelAnimationFrame(press.raf);
+      if (press.held) document.body.classList.remove('no-select');
+    }
+    press = null;
+  }
+
+  /** The photo under (or nearest to) a point in layout coordinates: between photos in a
+   * row the one before, between rows the row below, above the grid the first photo,
+   * below it the last. */
+  function indexAt(x: number, y: number): number | null {
+    const rows = layout.rows;
+    if (!rows.length) return null;
+    if (y < 0) return 0;
+    const row = rows[rowAt(rows, y)];
+    if (y > row.top + row.height && row === rows[rows.length - 1]) return row.end - 1;
+    let k = 0;
+    while (k + 1 < row.end - row.start && row.x[k + 1] <= x) k++;
+    return row.start + k;
+  }
+
+  function updatePress() {
+    const p = press;
+    if (!p?.held || !scroller) return;
+    const at = toLayout(p.cx, p.cy);
+    const to = indexAt(at.x, at.y);
+    if (to == null || to === p.to) return;
+    p.to = to;
+    p.fill = null;
+    store.pressRange(p.anchor, to, p.base, p.remove);
+  }
+
+  /** Scrolls while the finger is near (or past) the top or bottom edge, faster the
+   * closer it gets. */
+  function pressScroll() {
+    const p = press;
+    if (!p || !scroller || p.raf) return;
+    const tick = () => {
+      const q = press;
+      if (!q || !scroller) return;
+      q.raf = 0;
+      const r = scroller.getBoundingClientRect();
+      let v = 0;
+      if (q.cy < r.top + TOUCH_EDGE) v = -Math.min(TOUCH_EDGE, r.top + TOUCH_EDGE - q.cy);
+      else if (q.cy > r.bottom - TOUCH_EDGE) v = Math.min(TOUCH_EDGE, q.cy - (r.bottom - TOUCH_EDGE));
+      if (!v) return;
+      const before = scroller.scrollTop;
+      scroller.scrollTop += v * 0.35;
+      if (scroller.scrollTop !== before) {
+        scrollTop = scroller.scrollTop;
+        updatePress();
+        q.raf = requestAnimationFrame(tick);
+      }
+    };
+    p.raf = requestAnimationFrame(tick);
   }
 
   function onClick(i: number, e: MouseEvent) {
@@ -212,10 +375,8 @@
       return;
     }
     if (store.mobile) {
-      if (selecting || store.selected.size > 0) {
-        store.select(i, 'toggle');
-        if (store.selected.size === 0) selecting = false;
-      } else store.openLoupe(i);
+      if (store.selected.size > 0) store.select(i, 'toggle');
+      else store.openLoupe(i);
       return;
     }
     // As in Finder / Explorer: Shift selects a range from the last clicked photo,
@@ -397,6 +558,7 @@
     scrollTop = scroller?.scrollTop ?? 0;
     onScrollSpeed(scrollTop);
     updateBand();
+    updatePress();
   }}
   onpointerdown={onGridDown}
   onclickcapture={onGridClickCapture}
@@ -434,11 +596,8 @@
           style:width={`${row.w[k]}px`}
           style:height={`${row.height}px`}
           onclick={(e) => onClick(i, e)}
-          ondblclick={() => store.openLoupe(i)}
+          ondblclick={() => !store.mobile && store.openLoupe(i)}
           onpointerdown={(e) => onDown(i, e)}
-          onpointerup={onUp}
-          onpointercancel={onUp}
-          onpointerleave={onUp}
           oncontextmenu={(e) => store.mobile && e.preventDefault()}
           role="gridcell"
           tabindex="-1"

@@ -1019,6 +1019,27 @@ class Store {
     this.normalize();
   };
 
+  /** Touch selection (hold, then drag): `base` plus the photos from `anchor` to `to`, both
+   * included, or `base` minus them when `remove` (the hold began on a selected photo).
+   * Unlike `extendTo` it never collapses a one-photo selection, which on touch is what
+   * keeps selection mode on. Leaves the cursor alone so the grid doesn't scroll under
+   * the finger. */
+  pressRange = (anchor: number, to: number, base: Set<number>, remove: boolean) => {
+    const L = this.list;
+    if (L.id[anchor] == null || L.id[to] == null) return;
+    const [lo, hi] = anchor < to ? [anchor, to] : [to, anchor];
+    const next = new Set(base);
+    for (let k = lo; k <= hi; k++) {
+      if (remove) next.delete(L.id[k]);
+      else next.add(L.id[k]);
+    }
+    this.setSelection(next);
+    this.anchorId = L.id[anchor];
+    this.headId = L.id[to];
+    this.rangeBase = new Set(base);
+    this.rangeBase.delete(L.id[anchor]);
+  };
+
   /** The selection a Ctrl/Shift rubber band starts from (the cursor photo when nothing
    * is selected). */
   marqueeBase = (): Set<number> => {
