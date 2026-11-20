@@ -28,7 +28,7 @@ pub fn abs_dir(state: &AppState, rel: &str) -> PathBuf {
     if rel.is_empty() { state.cfg.photos_root.clone() } else { state.cfg.photos_root.join(rel) }
 }
 
-fn mtime_ms(md: &std::fs::Metadata) -> i64 {
+pub(crate) fn mtime_ms(md: &std::fs::Metadata) -> i64 {
     md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 

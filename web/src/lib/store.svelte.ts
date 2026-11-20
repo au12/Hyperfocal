@@ -33,6 +33,8 @@ export const LABELS: { color: LabelColor; name: string; key: string }[] = [
   { color: 'purple', name: 'Purple', key: '' },
 ];
 
+type CullPatch = Pick<Patch, 'rating' | 'label' | 'pick'>;
+
 export type SortKey = 'taken' | 'name' | 'rating' | 'modified';
 
 export interface Filters {
@@ -314,6 +316,13 @@ class Store {
   loading = $state(false);
   listError = $state<string | null>(null);
   private listAbort: AbortController | null = null;
+  /** Rating/label/pick edits a list or detail read may not reflect yet: in flight
+   * (`settled` null), or saved while a read that started earlier was still running.
+   * Laid over every such read, so a reload never flashes an old value back while you cull. */
+  private pendingEdits = new Map<number, { patch: CullPatch; token: number; settled: number | null }>();
+  private editToken = 0;
+  /** Counts list and detail reads, to tell whether a read started after an edit was saved. */
+  private readSeq = 0;
   index = new Map<number, number>();
 
   /** Explicitly selected photos. Empty means the photo at the cursor is the selection,
@@ -886,12 +895,14 @@ class Store {
     const keepCursor = keepPosition ? this.list.id[this.cursor] : undefined;
     this.loading = true;
     this.listError = null;
+    const seq = ++this.readSeq;
     try {
       const list = await api.photos(this.params(), ctl.signal);
       if (ctl.signal.aborted) return;
-      this.list = list;
       const idx = new Map<number, number>();
       list.id.forEach((id, i) => idx.set(id, i));
+      this.overlayPending(list, idx, seq);
+      this.list = list;
       this.index = idx;
       for (const s of [...this.selected]) if (!idx.has(s)) this.selected.delete(s);
       if (keepId != null && idx.has(keepId)) this.current = idx.get(keepId)!;
@@ -1190,9 +1201,10 @@ class Store {
     this.detailAbort?.abort();
     const ctl = new AbortController();
     this.detailAbort = ctl;
+    const seq = ++this.readSeq;
     try {
       const d = await api.photo(id, ctl.signal);
-      if (!ctl.signal.aborted) this.detail = d;
+      if (!ctl.signal.aborted) this.detail = this.overlayDetail(d, seq);
     } catch {
       /* aborted or failed */
     }
@@ -1203,6 +1215,57 @@ class Store {
   focusId = (): number | undefined => (this.compare ? this.compare[this.compareActive] : this.list.id[this.loupe ? this.current : this.cursor]);
 
   // ------------------------------------------------------------ edits
+  /** Re-apply pending culling edits to a list read that started at `seq`; forget the
+   * ones saved before it started (the read has them). */
+  private overlayPending(list: PhotoList, idx: Map<number, number>, seq: number) {
+    for (const [id, e] of this.pendingEdits) {
+      if (e.settled != null && e.settled < seq) {
+        this.pendingEdits.delete(id);
+        continue;
+      }
+      const i = idx.get(id);
+      if (i == null) continue;
+      if (e.patch.rating !== undefined) list.r[i] = e.patch.rating;
+      if (e.patch.label !== undefined) list.lc[i] = (e.patch.label?.toLowerCase() as LabelColor) ?? null;
+      if (e.patch.pick !== undefined) list.p[i] = e.patch.pick;
+    }
+  }
+
+  private overlayDetail(d: PhotoDetail, seq: number): PhotoDetail {
+    const e = this.pendingEdits.get(d.id);
+    if (!e || (e.settled != null && e.settled < seq)) return d;
+    const out = { ...d };
+    if (e.patch.rating !== undefined) out.rating = e.patch.rating;
+    if (e.patch.label !== undefined) {
+      out.label = e.patch.label;
+      out.lcolor = (e.patch.label?.toLowerCase() as LabelColor) ?? null;
+    }
+    if (e.patch.pick !== undefined) out.pick = e.patch.pick;
+    return out;
+  }
+
+  /** Remember a culling edit until reads are sure to include it. `settle` marks it saved;
+   * `drop` forgets it (failed). A later edit of the same photo takes over its entry. */
+  private trackPending(ids: number[], patch: Patch): { settle: () => void; drop: () => void } {
+    const cull: CullPatch = {};
+    if (patch.rating !== undefined) cull.rating = patch.rating;
+    if (patch.label !== undefined) cull.label = patch.label;
+    if (patch.pick !== undefined) cull.pick = patch.pick;
+    if (!Object.keys(cull).length) return { settle: () => {}, drop: () => {} };
+    const token = ++this.editToken;
+    for (const id of ids) {
+      const prev = this.pendingEdits.get(id);
+      this.pendingEdits.set(id, { patch: { ...prev?.patch, ...cull }, token, settled: null });
+    }
+    const each = (f: (id: number) => void) => () => {
+      for (const id of ids) if (this.pendingEdits.get(id)?.token === token) f(id);
+    };
+    return {
+      settle: each((id) => (this.pendingEdits.get(id)!.settled = this.readSeq)),
+      drop: each((id) => this.pendingEdits.delete(id)),
+    };
+  }
+
   private optimistic(ids: number[], patch: Patch): () => void {
     const L = this.list;
     const undo: [number, number, LabelColor | null, number][] = [];
@@ -1246,10 +1309,13 @@ class Store {
   patch = async (ids: number[], patch: Patch, describe?: string): Promise<BatchResult | null> => {
     if (!ids.length || this.readonlyGuard()) return null;
     const revert = this.optimistic(ids, patch);
+    const pending = this.trackPending(ids, patch);
     this.busy++;
     try {
       const r = await api.meta(ids, patch);
+      pending.settle();
       if (r.failed.length) {
+        pending.drop();
         revert();
         this.toast(`${r.failed.length} of ${ids.length} not saved: ${r.failed[0][1]}`, 'error', undefined, 8000);
       } else if (describe) {
@@ -1258,6 +1324,7 @@ class Store {
       if (this.detail && ids.includes(this.detail.id)) this.loadDetail();
       return r;
     } catch (e) {
+      pending.drop();
       revert();
       this.toast(`Not saved: ${(e as Error).message}`, 'error', undefined, 8000);
       return null;

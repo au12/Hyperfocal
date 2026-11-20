@@ -68,9 +68,14 @@ vec3 expose(vec3 c) {
 // tile coordinates then jump by a whole tile. The derivatives behind texture()'s mip
 // choice are undefined there; some drivers (seen on macOS) return wrong texels, which
 // showed as 1-px lines on tile seams (made bolder by screen sharpening). Tiles have one
-// level, sampled at LOD 0; the base image's gradients are taken before branching.
-vec3 imgSrc(vec2 st, float bias) {
-  vec2 gx = dFdx(st), gy = dFdy(st);
+// level, sampled at LOD 0.
+//
+// The base image's gradients (gx, gy: d st / d screen px) come from the caller, taken
+// in uniform control flow before any branch. Taking them here broke the image's edges:
+// main() returns early for background pixels, so in every quad straddling the border
+// some pixels never computed st, the gradients were garbage and those edge pixels drew
+// from an arbitrary mip level (lines along the edges that moved with zoom and pan).
+vec3 imgSrc(vec2 st, vec2 gx, vec2 gy, float bias) {
   if (u_detail) {
     vec2 px = clamp(st, 0.0, 1.0) * u_full;
     ivec2 t = min(ivec2(px / u_tile), textureSize(u_page, 0) - 1);
@@ -85,7 +90,7 @@ vec3 imgSrc(vec2 st, float bias) {
   return textureGrad(u_img, st, gx * k, gy * k).rgb;
 }
 
-vec3 img(vec2 st, float bias) { return expose(imgSrc(st, bias)); }`;
+vec3 img(vec2 st, vec2 gx, vec2 gy, float bias) { return expose(imgSrc(st, gx, gy, bias)); }`;
 
 // Pass 1 of screen sharpening: the plain view, edges extended past the image so the blur
 // does not pull the background in.
@@ -95,7 +100,10 @@ ${IMG}
 ${MAP}
 out vec4 outColor;
 void main() {
-  outColor = vec4(img(orient(clamp(mapPx(gl_FragCoord.xy), 0.0, 1.0)), LOD_BIAS), 1.0);
+  vec2 d = mapPx(gl_FragCoord.xy);
+  // Gradients of the unclamped mapping: past the edges the clamped one is flat (LOD 0).
+  vec2 sd = orient(d);
+  outColor = vec4(img(orient(clamp(d, 0.0, 1.0)), dFdx(sd), dFdy(sd), LOD_BIAS), 1.0);
 }`;
 
 // Pass 2: horizontal Gaussian of pass 1.
@@ -174,20 +182,32 @@ vec3 underColor(int ub) {
 // a screen pixel is marked when about half its footprint is flagged; underexposure, being
 // speckled shadow noise, from 0.4). Bilinear coverage gives smooth outlines when zoomed in,
 // the averaged mipmaps a majority rule when zoomed out; the edge is anti-aliased over about
-// a screen pixel. Returns the per-channel weights (0..1).
-vec3 marks(vec3 cov, float cut) {
-  vec3 w = clamp(fwidth(cov) * 0.75, vec3(0.002), vec3(0.5));
+// a screen pixel. fw is fwidth(cov), taken before any branch. Returns the per-channel
+// weights (0..1).
+vec3 marks(vec3 cov, vec3 fw, float cut) {
+  vec3 w = clamp(fw * 0.75, vec3(0.002), vec3(0.5));
   return smoothstep(vec3(cut) - w, vec3(cut) + w, cov);
 }
 
 void main() {
   vec2 d = mapPx(gl_FragCoord.xy);
-  // Mask gradients before any branch (implicit derivatives are undefined in divergent flow).
-  vec2 sm = orient(clamp(d, 0.0, 1.0));
-  vec2 mgx = dFdx(sm), mgy = dFdy(sm);
+  // Everything that needs derivatives happens here, before the early return for the
+  // background: implicit derivatives (dFdx, fwidth, texture()) are undefined once pixels
+  // of a 2x2 quad have taken different branches, which is exactly the image's border.
+  // The gradients come from the unclamped mapping (it is affine; the clamped one would
+  // halve them on edge pixels whose quad neighbours lie outside).
+  vec2 st = orient(clamp(d, 0.0, 1.0));
+  vec2 sd = orient(d);
+  vec2 gx = dFdx(sd), gy = dFdy(sd);
+  vec3 overCov = vec3(0.0), underCov = vec3(0.0), overFw = vec3(0.0), underFw = vec3(0.0);
+  if (u_hasMask && (u_over || u_under)) {
+    overCov = textureGrad(u_overCov, st, gx, gy).rgb;
+    underCov = textureGrad(u_underCov, st, gx, gy).rgb;
+    overFw = fwidth(overCov);
+    underFw = fwidth(underCov);
+  }
   if (!u_hasImg || d.x < 0.0 || d.y < 0.0 || d.x > 1.0 || d.y > 1.0) { outColor = vec4(u_bg, 1.0); return; }
-  vec2 st = orient(d);
-  vec3 c = img(st, LOD_BIAS);
+  vec3 c = img(st, gx, gy, LOD_BIAS);
 
   if (u_sharpen > 0.0) {
     // Vertical half of the Gaussian over pass 2, then the unsharp mask (display values).
@@ -210,9 +230,9 @@ void main() {
   if (u_peak > 0) {
     vec2 tx = vec2(u_texel.x, 0.0);
     vec2 ty = vec2(0.0, u_texel.y);
-    float tl = luma(img(st - tx - ty, 0.0)), t = luma(img(st - ty, 0.0)), tr = luma(img(st + tx - ty, 0.0));
-    float l = luma(img(st - tx, 0.0)), m = luma(img(st, 0.0)), r = luma(img(st + tx, 0.0));
-    float bl = luma(img(st - tx + ty, 0.0)), bo = luma(img(st + ty, 0.0)), br = luma(img(st + tx + ty, 0.0));
+    float tl = luma(img(st - tx - ty, gx, gy, 0.0)), t = luma(img(st - ty, gx, gy, 0.0)), tr = luma(img(st + tx - ty, gx, gy, 0.0));
+    float l = luma(img(st - tx, gx, gy, 0.0)), m = luma(img(st, gx, gy, 0.0)), r = luma(img(st + tx, gx, gy, 0.0));
+    float bl = luma(img(st - tx + ty, gx, gy, 0.0)), bo = luma(img(st + ty, gx, gy, 0.0)), br = luma(img(st + tx + ty, gx, gy, 0.0));
     float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
     float gy = (bl + 2.0 * bo + br) - (tl + 2.0 * t + tr);
     float g = sqrt(gx * gx + gy * gy);
@@ -230,17 +250,17 @@ void main() {
       // underexposure adds the underexposed ones to black (blue = blue, white = all);
       // where channels meet, the colours blend across the anti-aliased edge.
       if (u_under) {
-        vec3 s = marks(textureGrad(u_underCov, st, mgx, mgy).rgb, 0.4);
+        vec3 s = marks(underCov, underFw, 0.4);
         float a = max(s.r, max(s.g, s.b));
         if (a > 0.0) c = mix(c, u_underSolid ? u_underColor : s / a, a);
       }
       if (u_over) {
-        vec3 s = marks(textureGrad(u_overCov, st, mgx, mgy).rgb, 0.5);
+        vec3 s = marks(overCov, overFw, 0.5);
         float a = max(s.r, max(s.g, s.b));
         if (a > 0.0) c = mix(c, u_overSolid ? vec3(1.0, 0.0, 0.0) : vec3(1.0) - s / a, a);
       }
     } else if (!u_maskOnly) {
-      vec3 src = img(st, LOD_BIAS);
+      vec3 src = img(st, gx, gy, LOD_BIAS);
       vec3 cl = step(vec3(0.996), src);
       vec3 cu = vec3(1.0) - step(vec3(0.008), src);
       int ob = int(cl.r) | (int(cl.g) << 1) | (int(cl.b) << 2);

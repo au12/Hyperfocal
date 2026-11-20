@@ -71,9 +71,10 @@
   const fitScale = $derived(Math.min(cw / dispW, ch / dispH));
   const curScale = $derived(view.fit ? fitScale : view.scale);
   const ev = $derived(store.viewer.evOn ? store.viewer.ev : 0);
-  const rating = $derived(L.r[i] ?? 0);
-  const label = $derived(L.lc[i] ?? null);
-  const pick = $derived(L.p[i] ?? 0);
+  // In-place list edits are signalled by `rev` (see Loupe).
+  const rating = $derived((void store.rev, L.r[i] ?? 0));
+  const label = $derived((void store.rev, L.lc[i] ?? null));
+  const pick = $derived((void store.rev, L.p[i] ?? 0));
   const inReject = $derived(!!store.folders.get(L.f[i])?.isReject);
   const name = $derived(L.n[i] ?? '');
 

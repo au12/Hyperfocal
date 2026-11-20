@@ -63,6 +63,12 @@
   const curScale = $derived(fit ? fitScale : scale);
   const zoomPct = $derived(Math.round(curScale * 100));
   const inReject = $derived(!!store.folders.get(L.f[i])?.isReject);
+  // Rating, label and pick change in place in the list (optimistic edits); `rev` is what
+  // tells the view, so these must read it or they wait for the server's list reload.
+  const cull = $derived.by(() => {
+    void store.rev;
+    return { r: L.r[i] ?? 0, lc: L.lc[i] ?? null, p: L.p[i] ?? 0 };
+  });
 
   const SIZES = [1024, 1600, 2048, 2560, 3200, 4096];
 
@@ -784,15 +790,15 @@
     <footer class="bottom">
       <div class="rate">
         {#each [1, 2, 3, 4, 5] as r}
-          <button class="star" class:on={(L.r[i] ?? 0) >= r} onclick={() => store.rate(r)} title={`${r} star${r > 1 ? 's' : ''} (${r})`}>★</button>
+          <button class="star" class:on={cull.r >= r} onclick={() => store.rate(r)} title={`${r} star${r > 1 ? 's' : ''} (${r})`}>★</button>
         {/each}
       </div>
       <div class="labels">
         {#each LABELS as l}
-          <button class="lbl" class:on={L.lc[i] === l.color} onclick={() => store.label(l.color)} title={`${l.name}${l.key ? ` (${l.key})` : ''}`}><span class="label-dot label-{l.color}"></span></button>
+          <button class="lbl" class:on={cull.lc === l.color} onclick={() => store.label(l.color)} title={`${l.name}${l.key ? ` (${l.key})` : ''}`}><span class="label-dot label-{l.color}"></span></button>
         {/each}
       </div>
-      <button class="btn sm" class:pick={L.p[i] === 1} onclick={() => store.togglePick(1)} title={'Pick' + store.keyHint('pick')}><Icon name="flag" fill={L.p[i] === 1} />{L.p[i] === 1 ? 'Picked' : 'Pick'}</button>
+      <button class="btn sm" class:pick={cull.p === 1} onclick={() => store.togglePick(1)} title={'Pick' + store.keyHint('pick')}><Icon name="flag" fill={cull.p === 1} />{cull.p === 1 ? 'Picked' : 'Pick'}</button>
       <div class="exif ellipsis dim tnum">
         {#if exif}
           {[cameraName(exif.make, exif.model), exif.lens, fmtSettings(exif)].filter(Boolean).join(' · ')}
@@ -805,6 +811,7 @@
     {#if store.panels.filmstrip && !store.panels.hidden}
       <div class="film" bind:clientWidth={filmW}>
         {#each { length: filmHalf * 2 + 1 } as _, k}
+          {@const _r = store.rev}
           {@const j = i - filmHalf + k}
           {#if j >= 0 && j < L.id.length}
             <button class="fthumb" class:cur={j === i} onclick={() => store.goTo(j)} title={L.n[j]}>
@@ -845,10 +852,10 @@
     {/if}
     <footer class="mbar">
       <button class="mb danger" onclick={() => store.reject()}><Icon name={inReject ? 'restore' : 'reject'} size={22} /><span>{inReject ? 'Restore' : 'Reject'}</span></button>
-      <button class="mb" class:on={(L.r[i] ?? 0) > 0} onclick={() => (sheet = sheet === 'rate' ? null : 'rate')}>
-        <Icon name="star" size={22} fill={(L.r[i] ?? 0) > 0} /><span>{(L.r[i] ?? 0) > 0 ? `${L.r[i]}★` : 'Rate'}</span>
+      <button class="mb" class:on={cull.r > 0} onclick={() => (sheet = sheet === 'rate' ? null : 'rate')}>
+        <Icon name="star" size={22} fill={cull.r > 0} /><span>{cull.r > 0 ? `${cull.r}★` : 'Rate'}</span>
       </button>
-      <button class="mb" class:pick={L.p[i] === 1} onclick={() => store.togglePick(1)}><Icon name="flag" size={22} fill={L.p[i] === 1} /><span>Pick</span></button>
+      <button class="mb" class:pick={cull.p === 1} onclick={() => store.togglePick(1)}><Icon name="flag" size={22} fill={cull.p === 1} /><span>Pick</span></button>
       <button class="mb" onclick={() => isRaw && store.setViewer('source', useRaw ? 'jpeg' : 'raw')} disabled={!isRaw}>
         <span class="srcbadge" class:raw={useRaw}>{useRaw ? 'RAW' : fileLabel === 'JPEG' ? 'JPG' : fileLabel}</span><span>Source</span>
       </button>
@@ -863,12 +870,12 @@
         {:else if sheet === 'rate'}
           <div class="mrate">
             {#each [1, 2, 3, 4, 5] as r}
-              <button class="star big" class:on={(L.r[i] ?? 0) >= r} onclick={() => { store.rate(r); sheet = null; }}>★</button>
+              <button class="star big" class:on={cull.r >= r} onclick={() => { store.rate(r); sheet = null; }}>★</button>
             {/each}
           </div>
           <div class="mlabels">
             {#each LABELS as l}
-              <button class="lbl big" class:on={L.lc[i] === l.color} onclick={() => { store.label(l.color); sheet = null; }} aria-label={l.name}><span class="label-dot label-{l.color}"></span></button>
+              <button class="lbl big" class:on={cull.lc === l.color} onclick={() => { store.label(l.color); sheet = null; }} aria-label={l.name}><span class="label-dot label-{l.color}"></span></button>
             {/each}
           </div>
           <button class="btn" onclick={() => { store.rate(0); sheet = null; }}>Clear rating</button>
