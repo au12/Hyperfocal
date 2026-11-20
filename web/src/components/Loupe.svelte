@@ -659,8 +659,8 @@
           <button class:on={!useRaw} onclick={() => store.setViewer('source', 'jpeg')}>JPEG</button>
           <button class:on={useRaw} disabled={!isRaw} onclick={() => store.setViewer('source', 'raw')}>RAW</button>
         </div>
-        <button class="btn sm icon" class:on={store.viewer.sharpen > 0} onclick={() => store.setViewer('sharpen', ((store.viewer.sharpen + 1) % 3) as 0 | 1 | 2)} title={'Screen sharpening' + store.keyHint('sharpen')}>
-          <Icon name="sharpen" />{#if store.viewer.sharpen}<sup>{store.viewer.sharpen}</sup>{/if}
+        <button class="btn sm icon leveled" class:on={store.viewer.sharpen > 0} onclick={() => store.setViewer('sharpen', ((store.viewer.sharpen + 1) % 3) as 0 | 1 | 2)} title={'Screen sharpening' + store.keyHint('sharpen')}>
+          <Icon name="sharpen" />{#if store.viewer.sharpen}<span class="level tnum">{store.viewer.sharpen}</span>{/if}
         </button>
         <button class="btn sm icon" class:on={store.viewer.peaking > 0} onclick={() => store.setViewer('peaking', ((store.viewer.peaking + 1) % 4) as 0 | 1 | 2 | 3)} title={'Focus peaking' + store.keyHint('peaking')}><Icon name="peaking" /></button>
         <button class="btn sm" class:on={store.viewer.over} onclick={() => store.setViewer('over', !store.viewer.over)} title={'Overexposed areas' + store.keyHint('over')}>OE</button>
@@ -899,9 +899,18 @@
     height: 1.75rem;
     font-size: var(--fs-sm);
   }
-  .tools sup {
-    font-size: 0.625rem;
-    margin-left: -0.125rem;
+  /* A tool with levels (sharpening 1 / 2): the icon stays centred in the square button,
+     the level sits in its top-right corner. */
+  .leveled {
+    position: relative;
+  }
+  .leveled .level {
+    position: absolute;
+    top: 0.125rem;
+    right: 0.1875rem;
+    font-size: 0.5625rem;
+    font-weight: 700;
+    line-height: 1;
   }
   .evctl {
     display: flex;
