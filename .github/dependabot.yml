@@ -1,0 +1,26 @@
+# Dependabot opens a pull request when a dependency publishes a new version.
+# The Docker workflow tests every pull request, so each bump arrives tested.
+version: 2
+updates:
+  # Rust server crates. FlashRaw (the RAW decoder) is young and moves fast, so its
+  # crates (flashraw, flashraw-core, flashraw-formats share one version and must
+  # move together) get their own pull request the day a release lands; every
+  # other crate is grouped into one pull request so they do not pile up.
+  - package-ecosystem: cargo
+    directory: /server
+    schedule:
+      interval: daily
+    groups:
+      flashraw:
+        patterns: ["flashraw*"]
+      other-crates:
+        patterns: ["*"]
+        exclude-patterns: ["flashraw*"]
+    labels: [dependencies]
+
+  # Actions used by the workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies]

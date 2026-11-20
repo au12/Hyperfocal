@@ -16,10 +16,10 @@ libraw = ["dep:bindgen", "dep:pkg-config"]
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["macros"] }
-flashraw = { version = "=0.3.1", default-features = false, features = ["mmap", "rayon", "simd"] }
+flashraw = { version = "0.3.1", default-features = false, features = ["mmap", "rayon", "simd"] }
 # FlashRaw's own parsers, for maker-note facts it reads but does not apply (Canon white level).
-flashraw-core = { version = "=0.3.1", default-features = false }
-flashraw-formats = { version = "=0.3.1", default-features = false }
+flashraw-core = { version = "0.3.1", default-features = false }
+flashraw-formats = { version = "0.3.1", default-features = false }
 fast_image_resize = "5"
 half = "2"
 kamadak-exif = "0.6"
