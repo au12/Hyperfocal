@@ -56,6 +56,9 @@ pub struct AppState {
     pub exiftool: tokio::sync::Mutex<ExifTool>,
     /// Serialises every change to the photo library (sidecar writes and moves).
     pub write_lock: tokio::sync::Mutex<()>,
+    /// Folders waiting for a rescan after a rating, label or pick change, with the
+    /// photos to announce once it has run.
+    pub rescans: Mutex<std::collections::HashMap<i64, Vec<i64>>>,
     pub progress: RwLock<Progress>,
     pub scan_tx: Mutex<Option<Sender<ScanMsg>>>,
     /// Folders currently being scanned (two scans of one folder never overlap).

@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::params;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -101,6 +101,51 @@ pub struct Patch {
     /// Face and pet regions and person names (people analysis).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub people: Option<PeopleXmp>,
+}
+
+impl Patch {
+    /// Only the culling fields: rating, label and pick. The index takes these straight
+    /// from the change, so the folder rescan can follow after the reply instead of
+    /// holding it up (and the next keystroke with it).
+    fn cull_only(&self) -> bool {
+        // Destructured in full so a new field has to be considered here.
+        let Patch {
+            rating: _, label: _, pick: _,
+            title, description, creator, rights,
+            keywords_add, keywords_remove, keywords_set, hkeywords_set, keywords_move,
+            gps, city, state, country, country_code, sublocation,
+            orientation, rotate, people,
+        } = self;
+        title.is_none() && description.is_none() && creator.is_none() && rights.is_none()
+            && keywords_add.is_empty() && keywords_remove.is_empty() && keywords_set.is_none()
+            && hkeywords_set.is_none() && keywords_move.is_none()
+            && gps.is_none() && city.is_none() && state.is_none() && country.is_none()
+            && country_code.is_none() && sublocation.is_none()
+            && orientation.is_none() && rotate.is_none() && people.is_none()
+    }
+}
+
+/// Rescan `folder` shortly, then announce `ids`. Edits in quick succession (culling with
+/// the keyboard) share one rescan; one still waiting just takes the new ids along.
+fn rescan_later(state: &Arc<AppState>, folder: i64, ids: Vec<i64>) {
+    {
+        let mut pending = state.rescans.lock();
+        if let Some(v) = pending.get_mut(&folder) {
+            v.extend(ids);
+            return;
+        }
+        pending.insert(folder, ids);
+    }
+    let st = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let ids = st.rescans.lock().remove(&folder).unwrap_or_default();
+        let scan_st = st.clone();
+        let _ = tokio::task::spawn_blocking(move || scan::scan_folder(&scan_st, folder, false)).await;
+        if !ids.is_empty() {
+            st.emit(Event::Photos { ids });
+        }
+    });
 }
 
 fn clean_opt(v: &Option<String>) -> Option<String> {
@@ -731,23 +776,31 @@ async fn apply_meta_in(state: &Arc<AppState>, ids: &[i64], patch: &Patch, undo_o
     let summary = if undo_of.is_some() { format!("undo: {}", summarize(patch)) } else { summarize(patch) };
     let mut ok = Vec::new();
     let mut failed = Vec::new();
-    let mut folders: BTreeSet<i64> = BTreeSet::new();
+    let mut folders: std::collections::BTreeMap<i64, Vec<i64>> = Default::default();
     for &id in ids {
         match write_one(state, id, patch, &batch, undo_of, &summary).await {
             Ok(fid) => {
                 ok.push(id);
-                folders.insert(fid);
+                folders.entry(fid).or_default().push(id);
             }
             Err(e) => failed.push((id, format!("{e:#}"))),
         }
     }
-    // Re-read the folders that changed so the index matches the files.
-    for fid in folders {
-        let st = state.clone();
-        let _ = tokio::task::spawn_blocking(move || scan::scan_folder(&st, fid, false)).await;
-    }
-    if !ok.is_empty() {
-        state.emit(Event::Photos { ids: ok.clone() });
+    // Re-read the folders that changed so the index matches the files. Rating, label and
+    // pick are already in the index (`write_one`), so for those the rescan runs after the
+    // reply; a full folder listing per keystroke is what made culling feel slow.
+    if patch.cull_only() {
+        for (fid, fids) in folders {
+            rescan_later(state, fid, fids);
+        }
+    } else {
+        for &fid in folders.keys() {
+            let st = state.clone();
+            let _ = tokio::task::spawn_blocking(move || scan::scan_folder(&st, fid, false)).await;
+        }
+        if !ok.is_empty() {
+            state.emit(Event::Photos { ids: ok.clone() });
+        }
     }
     Ok(BatchResult { batch, ok, failed, job: None })
 }
@@ -810,6 +863,17 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
             "before": snapshot(&cur), "after": snapshot(&after),
         }),
     )?;
+    // The culling fields go straight into the index, so the list is right before the
+    // folder rescan has run (it re-reads the sidecar and confirms them).
+    {
+        let c = state.db.get()?;
+        if let Err(e) = c.execute(
+            "UPDATE photos SET rating = ?1, label = ?2, lcolor = ?3, pick = ?4 WHERE id = ?5",
+            params![after.rating, after.label, meta::lcolor(after.label.as_deref()), after.pick, id],
+        ) {
+            tracing::warn!("updating the index for photo {id}: {e}");
+        }
+    }
     // A person's (or pet's) keyword taken off by hand: that face is not them after all.
     if undo_of.is_none() && patch.people.is_none() {
         let gone: Vec<String> = cur
