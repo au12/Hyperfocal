@@ -482,6 +482,8 @@
     place-items: center;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   }
+  /* The bottom strip: a rating (or reject mark) always shows; the file name, type and
+     the shade behind them only on hover and on the keyboard cursor. */
   .meta {
     position: absolute;
     left: 0;
@@ -491,18 +493,35 @@
     align-items: flex-end;
     gap: 0.375rem;
     padding: 1.25rem 0.375rem 0.25rem;
-    background: linear-gradient(transparent, rgba(0, 0, 0, 0.55));
     color: #fff;
     font-size: 0.6875rem;
+    pointer-events: none;
+    isolation: isolate;
+  }
+  .meta::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.55));
     opacity: 0;
     transition: opacity 0.15s;
-    pointer-events: none;
   }
-  .tile:hover .meta,
-  .tile.cursor .meta,
-  .meta:has(.stars),
-  .meta:has(.rej-r) {
+  .meta .name,
+  .meta .ext {
+    opacity: 0;
+    transition: opacity 0.15s;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  }
+  .tile:hover .meta::before,
+  .tile.cursor .meta::before,
+  .tile:hover .meta .name,
+  .tile.cursor .meta .name {
     opacity: 1;
+  }
+  .tile:hover .meta .ext,
+  .tile.cursor .meta .ext {
+    opacity: 0.85;
   }
   .stars {
     color: var(--star);
@@ -513,11 +532,11 @@
   .rej-r {
     color: var(--reject);
     font-weight: 700;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
   }
   .ext {
     font-weight: 700;
     letter-spacing: 0.02em;
-    opacity: 0.85;
   }
   .name {
     max-width: 60%;
