@@ -63,17 +63,26 @@ vec3 expose(vec3 c) {
   return mix(lin * 12.92, 1.055 * pow(lin, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, lin));
 }
 
+// No implicit-LOD texture() after the tile branch: neighbouring pixels of a 2x2 shading
+// quad can fall in different tiles (or one in a tile, one on the base image), and their
+// tile coordinates then jump by a whole tile. The derivatives behind texture()'s mip
+// choice are undefined there; some drivers (seen on macOS) return wrong texels, which
+// showed as 1-px lines on tile seams (made bolder by screen sharpening). Tiles have one
+// level, sampled at LOD 0; the base image's gradients are taken before branching.
 vec3 imgSrc(vec2 st, float bias) {
+  vec2 gx = dFdx(st), gy = dFdy(st);
   if (u_detail) {
     vec2 px = clamp(st, 0.0, 1.0) * u_full;
     ivec2 t = min(ivec2(px / u_tile), textureSize(u_page, 0) - 1);
     uint l = texelFetch(u_page, t, 0).r;
     if (l > 0u) {
       vec2 local = px - vec2(t) * u_tile + u_apron;
-      return texture(u_atlas, vec3(local / u_layer, float(l - 1u))).rgb;
+      return textureLod(u_atlas, vec3(local / u_layer, float(l - 1u)), 0.0).rgb;
     }
   }
-  return texture(u_img, st, bias).rgb;
+  // A LOD bias b is the gradients scaled by 2^b.
+  float k = exp2(bias);
+  return textureGrad(u_img, st, gx * k, gy * k).rgb;
 }
 
 vec3 img(vec2 st, float bias) { return expose(imgSrc(st, bias)); }`;
