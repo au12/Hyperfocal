@@ -85,6 +85,11 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - The map view shows the whole library, clustered.
 - **Geotag from a track.** Load GPX, KML, TCX or NMEA files, or a phone's location history (Google Takeout's Records or Timeline export), and Hyperfocal matches capture times against them. The camera's time zone is detected, clock drift can be corrected, and the result is previewed on a map before anything is written to the sidecars.
 - **Archive integrity monitor.** Every original gets a content hash when it is first indexed and is verified again over time (a full pass every 90 days by default), in a nightly window and at a gentle read rate, so array disks are not kept spinning. Originals that changed, went missing or became unreadable are reported in the app and, optionally, through ntfy, Gotify or a webhook. For JPEG, HEIC and TIFF/DNG only the image data is hashed, so a metadata edit by another app is not reported as damage. A file moved to another folder is recognised by its hash. Report-only: nothing is ever repaired or deleted.
+- **Duplicates report.** Three searches, each for the whole library, one folder, or a folder against the rest of the library (Excire's scopes):
+  - *Exact copies* come from the integrity monitor's content hashes. For JPEG, HEIC, TIFF and DNG only the image data is hashed, so a copy that another app wrote a caption or keywords into still counts as a copy; a whole-file comparison (Excire's exact mode) misses those.
+  - *Near-duplicates* are resized, recompressed or re-exported copies and light edits, found by a 64-bit perceptual hash of each photo's thumbnail, made in the background. Strict, normal and loose levels.
+  - *Series* are bursts and brackets: one camera, one folder, a few seconds apart, cut where the scene changes.
+  - Each group suggests a keeper (RAW over JPEG, then the most pixels, then the most metadata; in a series the frame you rated or picked, else the sharpest) and says why. Click another photo to keep it instead, open the group in the compare view, mark it "not duplicates", or move the others to `_Rejected` with one click, journaled and undoable like any reject. A RAW and its JPEG twin count as one photo.
 - **History.** Every change is journaled with what it changed from and to, and can be undone from the History dialog.
 - **Live updates.** Changes made in another tab, or picked up from disk, appear immediately.
 
@@ -242,7 +247,13 @@ People & pets: the people and groups found, and a pet named in the single view (
 
 ![People & pets on a phone](docs/screenshots/mobile-people.jpg)
 
-<sub>The demo library is made of CC0 sample files from [raw.pixls.us](https://raw.pixls.us/). The People & pets screenshots use CC0 and public-domain photos from [Openverse](https://openverse.org/); faces are blurred and people are given generic names.</sub>
+Duplicates: near-duplicates across the library, and on a phone exact copies, a series and a group in the compare view:
+
+![Duplicates report](docs/screenshots/desktop-duplicates.jpg)
+
+![Duplicates on a phone](docs/screenshots/mobile-duplicates.jpg)
+
+<sub>The demo library is made of CC0 sample files from [raw.pixls.us](https://raw.pixls.us/). The People & pets screenshots use CC0 and public-domain photos from [Openverse](https://openverse.org/); faces are blurred and people are given generic names. The Duplicates screenshots use the CC0 and public-domain sample photos that ship with [scikit-image](https://scikit-image.org/).</sub>
 
 ## Install on Unraid
 
@@ -390,6 +401,7 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | `HYPERFOCAL_VERIFY_HOUR` | `4` | Start of the nightly verification window (local hour; set `TZ`) |
 | `HYPERFOCAL_VERIFY_MINUTES` | `120` | Length of the nightly window. Outside it, new and changed files are still hashed, at most 4 GB an hour. |
 | `HYPERFOCAL_HASH_MBPS` | `60` | Read rate while hashing, MB/s (`0` = unlimited). Reading pauses while you are viewing photos. |
+| `HYPERFOCAL_DUPES` | `true` | Duplicates report: fingerprint every photo's thumbnail in the background, for near-duplicates and series (exact copies need only the integrity monitor) |
 | `HYPERFOCAL_ALERT_URL` | – | Where integrity alerts go: an ntfy topic URL, a Gotify `…/message` URL, or any webhook |
 | `HYPERFOCAL_ALERT_FORMAT` | `auto` | `ntfy`, `gotify` or `json` (`auto` decides from the URL) |
 | `HYPERFOCAL_ALERT_TOKEN` | – | Access token for the alert service (ntfy token, Gotify app token, or a bearer token for a webhook) |
@@ -429,7 +441,8 @@ On the same VM, the LibRaw helper starts in a few milliseconds, and a LibRaw dev
 - HEIC/HEIF files get the image view, metadata and every culling feature, but none of the RAW tools: they hold no sensor data.
 - LibRaw 0.21, the version in the Docker image, has no colour data for some cameras released after 2022. FlashRaw handles those, but if LibRaw has to take over for one, its RAW view can look flat in colour.
 - People & pets needs the companion container, and a first analysis takes a while on a CPU (see [Speed](#speed)). Telling apart two pets of the same breed and colour is harder than telling people apart: expect more suggestions to review.
-- Hyperfocal does no AI keywording, similarity search or duplicate detection yet. Keep Excire for those for now.
+- Hyperfocal does no AI keywording or similarity search yet. Keep Excire for those for now.
+- Near-duplicates compare a perceptual hash of each thumbnail: resized, recompressed, re-exported and lightly edited copies are found, crops, rotations and mirror images are not (that needs image embeddings, see the [Roadmap](ROADMAP.md)). The series keeper's "sharpest" is an estimate from the thumbnail: it catches shake and a missed focus, not critical focus.
 
 ## Troubleshooting a file
 

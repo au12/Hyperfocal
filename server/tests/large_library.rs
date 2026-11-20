@@ -375,6 +375,43 @@ fn generate_people(state: &AppState) -> (i64, i64, i64, i64, usize) {
     (family[0], pets[0], groups[0], with_faces, n)
 }
 
+/// Duplicates: an integrity hash for every file (about 3% copies of an earlier one) and
+/// a perceptual hash for every photo, consecutive frames often a few bits apart (one
+/// scene), the odd one a near-copy of an earlier photo.
+fn generate_dupes(state: &AppState) {
+    let mut rng = Rng(0xd0_0b1e_5eed_7777);
+    let mut c = state.db.get().unwrap();
+    let tx = c.transaction().unwrap();
+    let rows: Vec<(String, String, i64, i64, i64, i64, bool)> = {
+        let mut st = tx.prepare("SELECT f.path, p.name, p.size, p.mtime, p.id, p.orientation, p.pair_of IS NULL FROM photos p JOIN folders f ON f.id = p.folder_id ORDER BY p.id").unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))).unwrap().map(|r| r.unwrap()).collect()
+    };
+    let mut files: Vec<String> = Vec::with_capacity(rows.len());
+    let mut photos: Vec<u64> = Vec::new();
+    let mut scene = rng.next();
+    {
+        let mut orig = tx.prepare("INSERT INTO originals(folder, name, size, mtime, scope, hash, first_seen, verified_at) VALUES(?1, ?2, ?3, ?4, 0, ?5, 0, 0)").unwrap();
+        let mut ph = tx.prepare("INSERT INTO phashes(photo_id, size, mtime, orientation, hash, sharp, at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, 0)").unwrap();
+        for (folder, name, size, mtime, id, orientation, visible) in &rows {
+            let h = if !files.is_empty() && rng.chance(0.03) { files[rng.below(files.len() as u64) as usize].clone() } else { format!("{:016x}{:016x}", rng.next(), rng.next()) };
+            orig.execute(params![folder, name, size, mtime, h]).unwrap();
+            files.push(h);
+            if *visible {
+                if rng.chance(0.5) {
+                    scene = rng.next();
+                }
+                let mut p = if !photos.is_empty() && rng.chance(0.02) { photos[rng.below(photos.len() as u64) as usize] } else { scene };
+                for _ in 0..rng.below(8) {
+                    p ^= 1 << rng.below(64);
+                }
+                ph.execute(params![id, size, mtime, orientation, p as i64, rng.below(1000) as f64 / 100.0]).unwrap();
+                photos.push(p);
+            }
+        }
+    }
+    tx.commit().unwrap();
+}
+
 fn rss_mb() -> (f64, f64) {
     let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let field = |k: &str| -> f64 {
@@ -455,6 +492,10 @@ async fn large_library() {
         let st = state.clone();
         tokio::task::spawn_blocking(move || generate_people(&st)).await.unwrap()
     };
+    {
+        let st = state.clone();
+        tokio::task::spawn_blocking(move || generate_dupes(&st)).await.unwrap();
+    }
     let gen_time = t.elapsed();
     hyperfocal::db::optimize(&state.db.get().unwrap()).unwrap();
     println!("generated {detections} faces and pets");
@@ -543,6 +584,22 @@ async fn large_library() {
             assert!(pa["id"].as_array().unwrap().len() > 1000);
         }
         b.get("photos: person and pet", &format!("/api/photos?folder={root}&rec=1&subj={ann},{rex}"), ms(600)).await;
+        // Duplicates.
+        let ex = b.get("dupes: exact copies", "/api/dupes?mode=exact", ms(1000)).await;
+        if round == 0 {
+            assert!(ex["total_groups"].as_u64().unwrap() > 1000, "{}", ex["total_groups"]);
+        }
+        let near = b.get("dupes: near-duplicates", "/api/dupes?mode=near", ms(1500)).await;
+        if round == 0 {
+            assert!(near["total_groups"].as_u64().unwrap() > 1000, "{}", near["total_groups"]);
+            assert!(!near["truncated"].as_bool().unwrap());
+        }
+        b.get("dupes: near-duplicates, loose", "/api/dupes?mode=near&level=loose", ms(3000)).await;
+        b.get("dupes: series", "/api/dupes?mode=series", ms(1200)).await;
+        b.get("dupes: event against library", &format!("/api/dupes?mode=near&scope=against&folder={big}"), ms(1500)).await;
+        b.get("dupes: one event", &format!("/api/dupes?mode=exact&scope=folder&folder={event}"), ms(300)).await;
+        let group_ids: Vec<String> = ex["groups"][0]["members"].as_array().map(|m| m.iter().map(|x| x["id"].to_string()).collect()).unwrap_or_default();
+        b.get("photos: a duplicate group", &format!("/api/photos?ids={}", group_ids.join(",")), ms(50)).await;
         rss_after.push(rss_mb().0);
         if round >= 2 && rss_after[round] - rss_after[round - 1] < 64.0 {
             break;

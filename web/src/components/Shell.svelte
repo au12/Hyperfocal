@@ -48,7 +48,9 @@
       ? 'People & pets'
       : store.query
         ? 'Search'
-        : store.filters.subj?.length === 1 && store.subjLabels[store.filters.subj[0]]
+        : store.collection?.id === 'dupes'
+          ? 'Duplicates'
+          : store.filters.subj?.length === 1 && store.subjLabels[store.filters.subj[0]]
           ? store.subjLabels[store.filters.subj[0]]
           : (store.folders.get(store.folderId ?? -1)?.name ?? 'Hyperfocal'),
   );
@@ -69,7 +71,11 @@
         <button class="clear" onclick={clear} aria-label="Clear search"><Icon name="x" size={16} /></button>
       </div>
     {:else}
-      <div class="title grow ellipsis">{folderName}</div>
+      {#if store.collection?.id === 'dupes'}
+        <button class="title back grow ellipsis" onclick={() => (store.dialog = 'duplicates')} aria-label="Back to the Duplicates report"><Icon name="chevron-left" size={18} />{folderName}</button>
+      {:else}
+        <div class="title grow ellipsis">{folderName}</div>
+      {/if}
       <button class="btn ghost icon" onclick={() => uiCtl.focusSearch()} aria-label="Search"><Icon name="search" /></button>
     {/if}
     {#if store.offline}<span class="ro" title="The server cannot be reached: showing the copies saved in this browser"><Icon name="cloud-off" size={14} /></span>{/if}
@@ -124,6 +130,7 @@
         {#snippet children(close)}
           <button class="menu-item" onclick={() => { close(); store.dialog = 'keywords'; }}><Icon name="tags" />Keywords</button>
           <button class="menu-item" onclick={() => { close(); store.dialog = 'geotag'; }}><Icon name="route" />Geotag from a track</button>
+          <button class="menu-item" onclick={() => { close(); store.dialog = 'duplicates'; }}><Icon name="copy" />Duplicates</button>
           {#if store.status?.integrity !== false}<button class="menu-item" onclick={() => { close(); store.dialog = 'integrity'; }}><Icon name="shield" />Archive integrity</button>{/if}
         {/snippet}
       </Popover>
@@ -170,6 +177,17 @@
   .title {
     font-weight: 700;
     font-size: 1rem;
+  }
+  .title.back {
+    display: flex;
+    align-items: center;
+    gap: 0.125rem;
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--accent);
+    text-align: left;
+    cursor: pointer;
   }
   .search {
     flex: 1;

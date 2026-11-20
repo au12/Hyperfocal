@@ -287,6 +287,73 @@ export interface IntegritySummary extends IntegrityCounts {
   alert: { host: string; format: string } | null;
 }
 
+export type DupeMode = 'exact' | 'near' | 'series';
+export type DupeScope = 'library' | 'folder' | 'against';
+export type DupeLevel = 'strict' | 'normal' | 'loose';
+
+export interface DupeMember {
+  id: number;
+  name: string;
+  /** Folder path ('' for the library root). */
+  folder: string;
+  folder_id: number;
+  /** Thumbnail version. */
+  v: string;
+  /** File-type badge: cr3, cr3+jpg. */
+  label: string;
+  kind: number;
+  w: number | null;
+  h: number | null;
+  orientation: number;
+  /** Bytes, the JPEG/HEIF twin included. */
+  bytes: number;
+  taken: number | null;
+  rating: number;
+  lcolor: string | null;
+  pick: number;
+  /** How much metadata it carries (0-7). */
+  meta: number;
+  /** Perceptual-hash bits that differ from the keeper's (of 64). */
+  d?: number;
+  /** In the folder (folder against the library). */
+  inside: boolean;
+}
+
+export interface DupeGroup {
+  key: string;
+  /** The suggested keeper first. */
+  members: DupeMember[];
+  keeper: number;
+  reason: string;
+  extra_bytes: number;
+}
+
+export interface DupesStatus {
+  enabled: boolean;
+  /** off, waiting, hashing, idle */
+  phase: string;
+  pending: number;
+  done: number;
+  current: string | null;
+}
+
+export interface DupeReport {
+  groups: DupeGroup[];
+  total_groups: number;
+  photos: number;
+  extra: number;
+  extra_bytes: number;
+  truncated: boolean;
+  covered: number;
+  eligible: number;
+  unreadable: number;
+  dismissed: number;
+  status: DupesStatus;
+  /** The integrity monitor is on (exact copies need its hashes). */
+  integrity: boolean;
+  ms: number;
+}
+
 /** A track file loaded for geotagging (kept by the server for a few hours). */
 export interface TrackInfo {
   id: string;
@@ -529,6 +596,11 @@ export const api = {
   integrityForget: (ids: number[]) => req<{ forgotten: number }>('POST', 'integrity/forget', { ids }),
   integrityRun: (o: { all?: boolean; stop?: boolean }) => req<{ ok: boolean }>('POST', 'integrity/run', o),
   integrityTestAlert: () => req<{ ok: boolean }>('POST', 'integrity/test-alert', {}),
+  dupes: (p: { mode: DupeMode; scope: DupeScope; folder?: number; level?: DupeLevel; gap?: number; min?: number }, signal?: AbortSignal) =>
+    req<DupeReport>('GET', 'dupes', undefined, p, signal),
+  dupesStatus: () => req<DupesStatus>('GET', 'dupes/status'),
+  dupesDismiss: (ids: number[], undo = false) => req<{ pairs: number }>('POST', 'dupes/dismiss', { ids, undo }),
+  dupesClearDismissed: () => req<{ cleared: number }>('DELETE', 'dupes/dismissed'),
   peopleStatus: () => req<PeopleStatus>('GET', 'people/status'),
   subjects: (p: { kind: 'person' | 'pet'; hidden?: boolean; named?: 'named' | 'unnamed'; min?: number; q?: string; limit?: number }, signal?: AbortSignal) =>
     req<{ subjects: Subject[]; total: number }>('GET', 'people', undefined, { ...p, hidden: p.hidden ? 1 : undefined }, signal),

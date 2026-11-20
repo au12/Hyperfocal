@@ -96,6 +96,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(crate::geotag::routes())
         .merge(crate::integrity::routes())
         .merge(crate::people::api::routes())
+        .merge(crate::dupes::api::routes())
         .route("/login", post(login))
         .route("/logout", post(logout))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -253,6 +254,8 @@ pub struct ListQuery {
     nodate: Option<u8>,
     /// People, pets or groups (ids, comma-separated): photos with all of them.
     subj: Option<String>,
+    /// Only these photos (ids, comma-separated): a group of the Duplicates report.
+    ids: Option<String>,
 }
 
 /// SQL for "this folder and everything below it" on `f.path`, as an index range (paths
@@ -357,6 +360,17 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
             a.push(Box::new(id));
         }
     }
+    if let Some(v) = q.ids.as_deref() {
+        let ids: Vec<i64> = v.split(',').filter_map(|x| x.trim().parse::<i64>().ok()).take(5000).collect();
+        if ids.is_empty() {
+            w.push("0".into());
+        } else {
+            w.push(format!("p.id IN ({})", vec!["?"; ids.len()].join(",")));
+            for id in ids {
+                a.push(Box::new(id));
+            }
+        }
+    }
     if let Some(text) = q.q.as_deref() {
         let s = crate::db::search_query(text, trigram);
         if let Some(fq) = s.prefix {
@@ -392,7 +406,7 @@ fn order_by(q: &ListQuery) -> String {
 
 /// The file-type badge of a grid tile: `cr3`, or `cr3+jpg` / `cr3+jpg+hif` for a RAW
 /// with JPEG/HEIF files folded in (`companion` lists their names).
-fn file_label_into(label: &mut String, ext: &str, companion: Option<&str>) {
+pub(crate) fn file_label_into(label: &mut String, ext: &str, companion: Option<&str>) {
     label.push_str(ext);
     for name in companion.unwrap_or_default().split(',').filter(|n| !n.is_empty()) {
         label.push('+');

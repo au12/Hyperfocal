@@ -42,6 +42,8 @@ pub enum Event {
     People { photos: Vec<i64> },
     /// Progress of the face and pet analysis.
     PeopleStatus(crate::people::Status),
+    /// New visual fingerprints for the Duplicates report (it refreshes its counts).
+    Dupes,
 }
 
 pub enum ScanMsg {
@@ -75,6 +77,8 @@ pub struct AppState {
     pub integrity: crate::integrity::Integrity,
     /// Faces, pets and who they are.
     pub people: crate::people::People,
+    /// The perceptual-hash worker behind the Duplicates report.
+    pub dupes: crate::dupes::Dupes,
 }
 
 impl AppState {
