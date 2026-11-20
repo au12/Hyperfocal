@@ -32,9 +32,10 @@ RUN touch src/main.rs && cargo build --release --locked \
 # ---------------------------------------------------------------- runtime
 FROM debian:trixie-slim
 # exiftool writes XMP sidecars (and nothing else); tini reaps child processes;
-# libheif (with its HEVC plugin) and LibRaw run only inside the decoder helper process.
+# libheif (with its HEVC plugin) and LibRaw run only inside the decoder helper process;
+# tzdata: the TZ variable sets the local time of the nightly integrity check.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libimage-exiftool-perl tini util-linux \
+ && apt-get install -y --no-install-recommends libimage-exiftool-perl tini util-linux tzdata \
       libheif1 libheif-plugin-libde265 libraw23t64 \
  && rm -rf /var/lib/apt/lists/*
 

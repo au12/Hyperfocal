@@ -30,6 +30,14 @@ pub enum Event {
     Folder { id: i64 },
     Tree,
     Photos { ids: Vec<i64> },
+    /// The saved collections changed (in another tab or on another device).
+    Collections,
+    /// Progress of a background change.
+    Job(crate::ops::JobStatus),
+    /// The archive integrity problems changed: how many of each there are now.
+    Integrity { changed: i64, missing: i64, unreadable: i64 },
+    /// Full-quality thumbnails replaced the drafts shown for these photos.
+    Thumbs { ids: Vec<i64> },
 }
 
 pub enum ScanMsg {
@@ -51,9 +59,16 @@ pub struct AppState {
     pub busy_cv: Condvar,
     pub images: Images,
     pub readonly: AtomicBool,
+    /// The trigram index covers every photo, so search can match substrings.
+    pub trigram: AtomicBool,
     pub session_key: [u8; 32],
     /// RAW and HEIC decoders available to this build.
     pub decoders: crate::native::Decoders,
+    /// Background changes, running and recently finished, by id.
+    pub jobs: Mutex<std::collections::HashMap<String, crate::ops::JobStatus>>,
+    /// Track files uploaded for geotagging, by id (kept for a few hours).
+    pub tracks: Mutex<std::collections::HashMap<String, crate::geotag::StoredTrack>>,
+    pub integrity: crate::integrity::Integrity,
 }
 
 impl AppState {
@@ -63,6 +78,10 @@ impl AppState {
 
     pub fn is_readonly(&self) -> bool {
         self.readonly.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn trigram_ready(&self) -> bool {
+        self.trigram.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn request_scan(&self, msg: ScanMsg) {

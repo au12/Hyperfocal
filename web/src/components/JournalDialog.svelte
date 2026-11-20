@@ -37,7 +37,7 @@
           <Icon name={e.undo_of ? 'undo' : icon(e.kind)} />
           <div class="grow">
             <div>{e.summary || e.kind}{#if e.count > 1} <span class="dim">· {e.count} photos</span>{/if}</div>
-            <div class="dim small">{new Date(e.ts).toLocaleString()}{#if e.undone} · undone{/if}</div>
+            <div class="dim small">{new Date(e.ts).toLocaleString()}{#if e.undone}{' · undone'}{/if}</div>
           </div>
           {#if !e.undone && !store.status?.readonly}
             <button class="btn sm" onclick={() => undo(e.batch)}><Icon name="undo" /> Undo</button>

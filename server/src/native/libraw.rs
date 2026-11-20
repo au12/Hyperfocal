@@ -129,21 +129,8 @@ fn flip_to_exif(flip: c_int) -> u8 {
     }
 }
 
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    (y, m, d)
-}
-
 fn utc_clock(t: i64) -> String {
-    let (y, m, d) = civil_from_days(t.div_euclid(86_400));
+    let (y, m, d) = crate::model::civil_from_days(t.div_euclid(86_400));
     let s = t.rem_euclid(86_400);
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60)
 }
@@ -345,6 +332,14 @@ fn bayer_layout(raw: &Raw) -> Option<BayerInfo> {
     if m.iter().flatten().any(|v| !v.is_finite()) || m.iter().flatten().all(|v| *v == 0.0) {
         m = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     }
+    // linear_max: the maker note's saturation level (Canon SpecularWhiteLevel), when known;
+    // the header maximum overstates it at Canon's pulled ISOs.
+    let maximum = if c.maximum > 0 { c.maximum as f32 } else { 65535.0 };
+    let blk = black.iter().sum::<f32>() / black.len().max(1) as f32;
+    let linear = c.linear_max.iter().filter(|&&v| v > 0).map(|&v| v as f32).fold(f32::INFINITY, f32::min);
+    let white_exact = linear <= maximum && linear > blk + (maximum - blk) * 0.5;
+    let white = if white_exact { linear } else { maximum };
+    let render_white = d.makernotes.canon.NormalWhiteLevel.max(0) as f32;
     Some(BayerInfo {
         w,
         h,
@@ -352,7 +347,9 @@ fn bayer_layout(raw: &Raw) -> Option<BayerInfo> {
         black_rows: rows,
         black_cols: cols,
         black,
-        white: if c.maximum > 0 { c.maximum as f32 } else { 65535.0 },
+        white,
+        white_exact,
+        render_white,
         as_shot: wb(c.cam_mul),
         daylight: wb(c.pre_mul),
         cam_to_srgb: m,

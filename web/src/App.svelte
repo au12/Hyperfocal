@@ -2,12 +2,13 @@
   import { onMount } from 'svelte';
   import { store, LABELS } from './lib/store.svelte';
   import { actionFor, type Action } from './lib/keys';
-  import { gridCtl, uiCtl, viewerCtl, toggleFullscreen } from './lib/ctl';
+  import { gridCtl, uiCtl, viewerCtl, compareCtl, toggleFullscreen } from './lib/ctl';
   import Shell from './components/Shell.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import Toolbar from './components/Toolbar.svelte';
   import Grid from './components/Grid.svelte';
   import Loupe from './components/Loupe.svelte';
+  import Compare from './components/Compare.svelte';
   import InfoPanel from './components/InfoPanel.svelte';
   import MapView from './components/MapView.svelte';
   import Toasts from './components/Toasts.svelte';
@@ -16,6 +17,9 @@
   import HelpDialog from './components/HelpDialog.svelte';
   import JournalDialog from './components/JournalDialog.svelte';
   import LocationDialog from './components/LocationDialog.svelte';
+  import KeywordManager from './components/KeywordManager.svelte';
+  import GeotagDialog from './components/GeotagDialog.svelte';
+  import IntegrityDialog from './components/IntegrityDialog.svelte';
   import BulkBar from './components/BulkBar.svelte';
   import MobileNav from './components/MobileNav.svelte';
 
@@ -39,9 +43,47 @@
 
   const EV_STEP = 1 / 3;
 
+  /** Keys in the compare view: arrows pick the active pane or step its photo, zoom keys
+   * zoom, rating and flag keys apply to the active photo (via store.targets()). */
+  function runCompare(a: Action): boolean | null {
+    const c = store.compare!;
+    switch (a) {
+      case 'next': store.setCompareActive((store.compareActive + 1) % c.length); return true;
+      case 'prev': store.setCompareActive((store.compareActive + c.length - 1) % c.length); return true;
+      case 'down': store.compareStep(1); return true;
+      case 'up': store.compareStep(-1); return true;
+      case 'escape':
+        if (document.fullscreenElement) toggleFullscreen();
+        else store.closeCompare();
+        return true;
+      case 'compare': case 'toggleGrid': store.closeCompare(); return true;
+      case 'open': {
+        const i = store.index.get(c[store.compareActive]);
+        store.closeCompare();
+        if (i != null) store.openLoupe(i);
+        return true;
+      }
+      case 'zoomToggle': compareCtl.zoomToggle(); return true;
+      case 'fit': compareCtl.fit(); return true;
+      case 'zoomIn': compareCtl.zoomIn(); return true;
+      case 'zoomOut': compareCtl.zoomOut(); return true;
+      // Moving through the folder, selection and side panels do not apply here.
+      case 'next2': case 'prev2': case 'next3': case 'prev3': case 'first': case 'last': case 'pageDown': case 'pageUp':
+      case 'selectToggle': case 'selectNext': case 'selectPrev': case 'selectRight': case 'selectLeft': case 'selectDown': case 'selectUp':
+      case 'selectFirst': case 'selectLast': case 'selectPageDown': case 'selectPageUp': case 'selectAll': case 'selectNone': case 'selectInvert': case 'map':
+        return true;
+    }
+    return null;
+  }
+
   function run(a: Action, e: KeyboardEvent): boolean {
     const v = store.viewer;
     const inLoupe = store.loupe;
+    const focus = inLoupe ? store.current : store.cursor;
+    if (store.compare) {
+      const r = runCompare(a);
+      if (r != null) return r;
+    }
     switch (a) {
       case 'next': store.go(1); break;
       case 'prev': store.go(-1); break;
@@ -63,6 +105,7 @@
         else if (store.query) store.search('');
         break;
       case 'toggleGrid': inLoupe ? store.closeLoupe() : store.openLoupe(store.cursor); break;
+      case 'compare': store.openCompare(); break;
       case 'zoomToggle': if (!inLoupe) store.openLoupe(store.cursor); else viewerCtl.zoomToggle(); break;
       case 'fit': viewerCtl.fit(); break;
       case 'zoomIn': viewerCtl.zoomIn(); break;
@@ -74,6 +117,7 @@
       case 'shadows': store.toggleTone('shadows'); break;
       case 'highlights': store.toggleTone('highlights'); break;
       case 'linear': store.toggleTone('linear'); break;
+      case 'invert': store.setViewer('invert', !v.invert); break;
       case 'over': store.setViewer('over', !v.over); break;
       case 'under': store.setViewer('under', !v.under); break;
       case 'wb': {
@@ -85,10 +129,10 @@
       }
       case 'evToggle': store.setViewer('evOn', !v.evOn); break;
       case 'evReset': store.setViewer('ev', 0); break;
-      case 'evUp': store.setViewer('ev', Math.min(5, +(v.ev + EV_STEP).toFixed(2))); store.setViewer('evOn', true); break;
-      case 'evDown': store.setViewer('ev', Math.max(-5, +(v.ev - EV_STEP).toFixed(2))); store.setViewer('evOn', true); break;
-      case 'evUpBig': store.setViewer('ev', Math.min(5, v.ev + 1)); store.setViewer('evOn', true); break;
-      case 'evDownBig': store.setViewer('ev', Math.max(-5, v.ev - 1)); store.setViewer('evOn', true); break;
+      case 'evUp': store.bumpEv(EV_STEP); break;
+      case 'evDown': store.bumpEv(-EV_STEP); break;
+      case 'evUpBig': store.bumpEv(1); break;
+      case 'evDownBig': store.bumpEv(-1); break;
       case 'rate0': store.rate(0); break;
       case 'rate1': store.rate(1); break;
       case 'rate2': store.rate(2); break;
@@ -109,9 +153,25 @@
       case 'editTitle': store.panels.info = true; uiCtl.editTitle(); break;
       case 'keywords': store.panels.info = true; uiCtl.addKeyword(); break;
       case 'location': store.openLocation(); break;
-      case 'selectToggle': store.select(inLoupe ? store.current : store.cursor, 'toggle'); break;
-      case 'selectNext': store.select(inLoupe ? store.current : store.cursor, 'toggle'); store.go(1); break;
-      case 'selectPrev': store.go(-1); store.select(inLoupe ? store.current : store.cursor, 'toggle'); break;
+      case 'selectToggle': store.select(focus, 'toggle'); break;
+      case 'selectNext': store.select(focus, 'toggle'); store.go(1, true); break;
+      case 'selectPrev': store.go(-1, true); store.select(inLoupe ? store.current : store.cursor, 'toggle'); break;
+      case 'selectRight': store.extendTo(focus + 1); break;
+      case 'selectLeft': store.extendTo(focus - 1); break;
+      case 'selectFirst': store.extendTo(0); break;
+      case 'selectLast': store.extendTo(store.list.id.length - 1); break;
+      case 'selectDown': case 'selectUp': {
+        if (inLoupe) return false;
+        const to = gridCtl.rowNeighbor(store.cursor, a === 'selectDown' ? 1 : -1);
+        if (to != null) store.extendTo(to);
+        break;
+      }
+      case 'selectPageDown': case 'selectPageUp': {
+        const d = a === 'selectPageDown' ? 1 : -1;
+        const to = inLoupe ? Math.max(0, Math.min(store.list.id.length - 1, focus + d * 10)) : gridCtl.pageTarget(d);
+        if (to != null) store.extendTo(to);
+        break;
+      }
       case 'selectAll': store.selectAll(); break;
       case 'selectNone': store.clearSelection(); break;
       case 'selectInvert': store.invertSelection(); break;
@@ -147,7 +207,7 @@
       return;
     }
     if (store.needLogin) return;
-    const a = actionFor(e, store.settings.keymap);
+    const a = actionFor(e, store.settings.keymap, store.keyOverrides());
     if (!a) return;
     if (run(a, e)) e.preventDefault();
   }
@@ -194,7 +254,9 @@
     </div>
   {/if}
 
-  {#if store.loupe}
+  {#if store.compare}
+    <Compare />
+  {:else if store.loupe}
     <Loupe />
   {/if}
 
@@ -202,6 +264,9 @@
   {#if store.dialog === 'help'}<HelpDialog />{/if}
   {#if store.dialog === 'journal'}<JournalDialog />{/if}
   {#if store.dialog === 'location'}<LocationDialog />{/if}
+  {#if store.dialog === 'keywords'}<KeywordManager />{/if}
+  {#if store.dialog === 'geotag'}<GeotagDialog />{/if}
+  {#if store.dialog === 'integrity'}<IntegrityDialog />{/if}
 {/if}
 <Toasts />
 

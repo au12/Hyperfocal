@@ -7,76 +7,97 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ToneMode {
-    /// Camera-like rendering: gentle highlight shoulder plus a medium contrast curve.
+    /// FastRawViewer's default rendering: contrast with a soft highlight shoulder.
     #[default]
     Normal,
-    /// FastRawViewer "linear": only the sRGB transfer curve, no contrast curve.
+    /// FastRawViewer "linear": a plain 2.2 gamma, no contrast curve.
     Linear,
-    /// Lifts the shadows by up to 3 EV to judge noise and shadow detail.
+    /// FastRawViewer "shadows boost": deep shadows lifted by about 2.3 EV, fading out
+    /// towards the highlights.
     Shadows,
-    /// Spreads the top three stops over the whole display range.
+    /// FastRawViewer "highlights inspection": a 1.33 gamma that spreads the top stops.
     Highlights,
 }
 
-pub fn srgb_oetf(x: f32) -> f32 {
-    if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
-}
+// Calibrated on FastRawViewer screenshots of the same Canon R6 CR3 in every mode (sRGB,
+// matched pixel for pixel to this pipeline's linear output). FastRawViewer's "linear"
+// output is the raw signal over the level that renders white (Canon's NormalWhiteLevel,
+// see `raw::Developed`) with a pure 2.2 gamma; each other mode is a fixed per-channel
+// curve of that output (spread under one level over 800k samples per mode).
 
-/// Adobe "Medium Contrast" style curve in display space (monotone cubic through
-/// (0,0) (0.125,0.086) (0.25,0.22) (0.5,0.5) (0.75,0.77) (1,1)).
-fn contrast(s: f32) -> f32 {
-    const P: [(f32, f32); 6] = [(0.0, 0.0), (0.125, 0.086), (0.25, 0.22), (0.5, 0.5), (0.75, 0.77), (1.0, 1.0)];
-    let s = s.clamp(0.0, 1.0);
-    // Fritsch-Carlson monotone interpolation (tangents precomputed lazily; tiny table).
-    let n = P.len();
-    let mut d = [0f32; 6];
-    let mut m = [0f32; 6];
-    for i in 0..n - 1 {
-        d[i] = (P[i + 1].1 - P[i].1) / (P[i + 1].0 - P[i].0);
-    }
-    m[0] = d[0];
-    m[n - 1] = d[n - 2];
-    for i in 1..n - 1 {
-        m[i] = if d[i - 1] * d[i] <= 0.0 { 0.0 } else { (d[i - 1] + d[i]) / 2.0 };
-    }
-    let mut k = 0;
-    while k < n - 2 && s > P[k + 1].0 {
-        k += 1;
-    }
-    let (x0, y0) = P[k];
-    let (x1, y1) = P[k + 1];
-    let h = x1 - x0;
-    let t = (s - x0) / h;
+/// Gamma of the "linear" mode, and the base every other mode is a curve of.
+const GAMMA: f32 = 2.2;
+
+/// Display value (0-255) of Normal at linear-mode values 0, 8, 16 ... 248, 255.
+const NORMAL: [f32; 33] = [
+    0.0, 4.8, 6.0, 10.4, 18.3, 28.6, 41.3, 55.4, 71.0, 87.0, 102.0,
+    117.9, 132.1, 145.7, 158.5, 170.3, 180.8, 190.1, 199.0, 206.5, 213.3, 219.4,
+    225.0, 230.0, 234.5, 238.5, 242.0, 245.4, 248.3, 251.0, 253.7, 254.0, 255.0,
+];
+
+/// Display value (0-255) of Shadows boost at linear-mode values 0, 8, 16 ... 248, 255.
+const SHADOWS: [f32; 33] = [
+    0.0, 14.3, 23.6, 40.0, 58.8, 78.2, 97.0, 114.0, 129.9, 144.4, 157.2,
+    169.0, 179.2, 188.0, 196.0, 203.6, 209.5, 215.4, 220.4, 225.0, 229.2, 232.9,
+    236.2, 239.3, 242.0, 244.7, 247.0, 249.0, 251.0, 252.9, 254.0, 254.0, 255.0,
+];
+
+/// Highlights inspection: linear-mode value raised to this power (gamma 2.2 / 1.66 = 1.33).
+const HIGHLIGHTS_POWER: f32 = 1.66;
+
+/// Shape-preserving piecewise cubic (PCHIP, as scipy's `PchipInterpolator`) through
+/// `table` at linear-mode values 0, 8 ... 248, 255; `l` in [0, 1], result in [0, 1].
+fn table_curve(table: &[f32; 33], l: f32) -> f32 {
+    const N: usize = 33;
+    let xk = |i: usize| if i == N - 1 { 255.0 } else { i as f32 * 8.0 };
+    let x = (l * 255.0).clamp(0.0, 255.0);
+    let k = ((x / 8.0) as usize).min(N - 2);
+    let h = |i: usize| xk(i + 1) - xk(i);
+    let d = |i: usize| (table[i + 1] - table[i]) / h(i);
+    // Derivative at knot i: weighted harmonic mean of the neighbouring slopes, zero at
+    // extrema; one-sided, shape-preserving three-point estimate at the ends.
+    let slope = |i: usize| -> f32 {
+        if i == 0 || i == N - 1 {
+            let (h0, h1, d0, d1) = if i == 0 { (h(0), h(1), d(0), d(1)) } else { (h(N - 2), h(N - 3), d(N - 2), d(N - 3)) };
+            let m = ((2.0 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+            if m.signum() != d0.signum() {
+                0.0
+            } else if d0.signum() != d1.signum() && m.abs() > 3.0 * d0.abs() {
+                3.0 * d0
+            } else {
+                m
+            }
+        } else {
+            let (d0, d1) = (d(i - 1), d(i));
+            if d0 * d1 <= 0.0 {
+                0.0
+            } else {
+                let (w1, w2) = (2.0 * h(i) + h(i - 1), h(i) + 2.0 * h(i - 1));
+                (w1 + w2) / (w1 / d0 + w2 / d1)
+            }
+        }
+    };
+    let t = (x - xk(k)) / h(k);
     let (t2, t3) = (t * t, t * t * t);
-    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-    let h10 = t3 - 2.0 * t2 + t;
-    let h01 = -2.0 * t3 + 3.0 * t2;
-    let h11 = t3 - t2;
-    (h00 * y0 + h10 * h * m[k] + h01 * y1 + h11 * h * m[k + 1]).clamp(0.0, 1.0)
+    let y = (2.0 * t3 - 3.0 * t2 + 1.0) * table[k]
+        + (t3 - 2.0 * t2 + t) * h(k) * slope(k)
+        + (-2.0 * t3 + 3.0 * t2) * table[k + 1]
+        + (t3 - t2) * h(k) * slope(k + 1);
+    (y / 255.0).clamp(0.0, 1.0)
 }
 
-/// Map one linear value (after exposure gain) through the mode's curve to [0, 1].
+/// Map one linear value (1.0 renders white, after exposure gain) through the mode's curve
+/// to [0, 1].
 pub fn curve(mode: ToneMode, x: f32) -> f32 {
     if !(x > 0.0) {
         return 0.0;
     }
+    let l = x.min(1.0).powf(1.0 / GAMMA);
     match mode {
-        ToneMode::Linear => srgb_oetf(x.min(1.0)),
-        ToneMode::Normal => contrast(srgb_oetf(x.min(1.0))),
-        ToneMode::Shadows => {
-            // +2.5 EV in the deep shadows, fading out by -1.5 EV: shadows open up while
-            // mid-tones and highlights stay where they are (monotonic: the boost never
-            // falls faster than one stop per stop).
-            let x = x.min(1.0);
-            let ev = x.log2();
-            let t = ((ev + 6.0) / 4.5).clamp(0.0, 1.0);
-            let t = t * t * (3.0 - 2.0 * t);
-            srgb_oetf((x * 2f32.powf(2.5 * (1.0 - t))).min(1.0))
-        }
-        ToneMode::Highlights => {
-            const STOPS: f32 = 3.0;
-            (1.0 + x.log2() / STOPS).clamp(0.0, 1.0)
-        }
+        ToneMode::Linear => l,
+        ToneMode::Normal => table_curve(&NORMAL, l),
+        ToneMode::Shadows => table_curve(&SHADOWS, l),
+        ToneMode::Highlights => l.powf(HIGHLIGHTS_POWER),
     }
 }
 
@@ -137,5 +158,27 @@ mod tests {
         }
         // Shadow boost lifts dark tones.
         assert!(curve(ToneMode::Shadows, 0.01) > curve(ToneMode::Linear, 0.01));
+    }
+
+    #[test]
+    fn calibrated_on_fastrawviewer() {
+        assert!((curve(ToneMode::Linear, 0.25) - 0.25f32.powf(1.0 / 2.2)).abs() < 1e-6);
+        for mode in [ToneMode::Normal, ToneMode::Linear, ToneMode::Shadows, ToneMode::Highlights] {
+            assert_eq!(curve(mode, 0.0), 0.0);
+            assert!((curve(mode, 1.0) - 1.0).abs() < 1e-4, "{mode:?}");
+            assert!((curve(mode, 4.0) - 1.0).abs() < 1e-4, "{mode:?} above white");
+        }
+        // Display levels read off FastRawViewer for a given level of its linear mode (medians
+        // over its screenshots), within a level.
+        let at = |mode, linear_level: f32| curve(mode, (linear_level / 255.0).powf(2.2)) * 255.0;
+        for (l, v) in [(36.0, 23.0), (60.0, 63.0), (96.0, 132.0), (132.0, 186.0), (180.0, 228.0), (228.0, 250.0)] {
+            assert!((at(ToneMode::Normal, l) - v).abs() <= 1.0, "normal {l}: {}", at(ToneMode::Normal, l));
+        }
+        for (l, v) in [(24.0, 40.0), (48.0, 97.0), (96.0, 179.0), (156.0, 227.0), (216.0, 249.0)] {
+            assert!((at(ToneMode::Shadows, l) - v).abs() <= 1.0, "shadows {l}: {}", at(ToneMode::Shadows, l));
+        }
+        for (l, v) in [(48.0, 16.0), (120.0, 73.0), (192.0, 159.0), (240.0, 231.0)] {
+            assert!((at(ToneMode::Highlights, l) - v).abs() <= 1.5, "highlights {l}: {}", at(ToneMode::Highlights, l));
+        }
     }
 }

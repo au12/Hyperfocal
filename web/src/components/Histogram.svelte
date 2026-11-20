@@ -68,19 +68,27 @@
     }
   });
 
-  const pct = (v: number) => (v >= 0.0995 ? `${(v * 100).toFixed(0)}%` : v >= 0.00095 ? `${(v * 100).toFixed(1)}%` : v > 0 ? '<0.1%' : '0');
+  // Three significant digits, like FastRawViewer's exposure stats (0.105%, 1.36%, 4.10%).
+  const pct = (v: number) => {
+    const p = v * 100;
+    if (!(p > 0)) return '0';
+    if (p < 0.001) return '<0.001%';
+    return `${p >= 99.95 ? '100' : p.toPrecision(3)}%`;
+  };
+  // Older servers sent one underexposure fraction.
+  const under = $derived(raw ? (Array.isArray(raw.under) ? raw.under : [raw.under, raw.under, raw.under, raw.under]) : null);
 </script>
 
 <div class="hist">
   <div class="head">
-    <span>{raw ? 'RAW histogram' : 'Histogram'}{#if approximate} (approx.){/if}{#if raw?.decoder === 'LibRaw'}<span class="dim" title="Decoded with LibRaw (FlashRaw could not read this file)"> · LibRaw</span>{/if}</span>
+    <span>{raw ? 'RAW histogram' : 'Histogram'}{#if approximate}{' (approx.)'}{/if}{#if raw?.decoder === 'LibRaw'}<span class="dim" title="Decoded with LibRaw (FlashRaw could not read this file)"> · LibRaw</span>{/if}</span>
     {#if raw}<span class="dim">EV below clipping</span>{/if}
   </div>
   <canvas bind:this={canvas} style:width={`${W}px`} style:height={`${H}px`}></canvas>
   {#if raw}
     <div class="stats tnum">
-      <span title="Overexposed (clipped) samples per channel">OE <b class="r">{pct(raw.over[0])}</b> <b class="g">{pct(raw.over[1])}</b> <b class="b">{pct(raw.over[2])}</b></span>
-      <span title="Underexposed pixels (more than 8 EV below clipping)">UE {pct(raw.under)}</span>
+      <span title="Overexposed samples per channel (within 0.05 EV of saturation)">OE <b class="r">{pct(raw.over[0])}</b> <b class="g">{pct(raw.over[1])}</b> <b class="b">{pct(raw.over[2])}</b></span>
+      {#if under}<span title="Underexposed samples per channel (more than 7.7 EV below saturation)">UE <b class="r">{pct(under[0])}</b> <b class="g">{pct(under[1])}</b> <b class="b">{pct(under[2])}</b></span>{/if}
     </div>
   {/if}
 </div>

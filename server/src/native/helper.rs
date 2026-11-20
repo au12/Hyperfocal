@@ -3,6 +3,7 @@
 //! Writes framed results to stdout (see `frames`) and exits. Ops:
 //! - `version`
 //! - `heic <path> <max_long>`
+//! - `heic-thumb <path> <want> <draft_min>`
 //! - `libraw-meta <path>`
 //! - `libraw-preview <path> <min_long>`
 //! - `libraw-raw <path> <asshot|daylight|auto>`
@@ -38,6 +39,8 @@ pub fn run(args: &[OsString], out: &mut impl Write) -> Result<()> {
         "version" => version(out),
         #[cfg(feature = "heic")]
         "heic" => super::heic::decode_op(rest, out),
+        #[cfg(feature = "heic")]
+        "heic-thumb" => super::heic::thumb_op(rest, out),
         #[cfg(feature = "libraw")]
         "libraw-meta" => super::libraw::meta_op(rest, out),
         #[cfg(feature = "libraw")]

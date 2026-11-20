@@ -1,0 +1,78 @@
+name: Fuzz
+
+# The parsers that read untrusted file contents (HEIF, XMP, JPEG, TIFF/DNG, GPS tracks,
+# the native helper's output), under libFuzzer with AddressSanitizer. Weekly, and on
+# demand; the corpus carries over between runs. A crash fails the run and its input is
+# uploaded. (Every push already runs the stable smoke test, src/fuzzing.rs.)
+
+on:
+  schedule:
+    - cron: '41 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: '300'
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Fuzz the parsers
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '300' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install exiftool, nasm, libheif and LibRaw
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libimage-exiftool-perl nasm pkg-config libclang-dev \
+            libheif-dev libheif-plugin-libde265 libraw-dev
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server/fuzz
+      - name: Restore the corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: server/fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Build the targets
+        working-directory: server/fuzz
+        run: cargo fuzz build
+      - name: Run each target
+        working-directory: server/fuzz
+        run: |
+          status=0
+          for t in $(cargo fuzz list); do
+            mkdir -p corpus/$t
+            echo "::group::$t"
+            if ! cargo fuzz run $t corpus/$t seeds/$t -- -max_total_time=$SECONDS_PER_TARGET -rss_limit_mb=2048 -timeout=10 -print_final_stats=1; then
+              echo "::error title=Fuzz crash::$t found a crash (see the artifacts)"
+              status=1
+            fi
+            echo "::endgroup::"
+            # Keep the corpus small: only inputs that add coverage.
+            cargo fuzz cmin $t corpus/$t > /dev/null 2>&1 || true
+          done
+          exit $status
+      - name: Save the corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: server/fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: server/fuzz/artifacts

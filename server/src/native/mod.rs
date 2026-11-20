@@ -201,6 +201,10 @@ pub struct HeicInfo {
     pub bits: u8,
     /// What the colours were converted from.
     pub color: String,
+    /// Which image this is: `primary`, an embedded `thumbnail` (as big as asked), or a
+    /// smaller `draft`.
+    #[serde(default)]
+    pub source: String,
 }
 
 /// Decodes the primary image of a HEIC/HEIF file to sRGB, upright (the container's
@@ -213,11 +217,27 @@ pub fn heic_decode(path: &Path, max_long: usize) -> Result<(Rgb, HeicInfo)> {
     parse_heic(&out)
 }
 
-fn parse_heic(out: &[u8]) -> Result<(Rgb, HeicInfo)> {
+/// The image for a thumbnail of `want` pixels from a HEIC/HEIF file, as fast as it can
+/// be had: an embedded thumbnail at least that big, a smaller one of at least
+/// `draft_min` (marked `draft`), or the primary image.
+pub fn heic_thumb(path: &Path, want: usize, draft_min: usize) -> Result<(Rgb, HeicInfo)> {
+    if !HEIC {
+        bail!("this build has no HEIC support");
+    }
+    let out = run(vec!["heic-thumb".into(), path.into(), want.to_string().into(), draft_min.to_string().into()], DECODE_TIMEOUT)?;
+    parse_heic(&out)
+}
+
+/// w * h * channels, None on overflow (the sizes come from another process).
+fn size(w: usize, h: usize, channels: usize) -> Option<usize> {
+    w.checked_mul(h)?.checked_mul(channels)
+}
+
+pub(crate) fn parse_heic(out: &[u8]) -> Result<(Rgb, HeicInfo)> {
     let f = parse(out)?;
     let info: HeicInfo = f.json(b"INFO").map_err(|e| anyhow!(e))?;
     let px = f.require(b"RGB8").map_err(|e| anyhow!(e))?;
-    if info.w == 0 || info.h == 0 || px.len() != info.w * info.h * 3 {
+    if info.w == 0 || info.h == 0 || size(info.w, info.h, 3) != Some(px.len()) {
         bail!("the native helper sent a malformed image");
     }
     Ok((Rgb { w: info.w, h: info.h, px: px.to_vec() }, info))
@@ -257,7 +277,7 @@ pub fn libraw_meta(path: &Path) -> Result<LibrawMeta> {
     parse_libraw_meta(&out)
 }
 
-fn parse_libraw_meta(out: &[u8]) -> Result<LibrawMeta> {
+pub(crate) fn parse_libraw_meta(out: &[u8]) -> Result<LibrawMeta> {
     let f = parse(out)?;
     let mut m: LibrawMeta = f.json(b"META").map_err(|e| anyhow!(e))?;
     m.xmp = f.get(b"XMP ").filter(|x| !x.is_empty()).map(|x| x.to_vec());
@@ -299,7 +319,7 @@ pub fn libraw_preview(path: &Path, min_long: usize) -> Result<Preview> {
     parse_libraw_preview(&out)
 }
 
-fn parse_libraw_preview(out: &[u8]) -> Result<Preview> {
+pub(crate) fn parse_libraw_preview(out: &[u8]) -> Result<Preview> {
     let f = parse(out)?;
     let info: PreviewInfo = f.json(b"INFO").map_err(|e| anyhow!(e))?;
     let data = f.require(b"DATA").map_err(|e| anyhow!(e))?;
@@ -313,7 +333,7 @@ fn parse_libraw_preview(out: &[u8]) -> Result<Preview> {
             }
             Ok(Preview::Jpeg { data: data.to_vec(), w, h })
         }
-        "rgb8" if info.w > 0 && info.h > 0 && data.len() == info.w as usize * info.h as usize * 3 => {
+        "rgb8" if info.w > 0 && info.h > 0 && size(info.w as usize, info.h as usize, 3) == Some(data.len()) => {
             Ok(Preview::Rgb(Rgb { w: info.w as usize, h: info.h as usize, px: data.to_vec() }))
         }
         _ => bail!("the native helper sent a malformed preview"),
@@ -332,6 +352,12 @@ pub struct BayerInfo {
     pub black_cols: usize,
     pub black: Vec<f32>,
     pub white: f32,
+    /// `white` is the maker note's saturation level (LibRaw `linear_max`).
+    #[serde(default)]
+    pub white_exact: bool,
+    /// The level that renders white when below saturation (Canon NormalWhiteLevel), else 0.
+    #[serde(default)]
+    pub render_white: f32,
     /// White balance multipliers (R, G, B), G = 1.
     pub as_shot: Option<[f32; 3]>,
     pub daylight: Option<[f32; 3]>,
@@ -373,7 +399,7 @@ pub fn libraw_raw(path: &Path, wb: WbMode) -> Result<LibrawRaw> {
     parse_libraw_raw(&out)
 }
 
-fn parse_libraw_raw(out: &[u8]) -> Result<LibrawRaw> {
+pub(crate) fn parse_libraw_raw(out: &[u8]) -> Result<LibrawRaw> {
     let f = parse(out)?;
     let info: RawInfo = f.json(b"INFO").map_err(|e| anyhow!(e))?;
     let data = frames::u16s(f.require(b"DATA").map_err(|e| anyhow!(e))?).map_err(|e| anyhow!(e))?;
@@ -381,7 +407,7 @@ fn parse_libraw_raw(out: &[u8]) -> Result<LibrawRaw> {
         RawInfo::Bayer(b) => {
             let ok = b.w >= 2
                 && b.h >= 2
-                && data.len() == b.w * b.h
+                && size(b.w, b.h, 1) == Some(data.len())
                 && b.ch.iter().flatten().all(|c| *c <= 2)
                 && (1..=64).contains(&b.black_rows)
                 && (1..=64).contains(&b.black_cols)
@@ -396,7 +422,7 @@ fn parse_libraw_raw(out: &[u8]) -> Result<LibrawRaw> {
             Ok(LibrawRaw::Bayer(b, data))
         }
         RawInfo::Rgb16(r) => {
-            if r.w == 0 || r.h == 0 || data.len() != r.w * r.h * 3 {
+            if r.w == 0 || r.h == 0 || size(r.w, r.h, 3) != Some(data.len()) {
                 bail!("the native helper sent a malformed image");
             }
             Ok(LibrawRaw::Rgb16(r, data))
@@ -422,6 +448,10 @@ pub mod testing {
 
     pub fn heic_decode(path: &Path, max_long: usize) -> Result<(Rgb, HeicInfo)> {
         parse_heic(&op(&["heic", path.to_str().unwrap(), &max_long.to_string()]))
+    }
+
+    pub fn heic_thumb(path: &Path, want: usize, draft_min: usize) -> Result<(Rgb, HeicInfo)> {
+        parse_heic(&op(&["heic-thumb", path.to_str().unwrap(), &want.to_string(), &draft_min.to_string()]))
     }
 
     pub fn libraw_meta(path: &Path) -> Result<LibrawMeta> {

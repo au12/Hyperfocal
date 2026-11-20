@@ -226,8 +226,8 @@ fn parse_ipma(body: &[u8]) -> Result<HashMap<u32, Vec<u16>>, String> {
     Ok(out)
 }
 
-pub fn read_from<R: Read + Seek>(r: &mut R, len: u64) -> Result<HeifMeta, String> {
-    // Find the top-level `meta` box (usually right after `ftyp`, before `mdat`).
+/// The body of the top-level `meta` box (usually right after `ftyp`, before `mdat`).
+fn meta_box<R: Read + Seek>(r: &mut R, len: u64) -> Result<Vec<u8>, String> {
     let mut pos = 0u64;
     let mut meta = None;
     for _ in 0..64 {
@@ -264,7 +264,11 @@ pub fn read_from<R: Read + Seek>(r: &mut R, len: u64) -> Result<HeifMeta, String
         }
         pos += size;
     }
-    let meta = meta.ok_or("no meta box in HEIF file")?;
+    meta.ok_or_else(|| "no meta box in HEIF file".into())
+}
+
+pub fn read_from<R: Read + Seek>(r: &mut R, len: u64) -> Result<HeifMeta, String> {
+    let meta = meta_box(r, len)?;
     let mut c = Cur::new(&meta);
     full(&mut c)?;
 
@@ -358,6 +362,71 @@ pub fn read_from<R: Read + Seek>(r: &mut R, len: u64) -> Result<HeifMeta, String
     Ok(out)
 }
 
+/// Feeds the image data of a HEIF file to `feed`, for a content hash that a metadata
+/// edit leaves alone: the item properties (`ipco`: codec setup, sizes, rotation), then
+/// every item except Exif and XMP (`mime`) in id order, as its id, type, length and
+/// data. Where the data sits in the file does not count, so a file rewritten around
+/// the same images (as metadata editors do) feeds the same bytes.
+pub fn image_parts<R: Read + Seek>(r: &mut R, len: u64, feed: &mut dyn FnMut(&[u8])) -> Result<(), String> {
+    let meta = meta_box(r, len)?;
+    let mut c = Cur::new(&meta);
+    full(&mut c)?;
+    let (mut items, mut locs, mut ipco, mut idat) = (HashMap::new(), HashMap::new(), None, None);
+    for (typ, b) in boxes(c.rest())? {
+        match &typ {
+            b"iinf" => items = parse_iinf(b)?,
+            b"iloc" => locs = parse_iloc(b)?,
+            b"iprp" => ipco = boxes(b)?.into_iter().find(|(t, _)| t == b"ipco").map(|(_, b)| b),
+            b"idat" => idat = Some(b),
+            _ => {}
+        }
+    }
+    let mut ids: Vec<u32> = items.iter().filter(|(_, it)| !matches!(&it.typ, b"Exif" | b"mime" | b"uri ")).map(|(id, _)| *id).collect();
+    if ids.is_empty() {
+        return Err("no image items in HEIF file".into());
+    }
+    ids.sort_unstable();
+    feed(b"ipco");
+    feed(ipco.unwrap_or_default());
+    let mut buf = vec![0u8; 1 << 20];
+    for id in ids {
+        let Some(loc) = locs.get(&id) else { continue };
+        // A length of 0 runs to the end of the file (or of the idat box).
+        let extents: Vec<(u64, u64)> = match loc.method {
+            0 => loc.extents.iter().map(|&(o, n)| (o, if n == 0 { len.saturating_sub(o) } else { n })).collect(),
+            1 => {
+                let size = idat.map_or(0, |d| d.len() as u64);
+                loc.extents.iter().map(|&(o, n)| (o, if n == 0 { size.saturating_sub(o) } else { n })).collect()
+            }
+            m => return Err(format!("unsupported HEIF item construction method {m}")),
+        };
+        let total = extents.iter().try_fold(0u64, |a, e| a.checked_add(e.1)).ok_or("bad iloc length")?;
+        feed(&id.to_be_bytes());
+        feed(&items[&id].typ);
+        feed(&total.to_be_bytes());
+        for (off, n) in extents {
+            if loc.method == 1 {
+                let d = idat.ok_or("item in a missing idat box")?;
+                let end = off.checked_add(n).filter(|e| *e <= d.len() as u64).ok_or("item beyond the idat box")?;
+                feed(&d[off as usize..end as usize]);
+                continue;
+            }
+            if off.checked_add(n).is_none_or(|e| e > len) {
+                return Err("item data beyond the end of the file".into());
+            }
+            r.seek(SeekFrom::Start(off)).map_err(|e| e.to_string())?;
+            let mut left = n;
+            while left > 0 {
+                let k = left.min(buf.len() as u64) as usize;
+                r.read_exact(&mut buf[..k]).map_err(|e| e.to_string())?;
+                feed(&buf[..k]);
+                left -= k as u64;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +475,39 @@ mod tests {
         let file = [bx(b"ftyp", b"heic\0\0\0\0mif1heic"), meta].concat();
         let m = read_from(&mut Cursor::new(&file), file.len() as u64).unwrap();
         assert_eq!((m.width, m.height), (Some(40), Some(80)));
+    }
+
+    /// Everything `image_parts` feeds, concatenated.
+    fn parts(data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        image_parts(&mut Cursor::new(data), data.len() as u64, &mut |b| out.extend_from_slice(b))?;
+        Ok(out)
+    }
+
+    #[test]
+    fn image_parts_skip_metadata() {
+        let data = fixture("rotated.heic");
+        let a = parts(&data).unwrap();
+        assert!(a.len() > 64);
+        // The EXIF and XMP items are not part of it.
+        let m = read_from(&mut Cursor::new(&data), data.len() as u64).unwrap();
+        let xmp = m.xmp.unwrap();
+        assert!(!a.windows(xmp.len()).any(|w| w == xmp.as_slice()));
+        // Changing a byte of the XMP leaves it alone; a byte of the image does not.
+        let at = data.windows(7).position(|w| w == b"fixture").expect("xmp text in the file");
+        let mut edited = data.clone();
+        edited[at] = b'F';
+        assert_eq!(parts(&edited).unwrap(), a);
+        let mut xmp_end = data.clone();
+        let last = xmp_end.len() - 3; // the XMP item is stored last
+        xmp_end[last] ^= 0x55;
+        assert_eq!(parts(&xmp_end).unwrap(), a);
+        let mut damaged = data.clone();
+        damaged[600] ^= 0x55; // inside the image (hvc1) item, bytes 527-683
+        assert_ne!(parts(&damaged).unwrap(), a);
+        // Cut inside the image: an error (cut inside the XMP only: the images are whole).
+        assert!(parts(&data[..650]).is_err());
+        assert_eq!(parts(&data[..data.len() - 100]).unwrap(), a);
     }
 
     #[test]

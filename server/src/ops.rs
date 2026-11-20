@@ -8,7 +8,7 @@ use crate::repo::{self, Located};
 use crate::scan;
 use crate::sets::Plan;
 use crate::state::{AppState, Event};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::params;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
@@ -18,6 +18,15 @@ use std::sync::Arc;
 
 fn double_option<'de, T: Deserialize<'de>, D: Deserializer<'de>>(de: D) -> Result<Option<Option<T>>, D::Error> {
     Deserialize::deserialize(de).map(Some)
+}
+
+/// Move a keyword across a photo's lists: rename, merge, re-parent, or remove (`to`
+/// absent). Paths use `|` (`Places|Portugal|Lisbon`); see `keywords`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KwMove {
+    pub from: String,
+    #[serde(default)]
+    pub to: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -53,6 +62,8 @@ pub struct Patch {
     pub keywords_set: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hkeywords_set: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keywords_move: Option<KwMove>,
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
     pub gps: Option<Option<Gps>>,
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
@@ -147,6 +158,10 @@ fn leaf(k: &str) -> &str {
 fn merge_keywords(cur: &PhotoRec, p: &Patch) -> (Vec<String>, Vec<String>) {
     let mut subj: Vec<String> = cur.keywords.clone();
     let mut hier: Vec<String> = cur.hkeywords.clone();
+    if let Some(m) = &p.keywords_move {
+        let to = m.to.as_deref().map(crate::keywords::split);
+        (subj, hier) = crate::keywords::apply_move(&subj, &hier, &crate::keywords::split(&m.from), to.as_deref());
+    }
     if let Some(set) = &p.keywords_set {
         subj = Vec::new();
         hier = Vec::new();
@@ -295,7 +310,11 @@ fn build_args(cur: &PhotoRec, p: &Patch, seed: Option<&Xmp>) -> (Vec<String>, Ph
         push_list(&mut a, "XMP-dc:Creator", &list);
         after.creator = clean_opt(c);
     }
-    let touches_kw = p.keywords_set.is_some() || p.hkeywords_set.is_some() || !p.keywords_add.is_empty() || !p.keywords_remove.is_empty();
+    let touches_kw = p.keywords_set.is_some()
+        || p.hkeywords_set.is_some()
+        || !p.keywords_add.is_empty()
+        || !p.keywords_remove.is_empty()
+        || p.keywords_move.is_some();
     let seeded_kw = seed.map(|x| x.subject.is_some() || x.hsubject.is_some()).unwrap_or(false);
     if touches_kw || seeded_kw {
         let (subj, hier) = if touches_kw { merge_keywords(cur, p) } else { (cur.keywords.clone(), cur.hkeywords.clone()) };
@@ -354,9 +373,184 @@ pub struct BatchResult {
     pub batch: String,
     pub ok: Vec<i64>,
     pub failed: Vec<(i64, String)>,
+    /// Set when the change runs in the background (see `JobStatus`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<JobStatus>,
 }
 
-fn new_batch() -> String {
+/// A long change (a keyword moved across the library, GPS from a track, a large undo):
+/// written in the background one photo at a time, so other edits are never held up
+/// for long, journaled as one batch, with progress events for the UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct JobStatus {
+    pub id: String,
+    pub label: String,
+    pub total: usize,
+    pub done: usize,
+    pub failed: usize,
+    pub finished: bool,
+    /// The journal batch: undoing it undoes the whole job.
+    pub batch: String,
+    /// The first errors, for the UI.
+    pub errors: Vec<(i64, String)>,
+    pub started: i64,
+}
+
+struct Job {
+    state: Arc<AppState>,
+    status: JobStatus,
+    last: std::time::Instant,
+}
+
+impl Job {
+    fn start(state: &Arc<AppState>, label: String, total: usize, batch: String) -> Job {
+        let status = JobStatus {
+            id: batch.clone(),
+            label,
+            total,
+            done: 0,
+            failed: 0,
+            finished: false,
+            batch,
+            errors: Vec::new(),
+            started: crate::db::now_ms(),
+        };
+        let job = Job { state: state.clone(), status, last: std::time::Instant::now() };
+        job.publish();
+        job
+    }
+
+    fn publish(&self) {
+        let mut jobs = self.state.jobs.lock();
+        // Keep finished jobs for ten minutes, so a page opened later still sees them.
+        let cutoff = crate::db::now_ms() - 600_000;
+        jobs.retain(|_, j| !j.finished || j.started > cutoff);
+        jobs.insert(self.status.id.clone(), self.status.clone());
+        drop(jobs);
+        self.state.emit(Event::Job(self.status.clone()));
+    }
+
+    fn tick(&mut self, err: Option<(i64, String)>) {
+        self.status.done += 1;
+        if let Some(e) = err {
+            self.status.failed += 1;
+            if self.status.errors.len() < 20 {
+                self.status.errors.push(e);
+            }
+        }
+        if self.last.elapsed() > std::time::Duration::from_millis(300) {
+            self.last = std::time::Instant::now();
+            self.publish();
+        }
+    }
+
+    fn finish(mut self) -> JobStatus {
+        self.status.finished = true;
+        self.publish();
+        self.status
+    }
+}
+
+/// One photo's change in a batch written by `write_items`.
+struct Item {
+    id: i64,
+    patch: Patch,
+    /// The journal row this change undoes, marked undone when it lands.
+    undoes: Option<i64>,
+}
+
+/// The folder of each photo.
+fn folders_of(state: &AppState, ids: impl Iterator<Item = i64>) -> Result<std::collections::HashMap<i64, i64>> {
+    let c = state.db.get()?;
+    let ids: Vec<i64> = ids.collect();
+    let mut out = std::collections::HashMap::with_capacity(ids.len());
+    for chunk in ids.chunks(500) {
+        let sql = format!("SELECT id, folder_id FROM photos WHERE id IN ({})", chunk.iter().map(|_| "?").collect::<Vec<_>>().join(","));
+        let mut st = c.prepare(&sql)?;
+        let rows = st.query_map(rusqlite::params_from_iter(chunk.iter()), |r| Ok((r.get(0)?, r.get(1)?)))?;
+        for r in rows {
+            let (id, f) = r?;
+            out.insert(id, f);
+        }
+    }
+    Ok(out)
+}
+
+async fn rescan(state: &Arc<AppState>, folder: i64) {
+    let st = state.clone();
+    if let Ok(Err(e)) = tokio::task::spawn_blocking(move || scan::scan_folder(&st, folder, false)).await {
+        tracing::warn!("re-reading folder {folder} after a change: {e:#}");
+    }
+}
+
+/// Write per-photo changes as one batch. The write lock is taken per photo, so other
+/// edits interleave, and each folder is re-read as soon as its photos are done.
+async fn write_items(state: &Arc<AppState>, mut items: Vec<Item>, batch: &str, undo_of: Option<&str>, mut job: Option<&mut Job>) -> BatchResult {
+    let folder_of = folders_of(state, items.iter().map(|i| i.id)).unwrap_or_default();
+    // Stable: a photo listed twice keeps its order.
+    items.sort_by_key(|i| folder_of.get(&i.id).copied().unwrap_or(i64::MAX));
+    let mut ok = Vec::new();
+    let mut failed = Vec::new();
+    let mut pending: Option<i64> = None;
+    for item in &items {
+        let summary = if undo_of.is_some() { format!("undo: {}", summarize(&item.patch)) } else { summarize(&item.patch) };
+        let res = if state.is_readonly() {
+            Err(anyhow!("Hyperfocal is in read-only mode"))
+        } else {
+            let _w = state.write_lock.lock().await;
+            write_one(state, item.id, &item.patch, batch, undo_of, &summary).await
+        };
+        let err = match res {
+            Ok(fid) => {
+                ok.push(item.id);
+                if let Some(jid) = item.undoes
+                    && let Ok(c) = state.db.get()
+                {
+                    let _ = c.execute("UPDATE journal SET undone = 1 WHERE id = ?1", [jid]);
+                }
+                if let Some(prev) = pending.filter(|p| *p != fid) {
+                    rescan(state, prev).await;
+                }
+                pending = Some(fid);
+                None
+            }
+            Err(e) => {
+                let msg = format!("{e:#}");
+                failed.push((item.id, msg.clone()));
+                Some((item.id, msg))
+            }
+        };
+        if let Some(j) = job.as_deref_mut() {
+            j.tick(err);
+        }
+    }
+    if let Some(f) = pending {
+        rescan(state, f).await;
+    }
+    for chunk in ok.chunks(5000) {
+        state.emit(Event::Photos { ids: chunk.to_vec() });
+    }
+    BatchResult { batch: batch.to_string(), ok, failed, job: None }
+}
+
+/// Start a background job that writes `items` (photo, change) as one batch.
+pub fn spawn_patch_job(state: &Arc<AppState>, label: String, items: Vec<(i64, Patch)>) -> Result<JobStatus> {
+    if state.is_readonly() {
+        bail!("Hyperfocal is in read-only mode");
+    }
+    let batch = new_batch();
+    let mut job = Job::start(state, label, items.len(), batch.clone());
+    let status = job.status.clone();
+    let st = state.clone();
+    let items: Vec<Item> = items.into_iter().map(|(id, patch)| Item { id, patch, undoes: None }).collect();
+    tokio::spawn(async move {
+        write_items(&st, items, &batch, None, Some(&mut job)).await;
+        job.finish();
+    });
+    Ok(status)
+}
+
+pub fn new_batch() -> String {
     format!("{:x}{:04x}", crate::db::now_ms(), rand::random::<u16>())
 }
 
@@ -391,6 +585,13 @@ fn summarize(p: &Patch) -> String {
     }
     if p.keywords_set.is_some() {
         parts.push("keywords".into());
+    }
+    if let Some(m) = &p.keywords_move {
+        let show = |k: &str| k.replace('|', " › ");
+        parts.push(match &m.to {
+            Some(t) => format!("keyword {} → {}", show(&m.from), show(t)),
+            None => format!("removed keyword {}", show(&m.from)),
+        });
     }
     if p.gps.is_some() {
         parts.push("GPS".into());
@@ -439,7 +640,7 @@ async fn apply_meta_in(state: &Arc<AppState>, ids: &[i64], patch: &Patch, undo_o
     if !ok.is_empty() {
         state.emit(Event::Photos { ids: ok.clone() });
     }
-    Ok(BatchResult { batch, ok, failed })
+    Ok(BatchResult { batch, ok, failed, job: None })
 }
 
 async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_of: Option<&str>, summary: &str) -> Result<i64> {
@@ -450,7 +651,13 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
     let dir = scan::abs_dir(state, &loc.folder_path);
     // `IMG_1.xmp` (the Adobe/Excire convention) for the photo that owns the name,
     // `IMG_1.TIF.xmp` for another photo with the same name (see `sets`).
-    let listing = scan::listing(state, &loc.folder_path, loc.folder_is_reject)?;
+    let mut listing = scan::listing(state, &loc.folder_path, loc.folder_is_reject)?;
+    // A darktable/digiKam-style sidecar the rescan has not renamed yet gets the
+    // standard name first, so the edit lands in it (and Excire sees it).
+    let ids = std::collections::HashMap::from([(loc.rec.name.as_str(), loc.rec.id)]);
+    for (from, to) in scan::standardize_sidecars(state, &loc.folder_path, &dir, &Plan::new(&listing), &ids, Some(&loc.rec.name)) {
+        listing.rename(&from, &to);
+    }
     let sidecar_name = Plan::new(&listing).write_sidecar(&loc.rec.name)?;
     let sidecar = dir.join(&sidecar_name);
     let existed = sidecar.exists();
@@ -533,7 +740,7 @@ async fn move_photos(state: &AppState, ids: &[i64], to_reject: bool, batch: Opti
     if !touched.is_empty() {
         state.emit(Event::Tree);
     }
-    Ok(BatchResult { batch, ok, failed })
+    Ok(BatchResult { batch, ok, failed, job: None })
 }
 
 fn move_one(state: &AppState, id: i64, to_reject: bool, batch: &str, undo_of: Option<&str>) -> Result<(i64, i64)> {
@@ -571,6 +778,9 @@ fn move_one(state: &AppState, id: i64, to_reject: bool, batch: &str, undo_of: Op
     for n in &names {
         tx.execute("DELETE FROM photos WHERE folder_id = ?1 AND name = ?2", params![dst_folder_id, n])?;
         tx.execute("UPDATE photos SET folder_id = ?1 WHERE folder_id = ?2 AND name = ?3", params![dst_folder_id, loc.rec.folder_id, n])?;
+        // The integrity monitor's record moves with the file (not missing here, not new there).
+        tx.execute("DELETE FROM originals WHERE folder = ?1 AND name = ?2", params![dst_rel, n])?;
+        tx.execute("UPDATE originals SET folder = ?1 WHERE folder = ?2 AND name = ?3", params![dst_rel, loc.folder_path, n])?;
     }
     let moved: Vec<(i64, PhotoRec)> = {
         let mut st = tx.prepare(&format!("SELECT {} FROM photos p WHERE p.folder_id = ?1", repo::PHOTO_COLS))?;
@@ -610,6 +820,35 @@ fn ensure_folder_row(state: &AppState, rel: &str, name: &str, parent: Option<i64
 /// Undo a batch: metadata batches write their previous values back, moves are moved
 /// back. Returns the new batch of the undo itself.
 pub async fn undo(state: &Arc<AppState>, batch: &str) -> Result<BatchResult> {
+    undo_in(state, batch, None).await
+}
+
+/// Journal rows of a batch that can still be undone.
+pub fn undo_count(state: &AppState, batch: &str) -> Result<usize> {
+    let c = state.db.get()?;
+    let n: i64 = c.query_row("SELECT count(*) FROM journal WHERE batch = ?1 AND undone = 0", [batch], |r| r.get(0))?;
+    Ok(n as usize)
+}
+
+/// Undo a large batch in the background.
+pub fn spawn_undo(state: &Arc<AppState>, batch: &str, label: String) -> Result<JobStatus> {
+    let total = undo_count(state, batch)?;
+    if total == 0 {
+        bail!("nothing to undo");
+    }
+    let new = new_batch();
+    let job = Job::start(state, label, total, new);
+    let status = job.status.clone();
+    let (st, batch) = (state.clone(), batch.to_string());
+    tokio::spawn(async move {
+        if let Err(e) = undo_in(&st, &batch, Some(job)).await {
+            tracing::warn!("undo of {batch} failed: {e:#}");
+        }
+    });
+    Ok(status)
+}
+
+async fn undo_in(state: &Arc<AppState>, batch: &str, mut job: Option<Job>) -> Result<BatchResult> {
     let rows: Vec<(i64, String, Option<i64>, String)> = {
         let c = state.db.get()?;
         let mut st = c.prepare("SELECT id, kind, photo_id, data FROM journal WHERE batch = ?1 AND undone = 0 ORDER BY id DESC")?;
@@ -617,35 +856,80 @@ pub async fn undo(state: &Arc<AppState>, batch: &str) -> Result<BatchResult> {
         r.collect::<std::result::Result<_, _>>()?
     };
     if rows.is_empty() {
+        if let Some(j) = job {
+            j.finish();
+        }
         bail!("nothing to undo");
     }
     let mut ok = Vec::new();
     let mut failed = Vec::new();
-    let new_batch = new_batch();
-    // Group metadata restores per photo (each row has its own "before").
+    let new_batch = job.as_ref().map(|j| j.status.batch.clone()).unwrap_or_else(new_batch);
+    // Metadata rows are written together (each folder re-read once); renames and moves
+    // are undone as they come.
+    let mut meta: Vec<Item> = Vec::new();
     for (jid, kind, pid, data) in rows {
-        let Some(pid) = pid else { continue };
         let v: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
-        let res = match kind.as_str() {
-            "reject" => move_photos(state, &[pid], false, Some(new_batch.clone()), Some(batch)).await,
-            "restore" => move_photos(state, &[pid], true, Some(new_batch.clone()), Some(batch)).await,
-            _ => {
-                let before = v.get("before").cloned().unwrap_or(Value::Null);
-                let after = v.get("after").cloned().unwrap_or(Value::Null);
-                apply_meta_in(state, &[pid], &patch_from_snapshots(&before, &after), Some(batch), Some(new_batch.clone())).await
+        let mut err: Option<(i64, String)> = None;
+        if kind == "rename" {
+            match undo_rename(state, jid, &v).await {
+                Ok(id) => ok.extend(id.or(pid)),
+                Err(e) => err = Some((pid.unwrap_or(0), format!("{e:#}"))),
             }
-        };
-        match res {
-            Ok(r) if r.failed.is_empty() => {
-                ok.push(pid);
-                let c = state.db.get()?;
-                c.execute("UPDATE journal SET undone = 1 WHERE id = ?1", [jid])?;
+        } else if let Some(pid) = pid {
+            match kind.as_str() {
+                "reject" | "restore" => {
+                    match move_photos(state, &[pid], kind == "restore", Some(new_batch.clone()), Some(batch)).await {
+                        Ok(r) if r.failed.is_empty() => {
+                            ok.push(pid);
+                            state.db.get()?.execute("UPDATE journal SET undone = 1 WHERE id = ?1", [jid])?;
+                        }
+                        Ok(r) => err = r.failed.into_iter().next(),
+                        Err(e) => err = Some((pid, format!("{e:#}"))),
+                    }
+                }
+                _ => {
+                    let before = v.get("before").cloned().unwrap_or(Value::Null);
+                    let after = v.get("after").cloned().unwrap_or(Value::Null);
+                    meta.push(Item { id: pid, patch: patch_from_snapshots(&before, &after), undoes: Some(jid) });
+                    continue;
+                }
             }
-            Ok(r) => failed.extend(r.failed),
-            Err(e) => failed.push((pid, format!("{e:#}"))),
+        } else {
+            continue;
+        }
+        if let Some(e) = &err {
+            failed.push(e.clone());
+        }
+        if let Some(j) = job.as_mut() {
+            j.tick(err);
         }
     }
-    Ok(BatchResult { batch: new_batch, ok, failed })
+    if !meta.is_empty() {
+        let r = write_items(state, meta, &new_batch, Some(batch), job.as_mut()).await;
+        ok.extend(r.ok);
+        failed.extend(r.failed);
+    }
+    if let Some(j) = job {
+        j.finish();
+    }
+    Ok(BatchResult { batch: new_batch, ok, failed, job: None })
+}
+
+/// Give a renamed sidecar its old name back. Marked undone first, so the rescan that
+/// follows leaves it alone from now on.
+async fn undo_rename(state: &Arc<AppState>, jid: i64, v: &Value) -> Result<Option<i64>> {
+    let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string).ok_or_else(|| anyhow!("bad journal entry"));
+    let (folder, from, to) = (field("folder")?, field("from")?, field("to")?);
+    let dir = scan::abs_dir(state, &folder);
+    files::rename_noreplace(&dir.join(&to), &dir.join(&from)).with_context(|| format!("renaming {to} back to {from}"))?;
+    state.db.get()?.execute("UPDATE journal SET undone = 1 WHERE id = ?1", [jid])?;
+    let fid: Option<i64> = state.db.get()?.query_row("SELECT id FROM folders WHERE path = ?1", [&folder], |r| r.get(0)).ok();
+    let Some(fid) = fid else { return Ok(None) };
+    let st = state.clone();
+    tokio::task::spawn_blocking(move || scan::scan_folder(&st, fid, false)).await??;
+    let photo = v.get("photo").and_then(Value::as_str).unwrap_or_default();
+    let c = state.db.get()?;
+    Ok(c.query_row("SELECT id FROM photos WHERE folder_id = ?1 AND name = ?2", params![fid, photo], |r| r.get(0)).ok())
 }
 
 pub fn recent_journal(state: &AppState, limit: usize) -> Result<Vec<Value>> {

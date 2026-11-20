@@ -36,6 +36,14 @@ pub struct Listing {
 }
 
 impl Listing {
+    /// Record a rename of a file in this folder.
+    pub fn rename(&mut self, from: &str, to: &str) {
+        self.local.retain(|n| n != from);
+        self.local.push(to.to_string());
+        self.local.sort();
+        self.local.dedup();
+    }
+
     pub fn new(mut local: Vec<String>, partners: Vec<String>) -> Listing {
         local.sort();
         local.dedup();
@@ -157,6 +165,8 @@ struct Group {
     /// The owner of the shared files, when it is in this folder (it can also be in
     /// the reject folder or the home folder).
     owner: Option<usize>,
+    /// Whether a photo with this name is also in the reject folder or the home folder.
+    elsewhere: bool,
 }
 
 /// The rules applied to one folder.
@@ -227,7 +237,8 @@ impl<'a> Plan<'a> {
                     Some(p) if p < k => None,
                     _ => Some(*i),
                 };
-                (stem.clone(), Group { raw: best_raw.get(stem).map(|(_, j)| *j), owner })
+                let elsewhere = best_partner.contains_key(stem.as_str());
+                (stem.clone(), Group { raw: best_raw.get(stem).map(|(_, j)| *j), owner, elsewhere })
             })
             .collect();
         Plan { local, files, by_name, by_lower, photos, groups, stem_photos }
@@ -299,8 +310,9 @@ impl<'a> Plan<'a> {
         shared.or_else(|| self.own_sidecar(name).map(str::to_string))
     }
 
-    /// The sidecar a metadata edit of a photo goes to (it may not exist yet): `name.xmp`
-    /// for the owner, `name.ext.xmp` for a separate photo with the same name.
+    /// The sidecar a metadata edit of a photo goes to: the one it reads, or when it has
+    /// none, a new `name.xmp` for the owner and `name.ext.xmp` for a separate photo with
+    /// the same name.
     pub fn write_sidecar(&self, name: &str) -> Result<String> {
         let shared = match self.role(name) {
             None => bail!("{name} is no longer in its folder"),
@@ -308,7 +320,43 @@ impl<'a> Plan<'a> {
             Some(Role::Owner) => self.shared_sidecar(name),
             Some(Role::Separate) => None,
         };
-        Ok(shared.unwrap_or_else(|| self.own_sidecar(name).map_or_else(|| format!("{name}.xmp"), str::to_string)))
+        if let Some(current) = self.read_sidecar(name) {
+            return Ok(current);
+        }
+        Ok(shared.unwrap_or_else(|| format!("{name}.xmp")))
+    }
+
+    /// The rename that gives a photo's darktable/digiKam-style sidecar (`IMG_1.CR3.xmp`)
+    /// the standard name (`IMG_1.xmp`). Only for a photo that is alone with its name
+    /// (apart from the JPEG/HEIF folded into it) here and in the reject or home folder,
+    /// and only when the standard name is free, so no other photo's metadata can ever
+    /// end up in it.
+    pub fn standard_rename(&self, name: &str) -> Option<(String, String)> {
+        if self.role(name)? != Role::Owner {
+            return None;
+        }
+        let i = self.by_name[name];
+        let stem = &self.files[i].stem;
+        if self.groups[stem].elsewhere {
+            return None;
+        }
+        let alone = self.stem_photos[stem]
+            .iter()
+            .all(|&j| j == i || matches!(self.role(&self.local[j]), Some(Role::Paired { .. })));
+        if !alone {
+            return None;
+        }
+        let own = self.own_sidecar(name)?;
+        let shared = self.shared_sidecar(name)?;
+        (!self.exists(&shared)).then(|| (own.to_string(), shared))
+    }
+
+    /// [`Plan::standard_rename`] for every photo in the folder: `(photo, from, to)`.
+    pub fn standard_renames(&self) -> Vec<(&'a str, String, String)> {
+        self.local
+            .iter()
+            .filter_map(|n| self.standard_rename(n).map(|(from, to)| (n.as_str(), from, to)))
+            .collect()
     }
 
     /// The files that move with a photo on reject and restore, sorted.
@@ -503,12 +551,39 @@ mod tests {
 
     #[test]
     fn darktable_style_sidecar_of_a_lone_raw() {
-        // Read when it is the only one; edits still go to the shared IMG_1.xmp.
+        // Read, edited in place (if it was not renamed) and moved with its photo.
         let l = listing(&["IMG_1.CR3", "IMG_1.CR3.xmp"], &[]);
         let p = Plan::new(&l);
         assert_eq!(p.read_sidecar("IMG_1.CR3").as_deref(), Some("IMG_1.CR3.xmp"));
-        assert_eq!(p.write_sidecar("IMG_1.CR3").unwrap(), "IMG_1.xmp");
+        assert_eq!(p.write_sidecar("IMG_1.CR3").unwrap(), "IMG_1.CR3.xmp");
         assert_eq!(p.move_set("IMG_1.CR3").unwrap(), vec!["IMG_1.CR3", "IMG_1.CR3.xmp"]);
+        assert_eq!(p.standard_rename("IMG_1.CR3"), Some(("IMG_1.CR3.xmp".into(), "IMG_1.xmp".into())));
+    }
+
+    #[test]
+    fn standard_renames_only_when_nothing_can_mix() {
+        let renames = |local: &[&str], partners: &[&str]| {
+            let l = listing(local, partners);
+            Plan::new(&l).standard_renames().into_iter().map(|(p, f, t)| format!("{p}: {f} -> {t}")).collect::<Vec<_>>()
+        };
+        // A lone RAW, a RAW+JPEG pair (digiKam style, any case) and a lone JPEG.
+        assert_eq!(renames(&["IMG_1.CR3", "IMG_1.CR3.xmp"], &[]), vec!["IMG_1.CR3: IMG_1.CR3.xmp -> IMG_1.xmp"]);
+        assert_eq!(
+            renames(&["IMG_2.NEF", "IMG_2.JPG", "IMG_2.NEF.XMP", "IMG_2.JPG.xmp"], &[]),
+            vec!["IMG_2.NEF: IMG_2.NEF.XMP -> IMG_2.xmp"]
+        );
+        assert_eq!(renames(&["IMG_3.jpg", "IMG_3.jpg.xmp"], &[]), vec!["IMG_3.jpg: IMG_3.jpg.xmp -> IMG_3.xmp"]);
+        // The standard name is taken: both stay (the standard one is read).
+        assert!(renames(&["IMG_1.CR3", "IMG_1.CR3.xmp", "IMG_1.xmp"], &[]).is_empty());
+        // Another photo with the name, here or in the reject folder: never.
+        assert!(renames(&["IMG_1.CR3", "IMG_1.TIF", "IMG_1.CR3.xmp", "IMG_1.TIF.xmp"], &[]).is_empty());
+        assert!(renames(&["IMG_1.TIF", "IMG_1.TIF.xmp"], &["IMG_1.CR3"]).is_empty());
+        assert!(renames(&["IMG_1.CR3", "IMG_1.CR3.xmp"], &["IMG_1.DNG"]).is_empty());
+        // ... but a different photo with the identical name elsewhere is unrelated.
+        assert_eq!(renames(&["IMG_1.CR3", "IMG_1.CR3.xmp"], &["IMG_1.CR3"]).len(), 1);
+        // The JPEG half of a pair, and a name that is another photo's own sidecar: never.
+        assert!(renames(&["IMG_1.CR3", "IMG_1.JPG", "IMG_1.JPG.xmp"], &[]).is_empty());
+        assert!(renames(&["IMG_1.JPG", "IMG_1.JPG.tif", "IMG_1.JPG.tif.xmp"], &[]).is_empty());
     }
 
     #[test]

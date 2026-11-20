@@ -21,6 +21,10 @@ pub struct Config {
     pub rescan_minutes: u64,
     /// Build thumbnails for the whole library in the background.
     pub pregen_thumbs: bool,
+    /// Make previews of recent imports ahead of the first look, at idle.
+    pub pregen_previews: bool,
+    /// How recent (days since indexed) an import is for that.
+    pub pregen_days: u32,
     /// RAM budget for developed RAW data (MB).
     pub raw_cache_mb: usize,
     /// Disk budget for medium-size previews (MB).
@@ -32,8 +36,25 @@ pub struct Config {
     /// Optional single password protecting the UI.
     pub password: Option<String>,
     pub exiftool: String,
+    /// Rename darktable/digiKam-style sidecars (`IMG_1.CR3.xmp`) to `IMG_1.xmp`.
+    pub rename_sidecars: bool,
     /// `libraw`: decode every RAW file with LibRaw instead of only when FlashRaw cannot.
     pub raw_decoder_libraw: bool,
+    /// Archive integrity monitor: hash every original and verify it again over time.
+    pub integrity: bool,
+    /// Days in which every original is verified once.
+    pub verify_days: u32,
+    /// The nightly window for verification: start (local hour, the container's TZ) and length.
+    pub verify_hour: u32,
+    pub verify_minutes: u32,
+    /// Read rate while hashing (MB/s).
+    pub hash_mbps: u32,
+    /// Where integrity alerts go: an ntfy topic, a Gotify `/message` URL or a webhook.
+    pub alert_url: Option<String>,
+    /// `auto` (from the URL), `ntfy`, `gotify` or `json`.
+    pub alert_format: String,
+    /// Token for the alert service (ntfy access token, Gotify app token, webhook bearer).
+    pub alert_token: Option<String>,
 }
 
 fn env_str(key: &str) -> Option<String> {
@@ -53,6 +74,40 @@ fn env_num<T: std::str::FromStr>(key: &str, default: T) -> T {
 }
 
 impl Config {
+    /// A configuration for tests: library in `root/photos`, app data in `root/config`,
+    /// no background work.
+    pub fn for_tests(root: &std::path::Path) -> Config {
+        Config {
+            photos_root: root.join("photos"),
+            config_dir: root.join("config"),
+            cache_dir: root.join("config").join("cache"),
+            web_dir: root.join("web"),
+            port: 0,
+            readonly: false,
+            reject_dir: "_Rejected".into(),
+            rescan_minutes: 0,
+            pregen_thumbs: false,
+            pregen_previews: false,
+            pregen_days: 14,
+            raw_cache_mb: 16,
+            preview_cache_mb: 16,
+            index_threads: 2,
+            decode_concurrency: 1,
+            password: None,
+            exiftool: "exiftool".into(),
+            rename_sidecars: true,
+            raw_decoder_libraw: false,
+            integrity: false,
+            verify_days: 90,
+            verify_hour: 4,
+            verify_minutes: 120,
+            hash_mbps: 0,
+            alert_url: None,
+            alert_format: "auto".into(),
+            alert_token: None,
+        }
+    }
+
     pub fn from_env() -> Config {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
         let config_dir = PathBuf::from(env_str("HYPERFOCAL_CONFIG").unwrap_or_else(|| "/config".into()));
@@ -73,13 +128,24 @@ impl Config {
             reject_dir,
             rescan_minutes: env_num("HYPERFOCAL_RESCAN_MINUTES", 15),
             pregen_thumbs: env_bool("HYPERFOCAL_PREGEN_THUMBS", true),
+            pregen_previews: env_bool("HYPERFOCAL_PREGEN_PREVIEWS", true),
+            pregen_days: env_num("HYPERFOCAL_PREGEN_DAYS", 14u32).clamp(1, 365),
             raw_cache_mb: env_num("HYPERFOCAL_RAW_CACHE_MB", 1536),
             preview_cache_mb: env_num("HYPERFOCAL_PREVIEW_CACHE_MB", 4096),
             index_threads: env_num("HYPERFOCAL_INDEX_THREADS", cores.clamp(2, 8)),
             decode_concurrency: env_num("HYPERFOCAL_DECODE_CONCURRENCY", (cores / 4).clamp(1, 4)),
             password: env_str("HYPERFOCAL_PASSWORD"),
             exiftool: env_str("HYPERFOCAL_EXIFTOOL").unwrap_or_else(|| "exiftool".into()),
+            rename_sidecars: env_bool("HYPERFOCAL_RENAME_SIDECARS", true),
             raw_decoder_libraw: env_str("HYPERFOCAL_RAW_DECODER").is_some_and(|v| v.eq_ignore_ascii_case("libraw")),
+            integrity: env_bool("HYPERFOCAL_INTEGRITY", true),
+            verify_days: env_num("HYPERFOCAL_VERIFY_DAYS", 90u32).clamp(1, 3650),
+            verify_hour: env_num("HYPERFOCAL_VERIFY_HOUR", 4u32).min(23),
+            verify_minutes: env_num("HYPERFOCAL_VERIFY_MINUTES", 120u32).clamp(1, 1440),
+            hash_mbps: env_num("HYPERFOCAL_HASH_MBPS", 60u32),
+            alert_url: env_str("HYPERFOCAL_ALERT_URL"),
+            alert_format: env_str("HYPERFOCAL_ALERT_FORMAT").unwrap_or_else(|| "auto".into()),
+            alert_token: env_str("HYPERFOCAL_ALERT_TOKEN"),
         }
     }
 }
