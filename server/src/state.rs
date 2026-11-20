@@ -38,6 +38,10 @@ pub enum Event {
     Integrity { changed: i64, missing: i64, unreadable: i64 },
     /// Full-quality thumbnails replaced the drafts shown for these photos.
     Thumbs { ids: Vec<i64> },
+    /// Who is in these photos changed (empty: many photos, reload what you show).
+    People { photos: Vec<i64> },
+    /// Progress of the face and pet analysis.
+    PeopleStatus(crate::people::Status),
 }
 
 pub enum ScanMsg {
@@ -69,6 +73,8 @@ pub struct AppState {
     /// Track files uploaded for geotagging, by id (kept for a few hours).
     pub tracks: Mutex<std::collections::HashMap<String, crate::geotag::StoredTrack>>,
     pub integrity: crate::integrity::Integrity,
+    /// Faces, pets and who they are.
+    pub people: crate::people::People,
 }
 
 impl AppState {

@@ -4,3 +4,6 @@
 *.log
 .DS_Store
 /dev/
+__pycache__/
+*.pyc
+.pytest_cache/

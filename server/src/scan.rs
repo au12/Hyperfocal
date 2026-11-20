@@ -327,15 +327,22 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
     if changed > 0 || !removed.is_empty() {
         let mut conn = state.db.get()?;
         let tx = conn.transaction()?;
+        // Photos indexed before whose file or sidecar changed: names of people and pets
+        // may have come with it (another app, or an undo).
+        let mut again = Vec::new();
         for rec in &recs {
             let id = repo::upsert(&tx, rec)?;
             repo::index_text(&tx, id, rec, &rel)?;
+            if existing.contains_key(&rec.name) {
+                again.push(id);
+            }
         }
         for id in &removed {
             repo::delete_photo(&tx, *id)?;
         }
         repo::refresh_folder(&tx, folder_id)?;
         tx.commit()?;
+        state.people.changed(&again);
         {
             let mut p = state.progress.write();
             p.photos_indexed += changed as u64;

@@ -17,6 +17,7 @@ pub mod meta;
 pub mod model;
 pub mod native;
 pub mod ops;
+pub mod people;
 pub mod repo;
 pub mod scan;
 pub mod sets;
@@ -140,6 +141,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
     let decoders = tokio::task::spawn_blocking(native::Decoders::detect).await?;
     let (events, _) = tokio::sync::broadcast::channel(512);
     let session_key = load_session_key(&cfg.config_dir);
+    let people = people::People::new(&cfg)?;
     let state = Arc::new(AppState {
         cfg,
         db: pool,
@@ -158,6 +160,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         jobs: Mutex::new(std::collections::HashMap::new()),
         tracks: Mutex::new(std::collections::HashMap::new()),
         integrity: Default::default(),
+        people,
     });
     if !readonly {
         match state.exiftool.lock().await.version().await {
@@ -196,6 +199,11 @@ async fn run() -> Result<()> {
     scan::spawn(state.clone());
     images::Images::spawn_workers(state.clone());
     integrity::spawn(state.clone());
+    people::worker::spawn(state.clone());
+    match &cfg.ml_url {
+        Some(u) => tracing::info!("people and pets: ML service at {u}"),
+        None => tracing::info!("people and pets: no ML service configured (HYPERFOCAL_ML_URL); names from other apps are still read"),
+    }
     if !state.trigram_ready() {
         // An index from before substring search: fill the trigram index in the background.
         let st = state.clone();

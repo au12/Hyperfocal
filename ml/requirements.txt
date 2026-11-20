@@ -1,0 +1,4 @@
+# CPU image. Pinned to the versions the pipeline is tested with.
+onnxruntime==1.29.0
+numpy==2.5.3
+opencv-python-headless==5.0.0.93

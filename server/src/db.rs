@@ -11,8 +11,9 @@ use std::path::Path;
 pub type Pool = r2d2::Pool<SqliteConnectionManager>;
 
 /// 1: the original schema. 2: `photos.added_at`, covering indexes for the common
-/// filters, the trigram index, saved collections and the integrity monitor.
-const SCHEMA_VERSION: i64 = 2;
+/// filters, the trigram index, saved collections and the integrity monitor. 3: people
+/// and pets (detections, subjects, analysis state).
+const SCHEMA_VERSION: i64 = 3;
 
 pub fn open(path: &Path) -> Result<Pool> {
     if let Some(dir) = path.parent() {
@@ -191,6 +192,8 @@ fn migrate(c: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS originals_problems ON originals(status, status_at) WHERE status != 0;
         "#,
     )?;
+    // ---- version 3
+    crate::people::migrate(c)?;
     if !tri_existed {
         // A new (or empty) index fills the trigram table as photos are indexed; an
         // existing one is filled in the background (`backfill_trigram`).
@@ -353,8 +356,9 @@ mod tests {
         }
         let pool = open(&p).unwrap();
         let c = pool.get().unwrap();
-        assert_eq!(get_meta(&c, "schema").as_deref(), Some("2"));
+        assert_eq!(get_meta(&c, "schema").as_deref(), Some("3"));
         assert!(has_column(&c, "photos", "added_at").unwrap());
+        assert!(has_column(&c, "detections", "emb").unwrap());
         // The trigram index of an existing library is filled in the background.
         assert!(!trigram_ready(&c));
         drop(c);
