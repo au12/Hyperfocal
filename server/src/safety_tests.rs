@@ -683,6 +683,9 @@ async fn integrity_monitor() {
     cfg.integrity = true;
     cfg.alert_url = Some(format!("http://{}/photos-alerts", listener.local_addr().unwrap()));
     let state = crate::build_state(cfg).await.unwrap();
+    // Without ExifTool the server starts read-only, which would refuse the reject move
+    // below. Moves never call ExifTool, so this test runs (and covers them) either way.
+    state.readonly.store(false, std::sync::atomic::Ordering::Relaxed);
     let st = state.clone();
     let rescan = move || {
         let st = st.clone();
