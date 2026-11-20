@@ -20,13 +20,13 @@ flashraw = { version = "0.3.1", default-features = false, features = ["mmap", "r
 # FlashRaw's own parsers, for maker-note facts it reads but does not apply (Canon white level).
 flashraw-core = { version = "0.3.1", default-features = false }
 flashraw-formats = { version = "0.3.1", default-features = false }
-fast_image_resize = "5"
+fast_image_resize = "6"
 half = "2"
 kamadak-exif = "0.6"
-parking_lot = "0.12"
-png = "0.17"
+parking_lot = "0.13"
+png = "0.18"
 image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
-quick-xml = "0.37"
+quick-xml = "0.42"
 r2d2 = "0.8"
 r2d2_sqlite = "0.31"
 rayon = "1"
@@ -37,16 +37,16 @@ thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "fs", "set-header", "trace"] }
+tower-http = { version = "0.7", features = ["compression-br", "compression-gzip", "fs", "set-header", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 turbojpeg = { version = "1", features = ["cmake"] }
 libc = "0.2"
 futures-util = "0.3"
-hmac = "0.12"
-sha2 = "0.10"
-rand = "0.9"
-base64 = "0.22"
+hmac = "0.13"
+sha2 = "0.11"
+rand = "0.10"
+base64 = "0.23"
 libheif-rs = { version = "3", default-features = false, features = ["v1_17"], optional = true }
 # Archive integrity: content hashes of the originals, and alerts to ntfy, Gotify or a webhook.
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
