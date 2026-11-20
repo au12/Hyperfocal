@@ -412,6 +412,11 @@ export class ApiError extends Error {
 
 const BASE = new URL('./api/', document.baseURI).pathname;
 
+/** Revision of the server's exposure analysis (clipping mask, stats). The mask and RAW
+ * info are cached as immutable per photo version; bumping this makes browsers fetch them
+ * again after the analysis changes. 2: FastRawViewer-calibrated thresholds (Nov 2026). */
+const ANALYSIS_REV = 2;
+
 export function apiUrl(path: string, params?: Record<string, unknown>): string {
   let u = BASE + path.replace(/^\//, '');
   if (params) {
@@ -474,7 +479,7 @@ export const api = {
   saveCollection: (c: { id?: number; name: string; spec: CollectionSpec }) => req<Collection>('POST', 'collections', c),
   deleteCollection: (id: number) => req<{ ok: boolean }>('DELETE', `collections/${id}`),
   photo: (id: number, signal?: AbortSignal) => req<PhotoDetail>('GET', `photo/${id}`, undefined, undefined, signal),
-  rawinfo: (id: number, v: string, wb: WbMode, signal?: AbortSignal) => req<RawInfo>('GET', `photo/${id}/rawinfo`, undefined, { v, wb }, signal),
+  rawinfo: (id: number, v: string, wb: WbMode, signal?: AbortSignal) => req<RawInfo>('GET', `photo/${id}/rawinfo`, undefined, { v, wb, a: ANALYSIS_REV }, signal),
   facets: () => req<Facets>('GET', 'facets'),
   keywords: (q: string, signal?: AbortSignal) => req<[string, number][]>('GET', 'keywords', undefined, { q }, signal),
   keywordTree: () => req<{ nodes: [string, number][] }>('GET', 'keywords/tree'),
@@ -553,7 +558,7 @@ export const urls = {
   jpeg: (id: number, v: string) => apiUrl(`photo/${id}/jpeg`, { v }),
   raw: (id: number, v: string, o: { w: number; mode: ToneMode; ev: number; wb: WbMode; low?: boolean }) =>
     apiUrl(`photo/${id}/raw`, { v, w: o.w, mode: o.mode === 'normal' ? undefined : o.mode, ev: o.ev ? o.ev.toFixed(2) : undefined, wb: o.wb === 'asshot' ? undefined : o.wb, prio: o.low ? 'low' : undefined }),
-  rawmask: (id: number, v: string, wb: WbMode) => apiUrl(`photo/${id}/rawmask`, { v, wb: wb === 'asshot' ? undefined : wb }),
+  rawmask: (id: number, v: string, wb: WbMode) => apiUrl(`photo/${id}/rawmask`, { v, wb: wb === 'asshot' ? undefined : wb, a: ANALYSIS_REV }),
   /** A full-resolution tile of the RAW view, demosaiced and tone-mapped on the server (JPEG). */
   rawtile: (id: number, v: string, o: { mode: ToneMode; ev: number; wb: WbMode; tx: number; ty: number }) =>
     apiUrl(`photo/${id}/rawtile`, { v, mode: o.mode === 'normal' ? undefined : o.mode, ev: o.ev ? o.ev.toFixed(2) : undefined, wb: o.wb === 'asshot' ? undefined : o.wb, tx: o.tx, ty: o.ty }),

@@ -12,7 +12,8 @@ export type Action =
   | 'rate0' | 'rate1' | 'rate2' | 'rate3' | 'rate4' | 'rate5' | 'rateReject' | 'rateUp' | 'rateDown'
   | 'labelRed' | 'labelYellow' | 'labelGreen' | 'labelBlue' | 'labelPurple'
   | 'pick' | 'unflag' | 'reject' | 'editTitle' | 'keywords' | 'location'
-  | 'selectToggle' | 'selectNext' | 'selectPrev' | 'selectDown' | 'selectUp' | 'selectAll' | 'selectNone' | 'selectInvert'
+  | 'selectToggle' | 'selectNext' | 'selectPrev' | 'selectRight' | 'selectLeft' | 'selectDown' | 'selectUp'
+  | 'selectFirst' | 'selectLast' | 'selectPageDown' | 'selectPageUp' | 'selectAll' | 'selectNone' | 'selectInvert'
   | 'rotateCcw' | 'rotateCw' | 'rotate180'
   | 'histogram' | 'info' | 'filmstrip' | 'folders' | 'hidePanels' | 'help' | 'search' | 'undo' | 'map' | 'faces' | 'people';
 
@@ -80,10 +81,18 @@ const FRV: Bindings = {
   keywords: ['K'],
   location: ['L'],
   selectToggle: ['Ctrl+Slash'],
-  selectNext: ['Shift+ArrowRight', 'Ctrl+Period'],
-  selectPrev: ['Shift+ArrowLeft', 'Ctrl+Comma'],
+  // FastRawViewer puts "select and next" on Shift+arrows too; here Shift extends the
+  // selection as in every file manager, and select-and-next keeps its Ctrl keys.
+  selectNext: ['Ctrl+Period'],
+  selectPrev: ['Ctrl+Comma'],
+  selectRight: ['Shift+ArrowRight'],
+  selectLeft: ['Shift+ArrowLeft'],
   selectDown: ['Shift+ArrowDown'],
   selectUp: ['Shift+ArrowUp'],
+  selectFirst: ['Shift+Home'],
+  selectLast: ['Shift+End'],
+  selectPageDown: ['Shift+PageDown'],
+  selectPageUp: ['Shift+PageUp'],
   selectAll: ['Ctrl+A'],
   selectNone: ['Ctrl+D'],
   selectInvert: ['Ctrl+I'],
@@ -141,7 +150,9 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['rotateCcw', 'Rotate left'], ['rotateCw', 'Rotate right'], ['rotate180', 'Rotate 180°'], ['undo', 'Undo last change'],
   ]],
   ['Selection & search', [
-    ['selectToggle', 'Select / deselect'], ['selectNext', 'Select and next'], ['selectPrev', 'Previous and select'], ['selectDown', 'Extend selection a row down'], ['selectUp', 'Extend selection a row up'], ['selectAll', 'Select all'], ['selectNone', 'Select none'], ['selectInvert', 'Invert selection'],
+    ['selectToggle', 'Select / deselect'], ['selectNext', 'Select / deselect and next'], ['selectPrev', 'Previous and select / deselect'],
+    ['selectRight', 'Extend selection right'], ['selectLeft', 'Extend selection left'], ['selectDown', 'Extend selection a row down'], ['selectUp', 'Extend selection a row up'],
+    ['selectFirst', 'Extend selection to the first photo'], ['selectLast', 'Extend selection to the last photo'], ['selectPageDown', 'Extend selection a page down'], ['selectPageUp', 'Extend selection a page up'], ['selectAll', 'Select all'], ['selectNone', 'Select none'], ['selectInvert', 'Invert selection'],
     ['search', 'Search'], ['map', 'Map view'], ['people', 'People & pets'], ['help', 'Keyboard shortcuts'],
   ]],
 ];

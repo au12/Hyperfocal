@@ -70,7 +70,8 @@
       case 'zoomOut': compareCtl.zoomOut(); return true;
       // Moving through the folder, selection and side panels do not apply here.
       case 'next2': case 'prev2': case 'next3': case 'prev3': case 'first': case 'last': case 'pageDown': case 'pageUp':
-      case 'selectToggle': case 'selectNext': case 'selectPrev': case 'selectDown': case 'selectUp': case 'selectAll': case 'selectNone': case 'selectInvert': case 'map':
+      case 'selectToggle': case 'selectNext': case 'selectPrev': case 'selectRight': case 'selectLeft': case 'selectDown': case 'selectUp':
+      case 'selectFirst': case 'selectLast': case 'selectPageDown': case 'selectPageUp': case 'selectAll': case 'selectNone': case 'selectInvert': case 'map':
         return true;
     }
     return null;
@@ -79,6 +80,7 @@
   function run(a: Action, e: KeyboardEvent): boolean {
     const v = store.viewer;
     const inLoupe = store.loupe;
+    const focus = inLoupe ? store.current : store.cursor;
     if (store.compare) {
       const r = runCompare(a);
       if (r != null) return r;
@@ -163,12 +165,22 @@
       case 'editTitle': store.panels.info = true; uiCtl.editTitle(); break;
       case 'keywords': store.panels.info = true; uiCtl.addKeyword(); break;
       case 'location': store.openLocation(); break;
-      case 'selectToggle': store.select(inLoupe ? store.current : store.cursor, 'toggle'); break;
-      case 'selectNext': store.select(inLoupe ? store.current : store.cursor, 'toggle'); store.go(1); break;
-      case 'selectPrev': store.go(-1); store.select(inLoupe ? store.current : store.cursor, 'toggle'); break;
+      case 'selectToggle': store.select(focus, 'toggle'); break;
+      case 'selectNext': store.select(focus, 'toggle'); store.go(1, true); break;
+      case 'selectPrev': store.go(-1, true); store.select(inLoupe ? store.current : store.cursor, 'toggle'); break;
+      case 'selectRight': store.extendTo(focus + 1); break;
+      case 'selectLeft': store.extendTo(focus - 1); break;
+      case 'selectFirst': store.extendTo(0); break;
+      case 'selectLast': store.extendTo(store.list.id.length - 1); break;
       case 'selectDown': case 'selectUp': {
         if (inLoupe) return false;
         const to = gridCtl.rowNeighbor(store.cursor, a === 'selectDown' ? 1 : -1);
+        if (to != null) store.extendTo(to);
+        break;
+      }
+      case 'selectPageDown': case 'selectPageUp': {
+        const d = a === 'selectPageDown' ? 1 : -1;
+        const to = inLoupe ? Math.max(0, Math.min(store.list.id.length - 1, focus + d * 10)) : gridCtl.pageTarget(d);
         if (to != null) store.extendTo(to);
         break;
       }

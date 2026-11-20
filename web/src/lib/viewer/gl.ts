@@ -63,17 +63,26 @@ vec3 expose(vec3 c) {
   return mix(lin * 12.92, 1.055 * pow(lin, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, lin));
 }
 
+// No implicit-LOD texture() after the tile branch: neighbouring pixels of a 2x2 shading
+// quad can fall in different tiles (or one in a tile, one on the base image), and their
+// tile coordinates then jump by a whole tile. The derivatives behind texture()'s mip
+// choice are undefined there; some drivers (seen on macOS) return wrong texels, which
+// showed as 1-px lines on tile seams (made bolder by screen sharpening). Tiles have one
+// level, sampled at LOD 0; the base image's gradients are taken before branching.
 vec3 imgSrc(vec2 st, float bias) {
+  vec2 gx = dFdx(st), gy = dFdy(st);
   if (u_detail) {
     vec2 px = clamp(st, 0.0, 1.0) * u_full;
     ivec2 t = min(ivec2(px / u_tile), textureSize(u_page, 0) - 1);
     uint l = texelFetch(u_page, t, 0).r;
     if (l > 0u) {
       vec2 local = px - vec2(t) * u_tile + u_apron;
-      return texture(u_atlas, vec3(local / u_layer, float(l - 1u))).rgb;
+      return textureLod(u_atlas, vec3(local / u_layer, float(l - 1u)), 0.0).rgb;
     }
   }
-  return texture(u_img, st, bias).rgb;
+  // A LOD bias b is the gradients scaled by 2^b.
+  float k = exp2(bias);
+  return textureGrad(u_img, st, gx * k, gy * k).rgb;
 }
 
 vec3 img(vec2 st, float bias) { return expose(imgSrc(st, bias)); }`;
@@ -110,36 +119,29 @@ void main() {
   outColor = vec4(s / ws, 1.0);
 }`;
 
-// Mask pyramid: each level ORs the clipping bits of the level below, so a zoomed-out view
-// still shows every clipped sample, as FastRawViewer does.
-const FS_REDUCE = `#version 300 es
+// Clipping mask (MASK_* bits per pixel) to per-channel coverage: overexposure in one
+// texture, underexposure in another (1 = that channel is flagged). Mipmaps of these average
+// the flags, so a zoomed-out view reads the share of each footprint that is flagged.
+const FS_UNPACK = `#version 300 es
 precision highp float;
-uniform sampler2D u_src;   // base level = the level below the one being written
-out vec4 outColor;
+uniform sampler2D u_src;
+layout(location = 0) out vec4 oOver;
+layout(location = 1) out vec4 oUnder;
 void main() {
-  ivec2 size = textureSize(u_src, 0);
-  ivec2 q = ivec2(gl_FragCoord.xy);
-  ivec2 p = q * 2;
-  // 2x2 texels; the last row/column of the level written also takes an odd one left over.
-  ivec2 last = max(size / 2, ivec2(1)) - 1;
-  ivec2 hi = min(ivec2(q.x == last.x ? size.x - 1 : p.x + 1, q.y == last.y ? size.y - 1 : p.y + 1), size - 1);
-  int bits = 0;
-  for (int y = p.y; y <= hi.y; y++)
-    for (int x = p.x; x <= hi.x; x++)
-      bits |= int(texelFetch(u_src, ivec2(x, y), 0).r * 255.0 + 0.5);
-  outColor = vec4(float(bits) / 255.0, 0.0, 0.0, 1.0);
+  int bits = int(texelFetch(u_src, ivec2(gl_FragCoord.xy), 0).r * 255.0 + 0.5);
+  oOver = vec4(float(bits & 1), float((bits >> 1) & 1), float((bits >> 2) & 1), 1.0);
+  oUnder = vec4(float((bits >> 3) & 1), float((bits >> 4) & 1), float((bits >> 5) & 1), 1.0);
 }`;
 
 const FS = `#version 300 es
 precision highp float;
 ${IMG}
-uniform sampler2D u_mask;
+uniform sampler2D u_overCov;  // per-channel overexposure coverage (mipmapped average)
+uniform sampler2D u_underCov; // per-channel underexposure coverage
 uniform sampler2D u_blurH;  // pass 2 output (horizontal blur of the view)
 uniform bool u_hasImg;
 uniform bool u_hasMask;
 uniform bool u_maskOnly;    // RAW view: clipping comes from the RAW mask only
-uniform float u_overLod;    // mask pyramid levels: clipping one level coarser than a device
-uniform float u_underLod;   // px (bold, like FastRawViewer); underexposure at the footprint
 ${MAP}
 uniform vec2 u_texel;       // 1 / texture size (of the full-resolution frame with detail on)
 uniform float u_sharpen;    // unsharp amount (0 = off)
@@ -168,8 +170,21 @@ vec3 underColor(int ub) {
   return vec3(float(ub & 1), float((ub >> 1) & 1), float((ub >> 2) & 1));
 }
 
+// A channel is shown where its coverage reaches the cut (FastRawViewer's display, fitted:
+// a screen pixel is marked when about half its footprint is flagged; underexposure, being
+// speckled shadow noise, from 0.4). Bilinear coverage gives smooth outlines when zoomed in,
+// the averaged mipmaps a majority rule when zoomed out; the edge is anti-aliased over about
+// a screen pixel. Returns the per-channel weights (0..1).
+vec3 marks(vec3 cov, float cut) {
+  vec3 w = clamp(fwidth(cov) * 0.75, vec3(0.002), vec3(0.5));
+  return smoothstep(vec3(cut) - w, vec3(cut) + w, cov);
+}
+
 void main() {
   vec2 d = mapPx(gl_FragCoord.xy);
+  // Mask gradients before any branch (implicit derivatives are undefined in divergent flow).
+  vec2 sm = orient(clamp(d, 0.0, 1.0));
+  vec2 mgx = dFdx(sm), mgy = dFdy(sm);
   if (!u_hasImg || d.x < 0.0 || d.y < 0.0 || d.x > 1.0 || d.y > 1.0) { outColor = vec4(u_bg, 1.0); return; }
   vec2 st = orient(d);
   vec3 c = img(st, LOD_BIAS);
@@ -210,10 +225,20 @@ void main() {
 
   if (u_over || u_under) {
     if (u_hasMask) {
-      int ob = int(textureLod(u_mask, st, u_overLod).r * 255.0 + 0.5) & 7;
-      int ub = (int(textureLod(u_mask, st, u_underLod).r * 255.0 + 0.5) >> 3) & 7;
-      if (u_over && ob != 0) c = overColor(ob);
-      else if (u_under && ub != 0) c = underColor(ub);
+      // Underexposure first, overexposure over it. Colours as FastRawViewer: overexposure
+      // removes the clipped channels from white (magenta = green, black = all),
+      // underexposure adds the underexposed ones to black (blue = blue, white = all);
+      // where channels meet, the colours blend across the anti-aliased edge.
+      if (u_under) {
+        vec3 s = marks(textureGrad(u_underCov, st, mgx, mgy).rgb, 0.4);
+        float a = max(s.r, max(s.g, s.b));
+        if (a > 0.0) c = mix(c, u_underSolid ? u_underColor : s / a, a);
+      }
+      if (u_over) {
+        vec3 s = marks(textureGrad(u_overCov, st, mgx, mgy).rgb, 0.5);
+        float a = max(s.r, max(s.g, s.b));
+        if (a > 0.0) c = mix(c, u_overSolid ? vec3(1.0, 0.0, 0.0) : vec3(1.0) - s / a, a);
+      }
     } else if (!u_maskOnly) {
       vec3 src = img(st, LOD_BIAS);
       vec3 cl = step(vec3(0.996), src);
@@ -226,6 +251,10 @@ void main() {
   }
   outColor = vec4(c, 1.0);
 }`;
+
+/** Texture unit of the underexposure coverage: above those GPU demosaicing uses (5-11),
+ * so it is rebound every draw anyway. */
+const UNDER_UNIT = 12;
 
 export interface ViewParams {
   orientation: number;
@@ -267,13 +296,15 @@ export class GLView {
   private prog: WebGLProgram;
   private progView: WebGLProgram;
   private progBlur: WebGLProgram;
-  private progReduce: WebGLProgram;
+  private progUnpack: WebGLProgram;
   private u: Uniforms;
   private uView: Uniforms;
   private uBlur: Uniforms;
-  private uReduce: Uniforms;
+  private uUnpack: Uniforms;
   private tex: WebGLTexture;
-  private mask: WebGLTexture;
+  /** Per-channel overexposure / underexposure coverage (from the clipping mask). */
+  private overCov: WebGLTexture;
+  private underCov: WebGLTexture;
   private fbo: WebGLFramebuffer;
   /** Sharpening targets at canvas size: the view, and its horizontal blur. */
   private targets: { w: number; h: number; view: WebGLTexture; blurH: WebGLTexture } | null = null;
@@ -281,7 +312,6 @@ export class GLView {
   texH = 0;
   maskW = 0;
   maskH = 0;
-  maskLevels = 1;
   hasImg = false;
   hasMask = false;
   maxTex: number;
@@ -324,12 +354,12 @@ export class GLView {
     const mapU = ['u_canvas', 'u_disp', 'u_center', 'u_scale', 'u_orient'];
     const imgU = ['u_img', 'u_atlas', 'u_page', 'u_detail', 'u_full', 'u_tile', 'u_apron', 'u_layer', 'u_gain'];
     [this.prog, this.u] = program(FS, [
-      ...imgU, 'u_mask', 'u_blurH', 'u_hasImg', 'u_hasMask', 'u_maskOnly', 'u_overLod', 'u_underLod', ...mapU, 'u_texel', 'u_sharpen', 'u_sigma', 'u_invert',
+      ...imgU, 'u_overCov', 'u_underCov', 'u_blurH', 'u_hasImg', 'u_hasMask', 'u_maskOnly', ...mapU, 'u_texel', 'u_sharpen', 'u_sigma', 'u_invert',
       'u_peak', 'u_peakColor', 'u_over', 'u_under', 'u_overSolid', 'u_underSolid', 'u_underColor', 'u_bg',
     ]);
     [this.progView, this.uView] = program(FS_VIEW, [...imgU, ...mapU]);
     [this.progBlur, this.uBlur] = program(FS_BLUR, ['u_src', 'u_sigma']);
-    [this.progReduce, this.uReduce] = program(FS_REDUCE, ['u_src']);
+    [this.progUnpack, this.uUnpack] = program(FS_UNPACK, ['u_src']);
 
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -337,12 +367,14 @@ export class GLView {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     this.tex = gl.createTexture()!;
-    this.mask = gl.createTexture()!;
+    this.overCov = gl.createTexture()!;
+    this.underCov = gl.createTexture()!;
     this.page = gl.createTexture()!;
     this.fbo = gl.createFramebuffer()!;
     gl.useProgram(this.prog);
     gl.uniform1i(this.u.u_img, 0);
-    gl.uniform1i(this.u.u_mask, 1);
+    gl.uniform1i(this.u.u_overCov, 1);
+    gl.uniform1i(this.u.u_underCov, UNDER_UNIT);
     gl.uniform1i(this.u.u_blurH, 2);
     gl.uniform1i(this.u.u_atlas, 3);
     gl.uniform1i(this.u.u_page, 4);
@@ -359,8 +391,8 @@ export class GLView {
     gl.activeTexture(gl.TEXTURE0);
     gl.useProgram(this.progBlur);
     gl.uniform1i(this.uBlur.u_src, 2);
-    gl.useProgram(this.progReduce);
-    gl.uniform1i(this.uReduce.u_src, 1);
+    gl.useProgram(this.progUnpack);
+    gl.uniform1i(this.uUnpack.u_src, 1);
   }
 
   setImage(src: TexImageSource | null, w = 0, h = 0) {
@@ -385,48 +417,66 @@ export class GLView {
     this.hasImg = true;
   }
 
-  /** The clipping mask (MASK_* bits per pixel), with an OR-reduced pyramid built on the GPU. */
+  /** The clipping mask (MASK_* bits per pixel): unpacked on the GPU into per-channel
+   * overexposure and underexposure coverage, with averaged mipmaps. */
   setMask(src: (TexImageSource & { width: number; height: number }) | null) {
     const gl = this.gl;
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.mask);
     if (!src) {
       this.hasMask = false;
-      gl.activeTexture(gl.TEXTURE0);
       return;
     }
     const w = src.width;
     const h = src.height;
     const levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
-    // Fresh storage each time: immutable, all levels allocated.
-    gl.deleteTexture(this.mask);
-    this.mask = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, this.mask);
-    gl.texStorage2D(gl.TEXTURE_2D, levels, gl.RGBA8, w, h);
+    // The bits, read once.
+    const bits = gl.createTexture()!;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bits);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, src);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.useProgram(this.progReduce);
+    // Fresh coverage storage each time: immutable, all levels allocated.
+    const cov = () => {
+      const t = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texStorage2D(gl.TEXTURE_2D, levels, gl.RGBA8, w, h);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      return t;
+    };
+    gl.activeTexture(gl.TEXTURE2);
+    gl.deleteTexture(this.overCov);
+    gl.deleteTexture(this.underCov);
+    this.overCov = cov();
+    this.underCov = cov();
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bits);
+    gl.useProgram(this.progUnpack);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
-    for (let l = 1; l < levels; l++) {
-      // Sample only level l-1 while writing level l (no feedback loop).
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, l - 1);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, l - 1);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.mask, l);
-      gl.viewport(0, 0, Math.max(1, w >> l), Math.max(1, h >> l));
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    }
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.overCov, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, this.underCov, 0);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+    gl.viewport(0, 0, w, h);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    // The framebuffer is shared (sharpening, GPU tiles): back to one attachment.
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, null, 0);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, 0);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, levels - 1);
+    gl.deleteTexture(bits);
+    gl.activeTexture(gl.TEXTURE2);
+    for (const t of [this.overCov, this.underCov]) {
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.generateMipmap(gl.TEXTURE_2D);
+    }
     gl.activeTexture(gl.TEXTURE0);
     this.maskW = w;
     this.maskH = h;
-    this.maskLevels = levels;
     this.hasMask = true;
   }
 
@@ -600,8 +650,10 @@ export class GLView {
     else gl.bindTexture(gl.TEXTURE_2D, this.page);
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.atlas ?? this.emptyAtlas());
+    gl.activeTexture(gl.TEXTURE0 + UNDER_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.underCov);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.mask);
+    gl.bindTexture(gl.TEXTURE_2D, this.overCov);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     const sharpen = v.sharpen > 0 && this.hasImg;
@@ -634,20 +686,6 @@ export class GLView {
     gl.uniform1i(u.u_hasImg, this.hasImg ? 1 : 0);
     gl.uniform1i(u.u_hasMask, this.hasMask ? 1 : 0);
     gl.uniform1i(u.u_maskOnly, v.maskOnly ? 1 : 0);
-    // Mask texels per device pixel: mask texels per image pixel (sensor orientation) over
-    // device pixels per image pixel. Clipped samples are usually few and scattered, so when
-    // zoomed out they are drawn bold, from the pyramid level whose blocks OR at least the
-    // footprint and are at least 1.25 CSS px wide (calibrated on FastRawViewer, whose marks
-    // are as bold); exact pixels from about 1:1 up. Underexposure is sampled at the
-    // footprint, which matches FastRawViewer as is.
-    const sensorW = v.orientation >= 5 ? v.dispH : v.dispW;
-    const perPx = this.maskW > 0 && sensorW > 0 ? this.maskW / sensorW / Math.max(1e-6, v.scale) : 1;
-    const lvl = Math.log2(Math.max(1e-6, perPx));
-    const top = this.maskLevels - 1;
-    const dpr = window.devicePixelRatio || 1;
-    const bold = Math.max(Math.ceil(lvl - 0.05), Math.ceil(Math.log2(1.25 * dpr * perPx)));
-    gl.uniform1f(u.u_overLod, perPx > 0.75 ? Math.min(top, Math.max(0, bold)) : 0);
-    gl.uniform1f(u.u_underLod, Math.min(top, Math.max(0, Math.floor(lvl))));
     if (this.detailOn && this.detail) gl.uniform2f(u.u_texel, 1 / this.detail.full[0], 1 / this.detail.full[1]);
     else gl.uniform2f(u.u_texel, 1 / Math.max(1, this.texW), 1 / Math.max(1, this.texH));
     gl.uniform1f(u.u_sharpen, sharpen ? v.sharpen : 0);
@@ -667,7 +705,8 @@ export class GLView {
   destroy() {
     const gl = this.gl;
     gl.deleteTexture(this.tex);
-    gl.deleteTexture(this.mask);
+    gl.deleteTexture(this.overCov);
+    gl.deleteTexture(this.underCov);
     gl.deleteTexture(this.page);
     if (this.atlas) gl.deleteTexture(this.atlas);
     if (this.placeholder) gl.deleteTexture(this.placeholder);
@@ -676,7 +715,7 @@ export class GLView {
       gl.deleteTexture(this.targets.blurH);
     }
     gl.deleteFramebuffer(this.fbo);
-    for (const p of [this.prog, this.progView, this.progBlur, this.progReduce]) gl.deleteProgram(p);
+    for (const p of [this.prog, this.progView, this.progBlur, this.progUnpack]) gl.deleteProgram(p);
     gl.getExtension('WEBGL_lose_context')?.loseContext();
   }
 }

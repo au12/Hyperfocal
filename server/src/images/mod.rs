@@ -81,6 +81,25 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
     }
 }
 
+/// Counts a viewer request in [`Images::interactive`] for as long as it lives. A guard,
+/// not a pair of calls: a request the browser gives up on (a thumbnail scrolled past, a
+/// tile panned away) is dropped at an `.await`, and the count must still go down, or the
+/// background thumbnail builder and preview pre-generation wait forever.
+struct Busy<'a>(&'a AtomicUsize);
+
+impl<'a> Busy<'a> {
+    fn new(n: &'a AtomicUsize) -> Busy<'a> {
+        n.fetch_add(1, Ordering::SeqCst);
+        Busy(n)
+    }
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Lets the photo on screen jump ahead of prefetching.
 pub struct Gate {
     sem: tokio::sync::Semaphore,
@@ -327,6 +346,14 @@ impl Images {
         self.thumbs_dir.join(format!("{:02x}", rec.id % 256)).join(format!("{}_{}.jpg", rec.id, sig_str(rec)))
     }
 
+    /// Where the thumbnail of photo `id` at version `v` (`sig_str`, as photo lists give
+    /// it) is kept, without looking the photo up: for the grid's many requests. None
+    /// for anything that is not a version string.
+    pub fn thumb_path_for(&self, id: i64, v: &str) -> Option<PathBuf> {
+        let ok = id > 0 && !v.is_empty() && v.len() <= 16 && v.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        ok.then(|| self.thumbs_dir.join(format!("{:02x}", id % 256)).join(format!("{id}_{v}.jpg")))
+    }
+
     fn draft_path(&self, rec: &PhotoRec) -> PathBuf {
         self.thumbs_dir.join(format!("{:02x}", rec.id % 256)).join(format!("{}_{}.draft.jpg", rec.id, sig_str(rec)))
     }
@@ -365,7 +392,7 @@ impl Images {
             self.queue_first(loc.rec.id);
             return Ok((draft, true));
         }
-        self.interactive.fetch_add(1, Ordering::SeqCst);
+        let busy = Busy::new(&self.interactive);
         let _p = self.thumb_sem.acquire().await?;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         let (orient, out, dout) = (loc.rec.orientation as u8, path.clone(), draft.clone());
@@ -381,7 +408,7 @@ impl Images {
             Ok(false)
         })
         .await;
-        self.interactive.fetch_sub(1, Ordering::SeqCst);
+        drop(busy);
         if res?? {
             self.queue_first(loc.rec.id);
             return Ok((draft, true));
@@ -438,13 +465,13 @@ impl Images {
             touch(&path);
             return Ok(path);
         }
-        self.interactive.fetch_add(1, Ordering::SeqCst);
+        let busy = Busy::new(&self.interactive);
         let _p = self.thumb_sem.acquire().await?;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         let kind = Kind::from_i32(loc.rec.kind);
         let out = path.clone();
         let res = tokio::task::spawn_blocking(move || make_preview(&src, kind, long, &out)).await;
-        self.interactive.fetch_sub(1, Ordering::SeqCst);
+        drop(busy);
         res??;
         Ok(path)
     }
@@ -553,7 +580,7 @@ impl Images {
         if let Some(b) = self.tiles.lock().get(&tkey) {
             return Ok(b);
         }
-        self.interactive.fetch_add(1, Ordering::SeqCst);
+        let busy = Busy::new(&self.interactive);
         let res = async {
             let dev = self.developed(state, loc, wb, true).await?;
             raw::tile_rect(&dev, tx, ty)?;
@@ -567,7 +594,7 @@ impl Images {
             .await?
         }
         .await;
-        self.interactive.fetch_sub(1, Ordering::SeqCst);
+        drop(busy);
         let bytes = Arc::new(res?);
         self.tiles.lock().put(tkey, bytes.clone(), bytes.len());
         Ok(bytes)
@@ -580,7 +607,7 @@ impl Images {
         if let Some(b) = self.tiles.lock().get(&tkey) {
             return Ok(b);
         }
-        self.interactive.fetch_add(1, Ordering::SeqCst);
+        let busy = Busy::new(&self.interactive);
         let res = async {
             let dev = self.developed(state, loc, wb, true).await?;
             raw::tile_rect(&dev, tx, ty)?;
@@ -589,7 +616,7 @@ impl Images {
             tokio::task::spawn_blocking(move || raw::catch(|| raw::cfa_tile(&bayer, &dev, tx, ty)).map_err(|e| anyhow!(e))).await?
         }
         .await;
-        self.interactive.fetch_sub(1, Ordering::SeqCst);
+        drop(busy);
         let bytes = Arc::new(res?);
         self.tiles.lock().put(tkey, bytes.clone(), bytes.len());
         Ok(bytes)

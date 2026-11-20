@@ -45,14 +45,33 @@ pub enum WbMode {
 /// bit `MASK_UNDER_SHIFT + c` when that channel is underexposed.
 pub const MASK_UNDER_SHIFT: u8 = 3;
 
-/// Samples within this many EV of saturation count as clipped. Photosites saturate over a
-/// narrow band just below the white level, and FastRawViewer flags the same band (measured
-/// on its exposure stats: an R6 at ISO 1250 reads 0.105% green clipped, -0.048 EV).
+/// Samples within this many EV of saturation count as clipped (exposure stats), when the
+/// camera gives no level that renders white. Photosites saturate over a narrow band just
+/// below the white level, and FastRawViewer flags the same band.
 pub const OE_MARGIN_EV: f32 = 0.05;
 
-/// Samples more than this many EV below saturation count as underexposed: FastRawViewer's
-/// default limit, measured on its exposure stats (the same R6 file: R 1.36%, G 0.269%,
-/// B 4.10%, every channel below the same raw level, before white balance).
+/// Canon (NormalWhiteLevel known): the exposure stats count samples above this multiple of
+/// the signal that renders white, as FastRawViewer's OvExp does. Measured on an R6: at
+/// ISO 1250 (normal 13535, specular 14888, black 2048) FastRawViewer counts from 14465, at
+/// ISO 100 (12735 / 14008 / 512) from 13772 (R 0.321%, G 7.85%, B 1.79%): 1.081 and
+/// 1.085 times the white signal, while a fixed EV below saturation fits only one of them.
+pub const OE_NORMAL_RATIO: f32 = 1.083;
+
+/// The overexposure display marks a channel from this many EV below saturation (R, G, B).
+/// FastRawViewer's display, by default, includes Adobe's hidden exposure correction (+0.25
+/// EV for Canon bodies), so it marks well below where the stats count; its histogram
+/// works to about 1/10 EV. Fitted to its overlay on an R6 file (ISO 100, 16% zoom): green
+/// 0.22 EV (IoU 0.945), blue 0.24 (0.88), red 0.45 (0.83; its edge is soft).
+pub const OE_DISPLAY_EV: [f32; 3] = [0.45, 0.22, 0.24];
+
+/// Underexposure (display and stats): a channel below this signal (raw value above black,
+/// 14-bit scale; scaled to the data's bit depth) is underexposed. FastRawViewer's default
+/// limit measured on two R6 files: ISO 1250 (R 1.36%, G 0.269%, B 4.10%) and ISO 100 (R
+/// 2.29%, G 0.355%, B 2.56%) both match 62 exactly, while their saturation differs: the
+/// limit is a fixed level, not a fixed number of EV below saturation.
+pub const UE_SIGNAL_14BIT: f32 = 62.0;
+
+/// Underexposure limit for the processed-image fallback (no sensor data): EV below white.
 pub const UE_EV: f32 = 7.7;
 
 pub struct Developed {
@@ -578,6 +597,17 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
             thr[c] = (low as f32).min(blk_mean + (sat[c] - blk_mean) * margin);
         }
     }
+    if f.white_exact
+        && let Some(nw) = f.render_white
+        && nw > blk_mean
+    {
+        let t = blk_mean + (nw - blk_mean) * OE_NORMAL_RATIO;
+        if t < white {
+            thr = [t; 3];
+        }
+    }
+    // The overexposure display's levels (see OE_DISPLAY_EV).
+    let disp: [f32; 3] = [0, 1, 2].map(|c| blk_mean + (sat[c] - blk_mean) * 2f32.powf(-OE_DISPLAY_EV[c]));
     let inv: [f32; 3] = [1.0 / (sat[0] - blk_mean).max(1.0), 1.0 / (sat[1] - blk_mean).max(1.0), 1.0 / (sat[2] - blk_mean).max(1.0)];
     // Rendering scale: Canon's own rendering and FastRawViewer map NormalWhiteLevel to white
     // (FastRawViewer's linear mode is exactly that signal at gamma 2.2); values between it
@@ -659,7 +689,11 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
     }
 
     let m = f.cam_to_srgb;
-    let under_thr = 2f32.powf(-under_ev.abs());
+    // Underexposure: a fixed signal on the data's scale (see UE_SIGNAL_14BIT), relative to
+    // green's saturation (the values it is compared with are normalised to it).
+    let _ = under_ev;
+    let range = (white.max(1.0) as u32).next_power_of_two() as f32;
+    let under_thr = UE_SIGNAL_14BIT * range / 16384.0 * inv[1];
 
     // Histogram bin of every possible raw value, per channel.
     let lut_len = (white as usize + 1).max(maxv.iter().copied().max().unwrap_or(0) as usize + 1).min(65536);
@@ -679,7 +713,7 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
         .collect();
 
     let kernel = match f.black_at {
-        None => BlockKernel::new(ch, blk, inv, thr, under_thr, [rscale[0] * wb[0], rscale[1], rscale[2] * wb[2]], m, &bin_lut),
+        None => BlockKernel::new(ch, blk, inv, thr, disp, under_thr, [rscale[0] * wb[0], rscale[1], rscale[2] * wb[2]], m, &bin_lut),
         Some(_) => None,
     };
     if let Some(k) = kernel {
@@ -719,6 +753,7 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
                 let x0 = cx + bx * 2;
                 let mut v = [0f32; 3];
                 let mut clip = 0u8;
+                let mut counted = 0u8;
                 for dy in 0..2 {
                     let base = (y0 + dy) * fw + x0;
                     for dx in 0..2 {
@@ -730,8 +765,11 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
                         };
                         let n = (s as f32 - b) * inv[c];
                         v[c] += n;
-                        if s as f32 >= thr[c] {
+                        if s as f32 >= disp[c] {
                             clip |= 1 << c;
+                        }
+                        if s as f32 >= thr[c] {
+                            counted |= 1 << c;
                             acc.clipped[c] += 1;
                         }
                         if n < under_thr {
@@ -748,7 +786,7 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
                         clip |= 1 << (MASK_UNDER_SHIFT as usize + c);
                     }
                 }
-                if clip & 7 != 0 {
+                if counted != 0 {
                     acc.any += 1;
                 }
                 if clip >> MASK_UNDER_SHIFT != 0 {
@@ -832,7 +870,10 @@ struct BlockKernel {
     black: [f32; 4],
     /// Normalisation to saturation per position (not halved for the greens).
     inv: [f32; 4],
+    /// Clipping level of the exposure stats, per position.
     clip: [f32; 4],
+    /// Clipping level of the overexposure display (mask), per position.
+    disp: [f32; 4],
     under: f32,
     gain: [f32; 3],
     m: [[f32; 3]; 3],
@@ -855,7 +896,7 @@ const CHUNK: usize = 64;
 
 impl BlockKernel {
     #[allow(clippy::too_many_arguments)]
-    fn new(ch: [[usize; 2]; 2], blk: [[f32; 2]; 2], inv: [f32; 3], thr: [f32; 3], under: f32, gain: [f32; 3], m: [[f32; 3]; 3], bin_lut: &[[u8; 3]]) -> Option<Self> {
+    fn new(ch: [[usize; 2]; 2], blk: [[f32; 2]; 2], inv: [f32; 3], thr: [f32; 3], disp: [f32; 3], under: f32, gain: [f32; 3], m: [[f32; 3]; 3], bin_lut: &[[u8; 3]]) -> Option<Self> {
         let c = [ch[0][0], ch[0][1], ch[1][0], ch[1][1]];
         let find = |ch: usize, from: usize| (from..4).find(|&p| c[p] == ch);
         let r = find(0, 0)?;
@@ -878,6 +919,7 @@ impl BlockKernel {
             black: [blk[0][0], blk[0][1], blk[1][0], blk[1][1]],
             inv: c.map(|c| inv[c]),
             clip: c.map(|c| thr[c]),
+            disp: c.map(|c| disp[c]),
             under,
             gain,
             m,
@@ -968,14 +1010,17 @@ fn block_row_imp(k: &BlockKernel, r0: &[u16], r1: &[u16], rgb: &mut [MaybeUninit
             o[2][i] = simd::f16_bits(m[2][0] * r + m[2][1] * g + m[2][2] * bl);
             low[i] = (if v0 < u { 1u8 } else { 0 }) | (if v1 < u { 2 } else { 0 }) | (if v2 < u { 4 } else { 0 });
         }
-        // Clipping per sample (flags and counts) and underexposure counts.
+        // Clipping per sample: display flags (mask) and stats counts, which use different
+        // levels (see OE_DISPLAY_EV); and underexposure counts.
         let mut clip = [0u8; CHUNK];
+        let mut counted = [0u8; CHUNK];
         for p in 0..4 {
-            let (sp, bp, ip, tp, bitp) = (&s[p][..len], b[p], iv[p], t[p], bit[p]);
+            let (sp, bp, ip, tp, dp, bitp) = (&s[p][..len], b[p], iv[p], t[p], k.disp[p], bit[p]);
             let (mut nc, mut nu) = (0u32, 0u32);
             for (i, &x) in sp.iter().enumerate() {
                 let over = x >= tp;
-                clip[i] |= if over { bitp } else { 0 };
+                clip[i] |= if x >= dp { bitp } else { 0 };
+                counted[i] |= if over { bitp } else { 0 };
                 nc += over as u32;
                 nu += ((x - bp) * ip < u) as u32;
             }
@@ -988,9 +1033,9 @@ fn block_row_imp(k: &BlockKernel, r0: &[u16], r1: &[u16], rgb: &mut [MaybeUninit
             px[2].write(o[2][i]);
         }
         let (mut any, mut under_any) = (0u32, 0u32);
-        for (d, (&c, &l)) in mask[start..start + len].iter_mut().zip(clip.iter().zip(&low)) {
+        for (i, (d, (&c, &l))) in mask[start..start + len].iter_mut().zip(clip.iter().zip(&low)).enumerate() {
             d.write(c | (l << MASK_UNDER_SHIFT));
-            any += (c != 0) as u32;
+            any += (counted[i] != 0) as u32;
             under_any += (l != 0) as u32;
         }
         st.any += any as u64;
@@ -1402,9 +1447,12 @@ mod tests {
         // Half the normal-white range renders at half; between normal white and saturation renders white.
         assert!(px(0).iter().all(|v| (v - 0.5).abs() < 0.005), "{:?}", px(0));
         assert!(px(2).iter().all(|v| (v - 1.0).abs() < 1e-3), "{:?}", px(2));
-        // 14500 is within 0.05 EV of saturation: clipped; 13700 is not. 2100 is 7.9 EV down: underexposed.
+        // The stats count from 1.083x the normal-white signal (14488): 14500 is clipped,
+        // 13700 is not. The display marks from 0.22-0.45 EV below saturation (13072 for green,
+        // 11447 for red), so it shows both; mid-grey stays clear. 2100 is 52 above black,
+        // below the 62 limit: underexposed.
         assert_eq!(d.mask[hw] & 7, 7);
-        assert_eq!(d.mask[2 * hw] & 7, 0);
+        assert_eq!(d.mask[2 * hw] & 7, 7);
         assert_eq!(d.mask[3 * hw] >> MASK_UNDER_SHIFT, 7);
         assert_eq!(d.mask[0], 0);
         for c in 0..3 {
