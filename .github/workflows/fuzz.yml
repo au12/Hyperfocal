@@ -1,11 +1,14 @@
 name: Fuzz
 
 # The parsers that read untrusted file contents (HEIF, XMP, JPEG, TIFF/DNG, GPS tracks,
-# the native helper's output), under libFuzzer with AddressSanitizer. Weekly, and on
-# demand; the corpus carries over between runs. A crash fails the run and its input is
-# uploaded. (Every push already runs the stable smoke test, src/fuzzing.rs.)
+# the native helper's output), under libFuzzer with AddressSanitizer. On every release
+# (tag vX.Y.Z), weekly, and on demand; the corpus carries over between runs. A crash
+# fails the run and its input is uploaded. (The server tests already run the stable
+# smoke test, src/fuzzing.rs.)
 
 on:
+  push:
+    tags: ['v*']
   schedule:
     - cron: '41 3 * * 0'
   workflow_dispatch:
@@ -27,11 +30,7 @@ jobs:
       SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '300' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install exiftool, nasm, libheif and LibRaw
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libimage-exiftool-perl nasm pkg-config libclang-dev \
-            libheif-dev libheif-plugin-libde265 libraw-dev
+      - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@nightly
       - uses: taiki-e/install-action@v2
         with:

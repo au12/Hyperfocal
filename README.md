@@ -259,7 +259,7 @@ People & pets: the people and groups found, and a pet named in the single view (
 
 The first scan indexes metadata only and reads very little of each file. Thumbnails are built in the background, newest years first. Any folder you open is indexed immediately, ahead of the queue.
 
-The image is `ghcr.io/au12/hyperfocal:latest` (amd64). It is rebuilt on every push to `main` and once a week, so security fixes in Debian's packages (including libheif and LibRaw) reach it without a code change. Tags `vX.Y.Z` are published as versioned images. In a public repository, GitHub pauses scheduled workflows after 60 days without activity; if that happens, re-enable the **Docker** workflow in the **Actions** tab.
+The image is `ghcr.io/au12/hyperfocal:latest` (amd64). It is rebuilt on every push to `main` that changes the server, the web UI or the image, and from scratch once a week, so security fixes in Debian's packages (including libheif and LibRaw) reach it without a code change. Tags `vX.Y.Z` are releases: they also run the major tests (the 300,000-photo library and fuzzing) and are published as versioned images. In a public repository, GitHub pauses scheduled workflows after 60 days without activity; if that happens, re-enable the **Docker** workflow in the **Actions** tab.
 
 The container package has the same visibility as the repository. If the repository is private, the image is private too. In that case, either make the package public (GitHub → Packages → hyperfocal → Package settings) or run `docker login ghcr.io` on the server with a token that has `read:packages`.
 
@@ -462,6 +462,9 @@ cargo +nightly fuzz run xmp corpus/xmp seeds/xmp -- -max_total_time=60
 
 # image
 docker build -t hyperfocal .
+
+# release: CI runs the major tests, then publishes the versioned images
+git tag v0.2.0 && git push origin v0.2.0    # or publish a GitHub release with a new vX.Y.Z tag
 
 # People & pets service (Python 3.12): models into ./models, then serve on :8090
 cd ml && pip install -r requirements.txt && python fetch_models.py ../models
