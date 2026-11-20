@@ -1,75 +1,167 @@
 name: Docker
 
+# Fast checks on every push and pull request; the heavy work only where it is needed.
+#
+#   pull request   tests for the parts that changed. Images are built (not pushed) only
+#                  when a Dockerfile or the ML dependencies change.
+#   push to main   the same tests, then publishes :latest for the images whose inputs
+#                  changed. A push that touches only docs builds nothing.
+#   tag vX.Y.Z     a release: everything, plus the major tests (300,000-photo library,
+#                  and fuzzing in fuzz.yml). The versioned images wait for them.
+#   weekly         rebuilds every image from scratch, so security fixes in Debian's
+#                  packages (libheif, LibRaw, the base image) reach them without a code change.
+#   manual         everything; the major tests too unless switched off.
+
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
-  # Weekly rebuild, so security fixes in Debian's packages (libheif, LibRaw, the base
-  # image) reach the published image without a code change.
   schedule:
     - cron: '23 5 * * 1'
   workflow_dispatch:
+    inputs:
+      major:
+        description: Run the major tests (300,000-photo library) as well
+        type: boolean
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test
+  # What this run has to do: which parts changed, and whether it is a release.
+  changes:
+    name: Plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      major: ${{ steps.mode.outputs.major }}
+      server: ${{ steps.mode.outputs.all == 'true' || steps.filter.outputs.server == 'true' }}
+      web: ${{ steps.mode.outputs.all == 'true' || steps.filter.outputs.web == 'true' }}
+      ml: ${{ steps.mode.outputs.all == 'true' || steps.filter.outputs.ml == 'true' }}
+      image: ${{ steps.plan.outputs.image }}
+      ml_variants: ${{ steps.plan.outputs.ml_variants }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          MAJOR_INPUT: ${{ inputs.major }}
+        run: |
+          major=false; all=false
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then major=true; all=true; fi
+          if [[ "$EVENT" == schedule ]]; then all=true; fi
+          if [[ "$EVENT" == workflow_dispatch ]]; then all=true; [[ "$MAJOR_INPUT" == true ]] && major=true; fi
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+          echo "all=$all" >> "$GITHUB_OUTPUT"
+          echo "major=$major all=$all"
+      - id: filter
+        if: steps.mode.outputs.all != 'true'
+        uses: dorny/paths-filter@v4
+        with:
+          # A change to CI itself counts as a change to everything it checks.
+          filters: |
+            ci: &ci
+              - .github/workflows/docker.yml
+              - .github/actions/**
+            server:
+              - *ci
+              - server/**
+            web:
+              - *ci
+              - web/**
+            ml:
+              - *ci
+              - ml/**
+            image:
+              - *ci
+              - server/**
+              - web/**
+              - docker/**
+              - Dockerfile
+              - .dockerignore
+            image_def:
+              - *ci
+              - docker/**
+              - Dockerfile
+              - .dockerignore
+            ml_image_def:
+              - *ci
+              - ml/Dockerfile
+              - ml/requirements*.txt
+              - ml/models.json
+              - ml/fetch_models.py
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          ALL: ${{ steps.mode.outputs.all }}
+          IMAGE: ${{ steps.filter.outputs.image }}
+          IMAGE_DEF: ${{ steps.filter.outputs.image_def }}
+          ML: ${{ steps.filter.outputs.ml }}
+          ML_IMAGE_DEF: ${{ steps.filter.outputs.ml_image_def }}
+        run: |
+          image=false; ml='[]'
+          if [[ "$ALL" == true ]]; then
+            image=true; ml='["cpu","cuda"]'
+          elif [[ "$EVENT" == pull_request ]]; then
+            # Only check that the images still build when their definition changed.
+            # The CPU ML build loads every model, so it also tests them.
+            [[ "$IMAGE_DEF" == true ]] && image=true
+            [[ "$ML_IMAGE_DEF" == true ]] && ml='["cpu"]'
+          else
+            [[ "$IMAGE" == true ]] && image=true
+            [[ "$ML" == true ]] && ml='["cpu","cuda"]'
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "ml_variants=$ml" >> "$GITHUB_OUTPUT"
+          echo "image=$image ml_variants=$ml"
+
+  server:
+    name: Server tests
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install exiftool, nasm, libheif and LibRaw
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libimage-exiftool-perl nasm pkg-config libclang-dev \
-            libheif-dev libheif-plugin-libde265 libraw-dev
+      - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server
+          # Pull requests read main's cache but don't add their own: the 10 GB cache
+          # limit is shared, and a branch's cache is no use to main.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Server tests
         working-directory: server
         run: cargo test --locked
+
+  web:
+    name: Web check and build
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Web type check and build
+      - name: Type check and build
         working-directory: web
         run: |
           npm ci --no-audit --no-fund
           npm run check
           npm run build
 
-  # A generated 300,000-photo index through the real router: catches a query that turns
-  # into a full scan before it reaches a real archive. Runs alongside the tests; timing
-  # on shared runners is noisy, so it does not hold back the image.
-  large-library:
-    name: Large library (300,000 photos)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install exiftool, nasm, libheif and LibRaw
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libimage-exiftool-perl nasm pkg-config libclang-dev \
-            libheif-dev libheif-plugin-libde265 libraw-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: server
-          key: release
-      - name: 300,000-photo library
-        working-directory: server
-        run: cargo test --release --locked --test large_library -- --ignored --nocapture
-
   ml-test:
     name: ML service tests
+    needs: changes
+    if: needs.changes.outputs.ml == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,13 +176,40 @@ jobs:
           pip install -r requirements.txt pytest
           python -m pytest -q tests
 
+  # Major test, releases only: a generated 300,000-photo index through the real router.
+  # Catches a query that turns into a full scan before it reaches a real archive.
+  large-library:
+    name: Large library (300,000 photos)
+    needs: changes
+    if: needs.changes.outputs.major == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/native-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: 300,000-photo library
+        working-directory: server
+        run: cargo test --release --locked --test large_library -- --ignored --nocapture
+
   image:
     name: Build and publish image
-    needs: test
+    needs: [changes, server, web, large-library]
+    # Skipped test jobs are fine (nothing changed there); failed ones are not.
+    if: >-
+      always() && needs.changes.result == 'success' && needs.changes.outputs.image == 'true' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env:
+      CACHE_REF: ghcr.io/${{ github.repository_owner }}/hyperfocal:buildcache
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -122,23 +241,31 @@ jobs:
           # layer cache, so apt installs the current Debian packages.
           pull: true
           no-cache: ${{ github.event_name == 'schedule' }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # The layer cache lives in GHCR, not the Actions cache: exporting it there took
+          # over 3 minutes a build, and its gigabytes pushed the Rust cache out of the
+          # 10 GB limit. Layers the image already pushed are not uploaded twice.
+          cache-from: type=registry,ref=${{ env.CACHE_REF }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', env.CACHE_REF) || '' }}
 
   # The companion container for People & pets: CPU (latest) and NVIDIA (cuda) variants.
   # The build downloads the models (checked against their sha256) and loads every one of
   # them once, so a broken model fails here, not on your server.
   ml-image:
     name: Build and publish ML image (${{ matrix.variant }})
-    needs: ml-test
+    needs: [changes, ml-test]
+    if: >-
+      always() && needs.changes.result == 'success' && needs.changes.outputs.ml_variants != '[]' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        variant: [cpu, cuda]
+        variant: ${{ fromJSON(needs.changes.outputs.ml_variants) }}
     permissions:
       contents: read
       packages: write
+    env:
+      CACHE_REF: ghcr.io/${{ github.repository_owner }}/hyperfocal-ml:buildcache-${{ matrix.variant }}
     steps:
       - uses: actions/checkout@v4
       - name: Free disk space (the CUDA libraries are large)
@@ -177,5 +304,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           pull: true
           no-cache: ${{ github.event_name == 'schedule' }}
-          cache-from: type=gha,scope=ml-${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=ml-${{ matrix.variant }}
+          cache-from: type=registry,ref=${{ env.CACHE_REF }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', env.CACHE_REF) || '' }}

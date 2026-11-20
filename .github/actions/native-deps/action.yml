@@ -1,0 +1,19 @@
+name: Native build dependencies
+description: >
+  exiftool, nasm, pkg-config, libclang (bindgen), and the libheif and LibRaw headers.
+  The packages are cached between runs, so a slow Ubuntu mirror (one run spent 13 minutes
+  downloading them) no longer holds up the tests.
+
+runs:
+  using: composite
+  steps:
+    - uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+      with:
+        packages: libimage-exiftool-perl nasm pkg-config libclang-dev libheif-dev libheif-plugin-libde265 libraw-dev
+        # Bump to refresh the cached packages.
+        version: 1
+        execute_install_scripts: true
+    # A restored cache skips dpkg's triggers: refresh the linker cache for LibRaw and libheif.
+    - name: Refresh the linker cache
+      shell: bash
+      run: sudo ldconfig
