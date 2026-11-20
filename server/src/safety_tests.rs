@@ -318,6 +318,7 @@ async fn same_name_photos_stay_apart() {
     assert!(r.failed.is_empty(), "{:?}", r.failed);
     assert!(!dir.join("IMG_0003.xmp").exists(), "the TIFF took over the rejected RAW's sidecar name");
     assert_eq!(sidecar(&lib, "2024/Edit/IMG_0003.TIF.xmp").rating, Some(4));
+    assert_eq!(rating(tif), 4, "a rating change to an existing sidecar is indexed in place");
 
     // 6. Restoring the RAW: no clash, and its sidecar is still Excire's, byte for byte.
     let r = ops::restore(&state, &[cr3]).await.unwrap();

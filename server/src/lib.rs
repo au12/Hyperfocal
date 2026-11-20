@@ -148,7 +148,6 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         events,
         exiftool: tokio::sync::Mutex::new(exiftool),
         write_lock: tokio::sync::Mutex::new(()),
-        rescans: Mutex::new(Default::default()),
         progress: RwLock::new(Progress { phase: "starting".into(), library_ok: true, ..Default::default() }),
         scan_tx: Mutex::new(None),
         busy: Mutex::new(HashSet::new()),

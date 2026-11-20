@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::params;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -104,9 +104,9 @@ pub struct Patch {
 }
 
 impl Patch {
-    /// Only the culling fields: rating, label and pick. The index takes these straight
-    /// from the change, so the folder rescan can follow after the reply instead of
-    /// holding it up (and the next keystroke with it).
+    /// Only the culling fields: rating, label and pick. For these the index rows of an
+    /// existing sidecar are updated in place (`write_one`) instead of rescanning the
+    /// whole folder, which made every keystroke wait for a full folder listing.
     fn cull_only(&self) -> bool {
         // Destructured in full so a new field has to be considered here.
         let Patch {
@@ -123,29 +123,6 @@ impl Patch {
             && country_code.is_none() && sublocation.is_none()
             && orientation.is_none() && rotate.is_none() && people.is_none()
     }
-}
-
-/// Rescan `folder` shortly, then announce `ids`. Edits in quick succession (culling with
-/// the keyboard) share one rescan; one still waiting just takes the new ids along.
-fn rescan_later(state: &Arc<AppState>, folder: i64, ids: Vec<i64>) {
-    {
-        let mut pending = state.rescans.lock();
-        if let Some(v) = pending.get_mut(&folder) {
-            v.extend(ids);
-            return;
-        }
-        pending.insert(folder, ids);
-    }
-    let st = state.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let ids = st.rescans.lock().remove(&folder).unwrap_or_default();
-        let scan_st = st.clone();
-        let _ = tokio::task::spawn_blocking(move || scan::scan_folder(&scan_st, folder, false)).await;
-        if !ids.is_empty() {
-            st.emit(Event::Photos { ids });
-        }
-    });
 }
 
 fn clean_opt(v: &Option<String>) -> Option<String> {
@@ -601,7 +578,7 @@ async fn write_items(state: &Arc<AppState>, mut items: Vec<Item>, batch: &str, u
             Err(anyhow!("Hyperfocal is in read-only mode"))
         } else {
             let _w = state.write_lock.lock().await;
-            write_one(state, item.id, &item.patch, batch, undo_of, &summary).await
+            write_one(state, item.id, &item.patch, batch, undo_of, &summary, false).await.map(|(fid, _)| fid)
         };
         let err = match res {
             Ok(fid) => {
@@ -673,7 +650,7 @@ pub async fn write_lazy(state: &Arc<AppState>, label: String, mut ids: Vec<i64>,
             match make(id) {
                 Some(patch) => {
                     let summary = summarize(&patch);
-                    write_one(state, id, &patch, &batch, None, &summary).await.map(Some)
+                    write_one(state, id, &patch, &batch, None, &summary, false).await.map(|(fid, _)| Some(fid))
                 }
                 None => Ok(None),
             }
@@ -776,36 +753,35 @@ async fn apply_meta_in(state: &Arc<AppState>, ids: &[i64], patch: &Patch, undo_o
     let summary = if undo_of.is_some() { format!("undo: {}", summarize(patch)) } else { summarize(patch) };
     let mut ok = Vec::new();
     let mut failed = Vec::new();
-    let mut folders: std::collections::BTreeMap<i64, Vec<i64>> = Default::default();
+    let mut folders: BTreeSet<i64> = BTreeSet::new();
+    let quick = patch.cull_only();
     for &id in ids {
-        match write_one(state, id, patch, &batch, undo_of, &summary).await {
-            Ok(fid) => {
+        match write_one(state, id, patch, &batch, undo_of, &summary, quick).await {
+            Ok((fid, indexed)) => {
                 ok.push(id);
-                folders.entry(fid).or_default().push(id);
+                if !indexed {
+                    folders.insert(fid);
+                }
             }
             Err(e) => failed.push((id, format!("{e:#}"))),
         }
     }
-    // Re-read the folders that changed so the index matches the files. Rating, label and
-    // pick are already in the index (`write_one`), so for those the rescan runs after the
-    // reply; a full folder listing per keystroke is what made culling feel slow.
-    if patch.cull_only() {
-        for (fid, fids) in folders {
-            rescan_later(state, fid, fids);
-        }
-    } else {
-        for &fid in folders.keys() {
-            let st = state.clone();
-            let _ = tokio::task::spawn_blocking(move || scan::scan_folder(&st, fid, false)).await;
-        }
-        if !ok.is_empty() {
-            state.emit(Event::Photos { ids: ok.clone() });
-        }
+    // Re-read the folders that changed so the index matches the files (rating, label
+    // and pick changes to an existing sidecar are already in it).
+    for fid in folders {
+        let st = state.clone();
+        let _ = tokio::task::spawn_blocking(move || scan::scan_folder(&st, fid, false)).await;
+    }
+    if !ok.is_empty() {
+        state.emit(Event::Photos { ids: ok.clone() });
     }
     Ok(BatchResult { batch, ok, failed, job: None })
 }
 
-async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_of: Option<&str>, summary: &str) -> Result<i64> {
+/// Writes one photo's sidecar. Returns its folder and whether the index is already up
+/// to date (`quick`: a culling-only change to an existing sidecar, indexed in place);
+/// otherwise the caller rescans the folder.
+async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_of: Option<&str>, summary: &str, quick: bool) -> Result<(i64, bool)> {
     let loc = {
         let c = state.db.get()?;
         repo::load(&c, id)?.ok_or_else(|| anyhow!("photo {id} not found"))?
@@ -817,8 +793,10 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
     // A darktable/digiKam-style sidecar the rescan has not renamed yet gets the
     // standard name first, so the edit lands in it (and Excire sees it).
     let ids = std::collections::HashMap::from([(loc.rec.name.as_str(), loc.rec.id)]);
+    let mut renamed = false;
     for (from, to) in scan::standardize_sidecars(state, &loc.folder_path, &dir, &Plan::new(&listing), &ids, Some(&loc.rec.name)) {
         listing.rename(&from, &to);
+        renamed = true;
     }
     let sidecar_name = Plan::new(&listing).write_sidecar(&loc.rec.name)?;
     let sidecar = dir.join(&sidecar_name);
@@ -827,7 +805,7 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
     let seed = if existed { None } else { embedded.as_ref() };
     let (mut args, after) = build_args(&cur, patch, seed);
     if args.is_empty() {
-        return Ok(loc.rec.folder_id);
+        return Ok((loc.rec.folder_id, false));
     }
     // Back up the existing sidecar before touching it.
     let mut backup: Option<String> = None;
@@ -847,7 +825,8 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
         bail!("{}", out.error().unwrap_or_else(|| format!("exiftool did not write {sidecar_name}")));
     }
     // Verify what landed in the sidecar.
-    let check = meta::read_sidecar(&sidecar).unwrap_or_default();
+    let landed = meta::read_sidecar(&sidecar);
+    let check = landed.clone().unwrap_or_default();
     if patch.rating.is_some() && check.rating.unwrap_or(0) != after.rating {
         tracing::warn!("rating verification mismatch for {}", sidecar.display());
     }
@@ -863,17 +842,6 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
             "before": snapshot(&cur), "after": snapshot(&after),
         }),
     )?;
-    // The culling fields go straight into the index, so the list is right before the
-    // folder rescan has run (it re-reads the sidecar and confirms them).
-    {
-        let c = state.db.get()?;
-        if let Err(e) = c.execute(
-            "UPDATE photos SET rating = ?1, label = ?2, lcolor = ?3, pick = ?4 WHERE id = ?5",
-            params![after.rating, after.label, meta::lcolor(after.label.as_deref()), after.pick, id],
-        ) {
-            tracing::warn!("updating the index for photo {id}: {e}");
-        }
-    }
     // A person's (or pet's) keyword taken off by hand: that face is not them after all.
     if undo_of.is_none() && patch.people.is_none() {
         let gone: Vec<String> = cur
@@ -886,7 +854,68 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
             state.people.unname(id, gone);
         }
     }
-    Ok(loc.rec.folder_id)
+    let indexed = quick && existed && !renamed && landed.as_ref().is_some_and(|x| index_cull(state, &loc, &sidecar_name, &sidecar, embedded.as_ref(), x));
+    Ok((loc.rec.folder_id, indexed))
+}
+
+/// Puts a culling change into the index without rescanning the folder: every row of the
+/// folder that reads this sidecar (the photo, and a JPEG paired with its RAW) gets the
+/// rating, label and pick a rescan would compute (its own embedded XMP, then the sidecar)
+/// and the sidecar's new modification time, so the next rescan finds it unchanged. False
+/// when that cannot be done exactly (the caller then rescans the folder).
+fn index_cull(state: &AppState, loc: &Located, name: &str, path: &Path, embedded: Option<&Xmp>, sidecar: &Xmp) -> bool {
+    let Ok(md) = std::fs::metadata(path) else { return false };
+    let values = |emb: Option<&Xmp>| {
+        let (mut rating, mut label, mut pick) = (0, None::<String>, 0);
+        for x in [emb, Some(sidecar)].into_iter().flatten() {
+            if let Some(v) = x.rating {
+                rating = v;
+            }
+            if x.label.is_some() {
+                label = x.label.clone();
+            }
+            if let Some(v) = x.pick {
+                pick = v;
+            }
+        }
+        (rating, label, pick)
+    };
+    let run = || -> Result<bool> {
+        let mut c = state.db.get()?;
+        let rows: Vec<(i64, String, i32)> = {
+            let mut st = c.prepare("SELECT id, name, kind FROM photos WHERE folder_id = ?1 AND sidecar = ?2")?;
+            st.query_map(params![loc.rec.folder_id, name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?
+        };
+        if !rows.iter().any(|r| r.0 == loc.rec.id) {
+            return Ok(false);
+        }
+        let mut updates = Vec::with_capacity(rows.len());
+        for (rid, rname, kind) in rows {
+            let v = if rid == loc.rec.id {
+                values(embedded)
+            } else {
+                let p = scan::photo_path(state, &loc.folder_path, &rname);
+                match crate::images::raw::catch(|| meta::read_file_meta(&p, Kind::from_i32(kind))) {
+                    Ok(fm) => values(fm.xmp.as_ref()),
+                    Err(_) => return Ok(false),
+                }
+            };
+            updates.push((rid, v));
+        }
+        let tx = c.transaction()?;
+        for (rid, (rating, label, pick)) in &updates {
+            tx.execute(
+                "UPDATE photos SET rating = ?1, label = ?2, lcolor = ?3, pick = ?4, sidecar_mtime = ?5 WHERE id = ?6",
+                params![rating, label, meta::lcolor(label.as_deref()), pick, scan::mtime_ms(&md), rid],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    };
+    run().unwrap_or_else(|e| {
+        tracing::warn!("indexing a rating change for photo {}: {e:#}", loc.rec.id);
+        false
+    })
 }
 
 /// Move photos (with their companions) into the reject folder next to them.
