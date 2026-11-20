@@ -310,9 +310,17 @@ class Store {
   private listAbort: AbortController | null = null;
   index = new Map<number, number>();
 
+  /** Explicitly selected photos. Empty means the photo at the cursor is the selection,
+   * as in a file manager where the focused item is the selected one. */
   selected = new SvelteSet<number>();
   cursor = $state(0);
-  anchor = 0;
+  /** Shift ranges: the photo a range starts from, the photo it last ended on, and what
+   * stays selected around the range (the selection when the anchor was set). Ids, so they
+   * survive reloads. A range re-anchors at the focus whenever the focus moved some other
+   * way since the last selection change. */
+  private anchorId: number | null = null;
+  private headId: number | null = null;
+  private rangeBase = new Set<number>();
 
   // Single view
   loupe = $state(false);
@@ -631,7 +639,7 @@ class Store {
     else if (f && f.count > 0 && fromUser) this.recursive = false;
     this.loupe = false;
     this.compare = null;
-    this.selected.clear();
+    this.clearSelection();
     await this.reload();
     this.cursor = 0;
     this.writeHash();
@@ -650,7 +658,7 @@ class Store {
     this.recursive = true;
     this.loupe = false;
     this.compare = null;
-    this.selected.clear();
+    this.clearSelection();
     try {
       localStorage.setItem('hf.folder', String(root));
     } catch {
@@ -691,7 +699,7 @@ class Store {
     this.recursive = true;
     this.loupe = false;
     this.compare = null;
-    this.selected.clear();
+    this.clearSelection();
     await this.reload();
     this.cursor = 0;
     this.writeHash();
@@ -722,7 +730,7 @@ class Store {
     this.recursive = sp.rec ?? true;
     this.loupe = false;
     this.compare = null;
-    this.selected.clear();
+    this.clearSelection();
     await this.reload();
     this.cursor = 0;
     this.writeHash();
@@ -900,61 +908,127 @@ class Store {
     return id != null ? [id] : [];
   };
 
-  select = (i: number, mode: 'single' | 'toggle' | 'range') => {
-    const id = this.list.id[i];
-    if (id == null) return;
-    if (mode === 'single') {
-      this.selected.clear();
-      this.selected.add(id);
-      this.anchor = i;
-    } else if (mode === 'toggle') {
-      if (this.selected.has(id)) this.selected.delete(id);
-      else this.selected.add(id);
-      this.anchor = i;
-    } else {
-      const [a, b] = this.anchor < i ? [this.anchor, i] : [i, this.anchor];
-      for (let k = a; k <= b; k++) this.selected.add(this.list.id[k]);
-    }
+  /** The photo the keyboard and the info panel act on: the single view's photo, or the
+   * grid cursor. */
+  private focusIndex = () => (this.loupe ? this.current : this.cursor);
+
+  private setAnchor(i: number) {
+    const id = this.list.id[i] ?? null;
+    this.anchorId = this.headId = id;
+    this.rangeBase = new Set(this.selected);
+    if (id != null) this.rangeBase.delete(id);
+  }
+
+  /** Replaces the selection, touching only the photos that change. */
+  private setSelection(next: Set<number>) {
+    for (const id of [...this.selected]) if (!next.has(id)) this.selected.delete(id);
+    for (const id of next) if (!this.selected.has(id)) this.selected.add(id);
+  }
+
+  /** A selection of just the photo at the cursor is the same as no selection (the cursor
+   * photo is the target either way); keeping it empty avoids a lone check mark. */
+  private normalize() {
+    if (this.selected.size === 1 && this.selected.has(this.list.id[this.cursor])) this.selected.clear();
+  }
+
+  /** Plain click: that photo alone. */
+  clickSelect = (i: number) => {
+    if (this.list.id[i] == null) return;
+    this.selected.clear();
     this.cursor = i;
+    this.setAnchor(i);
   };
 
-  /** Shift+arrow extension: the selection when it began, its fixed end, and where it
-   * last moved to. A new extension starts whenever the cursor has moved some other way
-   * or the selection was cleared. */
-  private ext: { list: PhotoList; anchor: number; head: number; base: Set<number> } | null = null;
+  /** Adds or removes one photo and puts the cursor (and the range anchor) on it.
+   * `withCursor` (Ctrl/Cmd-click): when nothing is selected yet, the photo at the cursor
+   * counts as selected, so click A then Ctrl-click B gives A and B. */
+  select = (i: number, mode: 'toggle', withCursor = false) => {
+    void mode;
+    const id = this.list.id[i];
+    if (id == null) return;
+    if (withCursor && this.selected.size === 0 && !this.loupe) {
+      const c = this.list.id[this.cursor];
+      if (c != null && c !== id) this.selected.add(c);
+    }
+    if (this.selected.has(id)) this.selected.delete(id);
+    else this.selected.add(id);
+    this.cursor = i;
+    this.setAnchor(i);
+  };
 
-  /** Moves the cursor to `to`, selecting every photo between it and where the extension
-   * began (that photo included), on top of what was selected before it began. Moving
-   * back towards the start deselects again what the extension added. */
+  /** Shift-click and Shift+arrows: selects from the anchor to `to` (both included) on
+   * top of what was selected besides the range, and moves the focus there. Going back
+   * towards the anchor shrinks the range again. */
   extendTo = (to: number) => {
     const L = this.list;
     if (to < 0 || to >= L.id.length) return;
-    let e = this.ext;
-    if (!e || e.list !== L || e.head !== this.cursor || !this.selected.has(L.id[e.head])) {
-      e = { list: L, anchor: this.cursor, head: this.cursor, base: new Set(this.selected) };
-      this.ext = e;
+    const f = this.focusIndex();
+    if (this.anchorId == null || this.headId !== L.id[f] || !this.index.has(this.anchorId)) this.setAnchor(f);
+    const a = this.index.get(this.anchorId!)!;
+    const [lo, hi] = a < to ? [a, to] : [to, a];
+    const next = new Set(this.rangeBase);
+    for (let k = lo; k <= hi; k++) next.add(L.id[k]);
+    this.setSelection(next);
+    this.headId = L.id[to];
+    if (this.loupe && to !== this.current) {
+      this.current = to;
+      this.loadDetail();
+      this.writeHash();
     }
-    const [a0, b0] = e.anchor < e.head ? [e.anchor, e.head] : [e.head, e.anchor];
-    const [a1, b1] = e.anchor < to ? [e.anchor, to] : [to, e.anchor];
-    for (let k = a0; k <= b0; k++) {
-      const id = L.id[k];
-      if ((k < a1 || k > b1) && !e.base.has(id)) this.selected.delete(id);
-    }
-    for (let k = a1; k <= b1; k++) this.selected.add(L.id[k]);
-    e.head = to;
-    this.anchor = e.anchor;
     this.cursor = to;
+    this.normalize();
+  };
+
+  /** The selection a Ctrl/Shift rubber band starts from (the cursor photo when nothing
+   * is selected). */
+  marqueeBase = (): Set<number> => {
+    if (this.selected.size) return new Set(this.selected);
+    const c = this.list.id[this.cursor];
+    return new Set(c != null ? [c] : []);
+  };
+
+  /** Rubber-band selection: `hits` are the indices inside the band. 'replace' selects just
+   * those, 'add' adds them to `base`, 'toggle' flips them against `base`. */
+  marquee = (hits: number[], mode: 'replace' | 'add' | 'toggle', base: Set<number>) => {
+    const next = mode === 'replace' ? new Set<number>() : new Set(base);
+    for (const i of hits) {
+      const id = this.list.id[i];
+      if (mode === 'toggle' && base.has(id)) next.delete(id);
+      else next.add(id);
+    }
+    this.setSelection(next);
+  };
+
+  /** Ends a rubber band: the cursor goes to `i` (a photo near where the band ended). */
+  marqueeEnd = (i: number | null) => {
+    if (i != null && this.list.id[i] != null) this.cursor = i;
+    this.normalize();
+    this.setAnchor(this.cursor);
+  };
+
+  /** Moves the grid cursor without Shift/Ctrl: the selection collapses to that photo. */
+  moveCursor = (i: number) => {
+    if (i < 0 || i >= this.list.id.length) return;
+    if (this.selected.size) this.clearSelection();
+    this.cursor = i;
   };
 
   selectAll = () => {
     for (const id of this.list.id) this.selected.add(id);
+    this.anchorId = this.headId = this.list.id[this.focusIndex()] ?? null;
+    this.rangeBase = new Set();
   };
-  clearSelection = () => this.selected.clear();
+  clearSelection = () => {
+    this.selected.clear();
+    this.rangeBase = new Set();
+    this.headId = null;
+  };
   invertSelection = () => {
     for (const id of this.list.id) {
       if (this.selected.has(id)) this.selected.delete(id);
       else this.selected.add(id);
     }
+    this.headId = null;
   };
 
   // ------------------------------------------------------------ single view
@@ -1057,7 +1131,9 @@ class Store {
     this.compareActive = Math.min(this.compareActive, next.length - 1);
   }
 
-  go = (delta: number) => {
+  /** Next/previous photo. In the grid, as in any file manager, a plain move collapses the
+   * selection to the photo moved to; `keep` (select-and-next) leaves it alone. */
+  go = (delta: number, keep = false) => {
     const n = this.list.id.length;
     if (!n) return;
     const i = Math.max(0, Math.min(n - 1, (this.loupe ? this.current : this.cursor) + delta));
@@ -1069,6 +1145,7 @@ class Store {
         this.writeHash();
       }
     } else {
+      if (!keep && !this.compare && this.selected.size) this.clearSelection();
       this.cursor = i;
     }
   };
@@ -1244,13 +1321,15 @@ class Store {
         const idxs = L.id.map((_, i) => i).filter(keep);
         for (const c of cols) (next as any)[c] = idxs.map((i) => (L as any)[c][i]);
         const oldCurrent = this.current;
+        const oldCursor = this.cursor;
         this.list = next;
         const idx = new Map<number, number>();
         next.id.forEach((id, i) => idx.set(id, i));
         this.index = idx;
         const removedBefore = L.id.slice(0, oldCurrent).filter((id) => r.ok.includes(id)).length;
         this.current = Math.min(Math.max(0, oldCurrent - removedBefore), Math.max(0, next.id.length - 1));
-        this.cursor = Math.min(this.cursor, Math.max(0, next.id.length - 1));
+        const cursorBefore = L.id.slice(0, oldCursor).filter((id) => r.ok.includes(id)).length;
+        this.cursor = Math.min(Math.max(0, oldCursor - cursorBefore), Math.max(0, next.id.length - 1));
         if (!this.settings.advanceAfterReject && this.current > 0 && ids.length === 1) this.current--;
         if (next.id.length === 0) this.loupe = false;
         this.pruneCompare();

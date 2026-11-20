@@ -63,6 +63,7 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - The next photos are prefetched.
   - High-priority requests jump ahead of background work.
   - Developed RAW data stays in RAM, so switching between view tools takes 30–70 ms.
+- **Selection like a file manager.** Click selects one photo, `Ctrl`/`⌘`-click adds or removes one, `Shift`-click selects a range (repeat it to grow or shrink the range), and dragging draws a selection rectangle (with `Shift` to add, `Ctrl`/`⌘` to toggle; the grid scrolls at the edges). `Shift` with the arrows, `Home`/`End` or `PgUp`/`PgDn` extends from the keyboard. A plain arrow key moves on to a single photo, as in Finder, Explorer and Lightroom.
 - **Keyboard first.** You can pick FastRawViewer's default shortcuts or a Lightroom / Excire preset. Plain `0–5` and `6–9` work in both. Any shortcut can be changed in the shortcuts dialog (`F1`), and reset to the defaults.
 
 ### Library management (Excire-style)
