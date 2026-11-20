@@ -901,6 +901,13 @@ struct ImgQuery {
 }
 
 async fn thumb(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
+    // Made already (nearly always): straight from the cache, without an index lookup.
+    // The version is part of the file name, so this is always the image the URL names.
+    if let Some(path) = q.v.as_deref().and_then(|v| state.images.thumb_path_for(id, v))
+        && let Ok(bytes) = tokio::fs::read(path).await
+    {
+        return Ok(image_response(bytes, "image/jpeg", true));
+    }
     let loc = load(&state, id).await?;
     let (path, draft) = state.images.thumb(&state, &loc).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
     let bytes = tokio::fs::read(path).await.map_err(|e| anyhow::anyhow!(e))?;

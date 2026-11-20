@@ -4,6 +4,7 @@
   import { urls } from '../lib/api';
   import { aspectOf, justify, rowAt } from '../lib/layout';
   import { gridCtl } from '../lib/ctl';
+  import { thumb, thumbs } from '../lib/thumbs';
   import Icon from './Icon.svelte';
 
   let scroller: HTMLDivElement | undefined = $state();
@@ -27,10 +28,11 @@
   const pad = $derived(store.mobile ? 4 : PAD);
   const layout = $derived(justify(aspects, Math.max(0, width - pad * 2), target, gap));
 
+  const OVER = 1.2;
   const visible = $derived.by(() => {
     const rows = layout.rows;
     if (!rows.length) return [];
-    const over = viewH * 1.2;
+    const over = viewH * OVER;
     const a = rowAt(rows, Math.max(0, scrollTop - pad - over));
     const out = [];
     for (let r = a; r < rows.length; r++) {
@@ -40,7 +42,61 @@
     return out;
   });
 
+  // ------------------------------------------------------------ thumbnail order
+  // Thumbnails load nearest the viewport first: the rows on screen (from the middle
+  // out), then the ones scrolling into view, then the ones behind. While scrolling
+  // very fast nothing new starts; once it settles, the next screens ahead are fetched.
+
+  let dir = 1;
+  let lastTop = 0;
+  let lastT = 0;
+
+  function rank(i: number): number {
+    const r = layout.rows[layout.rowOf[i]];
+    if (!r || !viewH) return Infinity;
+    const top = r.top + pad;
+    const bot = top + r.height;
+    const vt = scrollTop;
+    const vb = scrollTop + viewH;
+    if (bot > vt && top < vb) return Math.abs((top + bot) / 2 - (vt + vb) / 2) / viewH / 2;
+    const below = top >= vb;
+    const gap = below ? top - vb : vt - bot;
+    return 1 + (gap / viewH) * (below === dir > 0 ? 1 : 2.5);
+  }
+
+  function onScrollSpeed(top: number) {
+    const now = performance.now();
+    const dt = now - lastT;
+    if (top !== lastTop) dir = top > lastTop ? 1 : -1;
+    // Faster than about three screens a second (a fling, the scroll bar dragged).
+    if (dt > 0 && dt < 200 && viewH && Math.abs(top - lastTop) / dt > (3 * viewH) / 1000) thumbs.hold(60);
+    lastTop = top;
+    lastT = now;
+  }
+
+  // The next two screens ahead of the rendered rows, once scrolling settles.
+  $effect(() => {
+    const rows = layout.rows;
+    const st = scrollTop;
+    const h = viewH;
+    const d = dir;
+    const L = store.list;
+    void store.rev;
+    if (!rows.length || !h) return;
+    const t = setTimeout(() => {
+      const out: { url: string; i: number }[] = [];
+      const from = d > 0 ? st - pad + h * (1 + OVER) : st - pad - h * (OVER + 2);
+      const to = from + h * 2;
+      for (let r = rowAt(rows, Math.max(0, from)); r < rows.length && rows[r].top <= to; r++) {
+        for (let i = rows[r].start; i < rows[r].end; i++) out.push({ url: urls.thumb(L.id[i], L.v[i], store.thumbRev[L.id[i]]), i });
+      }
+      thumbs.ahead(out);
+    }, 150);
+    return () => clearTimeout(t);
+  });
+
   onMount(() => {
+    thumbs.rank = rank;
     const ro = new ResizeObserver(() => {
       if (!scroller) return;
       width = scroller.clientWidth;
@@ -97,7 +153,11 @@
       if (to != null) store.moveCursor(to);
     };
     gridCtl.reveal = reveal;
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      thumbs.ahead([]);
+      if (thumbs.rank === rank) thumbs.rank = (i) => i;
+    };
   });
 
   function reveal(i: number) {
@@ -335,6 +395,7 @@
   bind:this={scroller}
   onscroll={() => {
     scrollTop = scroller?.scrollTop ?? 0;
+    onScrollSpeed(scrollTop);
     updateBand();
   }}
   onpointerdown={onGridDown}
@@ -384,7 +445,7 @@
           aria-selected={store.selected.has(id) || (store.selected.size === 0 && i === store.cursor)}
           title={store.list.n[i]}
         >
-          <img src={urls.thumb(id, store.list.v[i], store.thumbRev[id])} alt="" loading="lazy" decoding="async" draggable="false" />
+          <img use:thumb={{ url: urls.thumb(id, store.list.v[i], store.thumbRev[id]), i }} alt="" decoding="async" draggable="false" />
           {#if store.list.lc[i] && _r >= 0}<span class="lc label-{store.list.lc[i]}"></span>{/if}
           {#if store.list.p[i] === 1}<span class="flag"><Icon name="flag" size={14} fill /></span>{/if}
           {#if store.selected.has(id)}<span class="check"><Icon name="check" size={14} /></span>{/if}
