@@ -24,6 +24,7 @@ import {
 import { keysFor, prettyKey, type Action, type KeyOverrides, type Preset } from './keys';
 import { setOffline } from './offline';
 import { people } from './people.svelte';
+import { dupes } from './dupes.svelte';
 
 export const LABELS: { color: LabelColor; name: string; key: string }[] = [
   { color: 'red', name: 'Red', key: '6' },
@@ -56,6 +57,8 @@ export interface Filters {
   dateTo: string;
   /** People and pets (subject ids): photos with all of them. */
   subj: number[];
+  /** Only these photos (a group of the Duplicates report). */
+  ids: number[];
 }
 
 export const DEFAULT_FILTERS: Filters = {
@@ -75,6 +78,7 @@ export const DEFAULT_FILTERS: Filters = {
   dateFrom: '',
   dateTo: '',
   subj: [],
+  ids: [],
 };
 
 /** The filters that narrow what is shown (sort order and "show rejected" aside). */
@@ -162,6 +166,7 @@ export function viewParams(v: {
     lens: f.lens || undefined,
     kw: f.kw || undefined,
     subj: f.subj?.length ? f.subj.join(',') : undefined,
+    ids: f.ids?.length ? f.ids.join(',') : undefined,
     nodate: d?.nodate ? 1 : undefined,
     from,
     to,
@@ -352,7 +357,9 @@ class Store {
 
   settings = $state<Settings>(migrateSettings(loadLocal('hf.settings', DEFAULT_SETTINGS)));
   toasts = $state<Toast[]>([]);
-  dialog = $state<null | 'settings' | 'help' | 'journal' | 'location' | 'keywords' | 'integrity' | 'geotag'>(null);
+  dialog = $state<null | 'settings' | 'help' | 'journal' | 'location' | 'keywords' | 'integrity' | 'geotag' | 'duplicates'>(null);
+  /** Bumped when new visual fingerprints arrive (the Duplicates report refreshes its counts). */
+  dupesRev = $state(0);
   /** Background changes, by id (running and recently finished). */
   jobs = $state<Record<string, JobStatus>>({});
   private jobsSeen = new Set<string>();
@@ -511,6 +518,8 @@ class Store {
         this.integrity = { changed: e.changed ?? 0, missing: e.missing ?? 0, unreadable: e.unreadable ?? 0 };
       } else if (e.type === 'people' || e.type === 'people_status') {
         people.onEvent(e);
+      } else if (e.type === 'dupes') {
+        this.dupesRev++;
       }
     };
     es.onerror = () => {
@@ -714,6 +723,26 @@ class Store {
       this.filters.kw = kw;
       this.persist();
     });
+  };
+
+  /** Photos by id (a group of the Duplicates report), as a passing collection, and
+   * up to four of them side by side, the first in the first pane. */
+  showGroup = async (ids: number[], name: string, compare = true) => {
+    if (this.view !== 'grid') this.view = 'grid';
+    await this.applyCollection({ id: 'dupes', name, spec: { folder: '', rec: true, filters: { ids: [...ids] } } });
+    if (compare) this.compareIds(ids);
+  };
+
+  /** Compares these photos of the list (the first four), in this order. */
+  compareIds = (ids: number[]) => {
+    const shown = ids.filter((id) => this.index.has(id)).slice(0, 4);
+    if (shown.length === 1) this.openLoupe(this.index.get(shown[0])!);
+    if (shown.length < 2) return;
+    this.compare = shown;
+    this.compareActive = 0;
+    this.loupe = false;
+    this.cursor = this.index.get(shown[0]) ?? this.cursor;
+    this.loadDetail();
   };
 
   params = (): Record<string, unknown> =>
@@ -1391,7 +1420,9 @@ class Store {
     this.patch(ids, { rotate: deg }).then(() => this.reload(true));
   };
 
-  reject = async (idsIn?: number[]) => {
+  /** Moves photos to the reject folder (or back, for photos already in one); returns
+   * what moved, if anything was tried. */
+  reject = async (idsIn?: number[]): Promise<BatchResult | undefined> => {
     const ids = idsIn ?? this.targets();
     if (!ids.length || this.readonlyGuard()) return;
     const inRejectFolder = ids.every((id) => this.folders.get(this.list.f[this.index.get(id) ?? -1])?.isReject);
@@ -1400,6 +1431,7 @@ class Store {
     try {
       const r = await api.reject(ids);
       this.afterMove(r, ids, `Moved to ${this.status?.reject_dir ?? '_Rejected'}`);
+      return r;
     } catch (e) {
       this.toast(`Not moved: ${(e as Error).message}`, 'error', undefined, 9000);
     } finally {
@@ -1407,13 +1439,14 @@ class Store {
     }
   };
 
-  restore = async (idsIn?: number[]) => {
+  restore = async (idsIn?: number[]): Promise<BatchResult | undefined> => {
     const ids = idsIn ?? this.targets();
     if (!ids.length || this.readonlyGuard()) return;
     this.busy++;
     try {
       const r = await api.restore(ids);
       this.afterMove(r, ids, 'Restored');
+      return r;
     } catch (e) {
       this.toast(`Not moved: ${(e as Error).message}`, 'error', undefined, 9000);
     } finally {
@@ -1428,6 +1461,8 @@ class Store {
     if (r.ok.length) {
       this.toast(`${verb}: ${r.ok.length} photo${r.ok.length > 1 ? 's' : ''}`, 'ok', { label: 'Undo', run: () => this.undo(r.batch) });
       for (const id of r.ok) this.selected.delete(id);
+      // A photo rejected anywhere leaves its group in the Duplicates report.
+      dupes.drop(r.ok);
       // Drop moved photos from the current list immediately (they changed folder).
       const keep = (i: number) => !r.ok.includes(this.list.id[i]);
       const stay = this.filters.showRejected && this.recursive;

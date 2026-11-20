@@ -66,6 +66,9 @@ pub struct Config {
     pub ml_concurrency: usize,
     /// Write confirmed names to the sidecars (keywords, face regions, person shown).
     pub people_xmp: bool,
+    /// Duplicates: a perceptual hash of every photo's thumbnail, made in the background,
+    /// for near-duplicates and series (exact copies need only the integrity hashes).
+    pub dupes: bool,
 }
 
 fn env_str(key: &str) -> Option<String> {
@@ -121,6 +124,7 @@ impl Config {
             ml_size: 2048,
             ml_concurrency: 2,
             people_xmp: true,
+            dupes: false,
         }
     }
 
@@ -167,6 +171,7 @@ impl Config {
             ml_size: env_num("HYPERFOCAL_ML_SIZE", 2048usize).clamp(640, 4096),
             ml_concurrency: env_num("HYPERFOCAL_ML_CONCURRENCY", 2usize).clamp(1, 16),
             people_xmp: env_bool("HYPERFOCAL_PEOPLE_XMP", true),
+            dupes: env_bool("HYPERFOCAL_DUPES", true),
         }
     }
 }

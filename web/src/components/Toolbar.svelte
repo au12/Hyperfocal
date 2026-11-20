@@ -28,7 +28,7 @@
   }
 
   function clearFilters() {
-    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '', subj: [] });
+    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '', subj: [], ids: [] });
     store.persist();
     store.reload();
   }
@@ -88,8 +88,14 @@
 <div class="toolbar">
   <div class="crumbs">
     {#if coll}
-      <span class="crumb current" title="Collection"><Icon name={typeof coll.id === 'number' ? 'bookmark' : 'library'} size={14} /> {coll.name}</span>
-      {#if modified}<span class="modified" title="Filters or search differ from the saved collection">modified</span>{/if}
+      {#if coll.id === 'dupes'}
+        <button class="crumb" onclick={() => (store.dialog = 'duplicates')} title="Back to the Duplicates report"><Icon name="copy" size={14} /> Duplicates</button>
+        <Icon name="chevron" size={14} class="sep" />
+        <span class="crumb current">{coll.name}</span>
+      {:else}
+        <span class="crumb current" title="Collection"><Icon name={typeof coll.id === 'number' ? 'bookmark' : 'library'} size={14} /> {coll.name}</span>
+        {#if modified}<span class="modified" title="Filters or search differ from the saved collection">modified</span>{/if}
+      {/if}
     {:else if store.query}
       {#if store.dateRange}<button class="crumb" onclick={() => store.search('')}>{store.dateRange.label}</button><Icon name="chevron" size={14} class="sep" />{/if}
       <span class="crumb current"><Icon name="search" size={14} /> “{store.query}”</span>

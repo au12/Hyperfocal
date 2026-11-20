@@ -12,9 +12,9 @@ Heavy features are optional add-ons.
 
 **If only three things get built next:**
 
-1. One embedding pipeline. It powers both text search and "similar photos".
-2. A duplicates report: exact copies come free with the integrity monitor's content hashes.
-3. Instant change detection, so edits made in Excire show up in seconds.
+1. One embedding pipeline. It powers text search and "similar photos", and lets the Duplicates report catch crops and rotations.
+2. Instant change detection, so edits made in Excire show up in seconds.
+3. Best-of-burst: the Duplicates report already finds series; rank their frames by focus on the subject and open eyes.
 
 ## AI features
 
@@ -33,12 +33,11 @@ Anything worth keeping beyond the app (keywords, person names, face regions) goe
 | # | Feature | Value | Effort | Notes |
 | --- | --- | --- | --- | --- |
 | 1 | **Text search** ("kids on a beach at sunset", "red car at night") | Very high | M | SigLIP 2 or CLIP image and text embeddings, ranked by cosine similarity and combined with the existing filters and full-text search. Brute force over 300,000 vectors takes tens of milliseconds on a NAS CPU; an HNSW index (usearch) brings that to a few milliseconds if needed. |
-| 2 | **Similar photos** ("more like this") | High | S | Free once #1 exists: the nearest neighbours of a photo's embedding, across the whole library or within a date range. |
-| 3 | **Duplicates and near-duplicates** | High | S–M | Exact copies (the same file imported into two folders) come free with the integrity monitor's content hashes, which every original now has. Near-duplicates (edits, exports, re-saves) by perceptual hash plus embedding distance. Report-only, with a jump to each copy. Hyperfocal still never deletes: you reject the copy you don't want. |
-| 4 | **Bursts and best-of-burst** | High | M | Group frames shot seconds apart that look alike into one stack. Rank them by sharpness, open eyes and exposure, and suggest the keeper. Nothing is rejected automatically. |
-| 5 | **Cull assist** | Medium–high | M | Per-photo scores: sharpness on the subject or face (from the RAW, not the JPEG), motion blur, closed eyes, and clipping (measured on the RAW data, as the view tools already do). Optionally an aesthetic score from the CLIP embedding. Shown as "possible rejects" filters, never as automatic rejects. The face boxes and qualities People & pets stores are the starting point: sharpness and open eyes per face. |
-| 6 | **Auto keywords and captions** | Medium | M | Zero-shot tags matched against your own keyword tree first; optionally captions from a small vision-language model. Bulk accept/reject UI, then written to sidecars. |
-| 7 | **More from People & pets** | Medium | S–M | Birthdays and "who was there" for a period; a person's photos by year; manual face boxes for faces the detector misses; more animals (horses, birds) when someone asks. |
+| 2 | **Similar photos** ("more like this") | High | S | Free once #1 exists: the nearest neighbours of a photo's embedding, across the whole library or within a date range. The same embeddings confirm the Duplicates report's near-duplicates by cosine similarity and find the crops, rotations and heavier edits a perceptual hash misses. |
+| 3 | **Best-of-burst** | High | M | The Duplicates report's series (one camera, one folder, seconds apart, cut at scene changes) are the stacks. Next: show them as stacks in the grid, and rank frames by sharpness on the subject (from the RAW, not the thumbnail estimate used now), open eyes and exposure. Nothing is rejected automatically. |
+| 4 | **Cull assist** | Medium–high | M | Per-photo scores: sharpness on the subject or face (from the RAW, not the JPEG), motion blur, closed eyes, and clipping (measured on the RAW data, as the view tools already do). Optionally an aesthetic score from the CLIP embedding. Shown as "possible rejects" filters, never as automatic rejects. The face boxes and qualities People & pets stores are the starting point: sharpness and open eyes per face. |
+| 5 | **Auto keywords and captions** | Medium | M | Zero-shot tags matched against your own keyword tree first; optionally captions from a small vision-language model. Bulk accept/reject UI, then written to sidecars. |
+| 6 | **More from People & pets** | Medium | S–M | Birthdays and "who was there" for a period; a person's photos by year; manual face boxes for faces the detector misses; more animals (horses, birds) when someone asks. |
 
 ## Functionality
 
@@ -72,6 +71,7 @@ Anything worth keeping beyond the app (keywords, person names, face regions) goe
 
 ## Done
 
+- **Duplicates report.** Exact copies from the integrity hashes (image data only, so copies with other metadata still match), near-duplicates from a 64-bit DCT perceptual hash of each thumbnail matched by multi-index hashing (every pair within the distance: the whole report for 300,000 photos takes under half a second on a 2-vCPU VM, about a second at the loose level), and series; for the library, a folder, or a folder against the library. Each group suggests a keeper and why, opens in the compare view, can be dismissed as "not duplicates", and rejects the others in one journaled move.
 - **People & pets.** The companion container `hyperfocal-ml` (CPU or NVIDIA) finds faces (YuNet at three scales), dogs and cats (RF-DETR Small) and embeds them (AuraFace, pet re-identification), all models licensed for commercial use. Hyperfocal matches them in memory (int8, AVX2), forms unnamed groups, and lets you name, merge, review suggestions, reject, hide and ignore; confirmed names go to the sidecars as `People|`/`Pets|` keywords, MWG regions and IPTC person shown, and names other apps wrote come in. Undo is read back from the sidecars.
 - **Compare view.** Two to four photos side by side, zoom and pan synced (1:1) or separate, rating and rejecting from the panes, and stepping one pane through the folder against the others.
 - **Archive integrity monitor.** Content hashes of every original (image data only for JPEG, HEIC and TIFF/DNG), verified again in a paced nightly window, with moves recognised by hash, and alerts through ntfy, Gotify or a webhook.

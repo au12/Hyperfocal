@@ -378,6 +378,11 @@ impl Images {
         self.interactive.load(Ordering::SeqCst) > 0 || self.gate.sem.available_permits() < self.gate.total
     }
 
+    /// Thumbnails waiting to be built in the background.
+    pub fn thumbs_queued(&self) -> usize {
+        self.queue.lock().0.len()
+    }
+
     /// Thumbnail file for a photo (generated on first request), and whether it is a
     /// draft: for a HEIC file whose embedded thumbnail is smaller than a thumbnail,
     /// that is shown at once while the full-quality one is made in the background.
@@ -769,6 +774,22 @@ pub fn build_thumb(st: &AppState, id: i64) -> bool {
             false
         }
     }
+}
+
+/// A photo's thumbnail as pixels (upright, long edge `THUMB_LONG`), for analysis: the
+/// cached thumbnail when there is one, else made in memory and not written (the
+/// thumbnail builder and the grid write thumbnails; two writers of one file would race).
+pub fn thumb_pixels(st: &AppState, loc: &Located) -> Result<Rgb> {
+    if let Ok(data) = std::fs::read(st.images.thumb_path(&loc.rec)) {
+        return jpeg::decode_scaled(&data, 0);
+    }
+    let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
+    let (kind, orientation) = (Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8);
+    raw::catch(|| -> Result<Rgb> {
+        let img = load_display_rgb(&src, kind, THUMB_LONG)?;
+        Ok(jpeg::orient(jpeg::fit_long(img, THUMB_LONG)?, orientation))
+    })
+    .map_err(|e| anyhow!(e))
 }
 
 /// Previews of recent imports, made ahead of the first look while nothing else is going

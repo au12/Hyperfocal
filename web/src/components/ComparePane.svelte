@@ -77,6 +77,10 @@
   const pick = $derived((void store.rev, L.p[i] ?? 0));
   const inReject = $derived(!!store.folders.get(L.f[i])?.isReject);
   const name = $derived(L.n[i] ?? '');
+  /** Copies share a name: the folder tells them apart (a duplicates group). */
+  const where = $derived(
+    (store.compare ?? []).some((c) => c !== id && L.n[store.index.get(c) ?? -1] === name) ? store.folders.get(L.f[i])?.path || 'Library' : '',
+  );
 
   const SIZES = [1024, 1600, 2048, 2560, 3200, 4096];
 
@@ -472,7 +476,8 @@
     ></canvas>
   {/if}
   <div class="head">
-    <span class="name" title={name}>{name}</span>
+    <span class="name" title={where ? `${where}/${name}` : name}>{name}</span>
+    {#if where}<span class="where" title={where}>{where}</span>{/if}
     {#if !view.fit}<span class="chip tnum">{Math.round(curScale * 100)}%{#if detailOn}{' · full res'}{/if}</span>{/if}
     {#if useRaw}<span class="chip raw">RAW</span>{/if}
     {#if loadError}<span class="chip err" title={loadError}>Unavailable</span>{/if}
@@ -570,6 +575,16 @@
   .name {
     font-weight: 600;
     font-size: var(--fs-sm);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 0 1 auto;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  }
+  .where {
+    font-size: var(--fs-sm);
+    color: #b9c3cc;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

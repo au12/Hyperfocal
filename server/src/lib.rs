@@ -4,6 +4,7 @@
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod dupes;
 pub mod files;
 /// Entry points for the fuzz targets (server/fuzz) and their stable smoke test.
 #[cfg(any(fuzzing, test))]
@@ -142,6 +143,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
     let (events, _) = tokio::sync::broadcast::channel(512);
     let session_key = load_session_key(&cfg.config_dir);
     let people = people::People::new(&cfg)?;
+    let dupes = dupes::Dupes::new(&cfg);
     let state = Arc::new(AppState {
         cfg,
         db: pool,
@@ -161,6 +163,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         tracks: Mutex::new(std::collections::HashMap::new()),
         integrity: Default::default(),
         people,
+        dupes,
     });
     if !readonly {
         match state.exiftool.lock().await.version().await {
@@ -200,6 +203,7 @@ async fn run() -> Result<()> {
     images::Images::spawn_workers(state.clone());
     integrity::spawn(state.clone());
     people::worker::spawn(state.clone());
+    dupes::worker::spawn(state.clone());
     match &cfg.ml_url {
         Some(u) => tracing::info!("people and pets: ML service at {u}"),
         None => tracing::info!("people and pets: no ML service configured (HYPERFOCAL_ML_URL); names from other apps are still read"),
