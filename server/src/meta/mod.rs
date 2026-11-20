@@ -3,6 +3,7 @@
 
 pub mod exiftool;
 pub mod heif;
+pub mod regions;
 pub mod xmp;
 
 use crate::model::{Kind, PhotoRec, taken_to_secs};
@@ -374,6 +375,8 @@ pub fn merge_into(rec: &mut PhotoRec, file: &FileMeta, sidecar: Option<&Xmp>) {
     rec.country = None;
     rec.country_code = None;
     rec.sublocation = None;
+    rec.regions = None;
+    rec.persons.clear();
 
     for layer in [file.xmp.as_ref(), sidecar].into_iter().flatten() {
         apply_xmp(rec, layer);
@@ -427,6 +430,12 @@ fn apply_xmp(rec: &mut PhotoRec, x: &Xmp) {
     }
     if let Some(o) = x.orientation {
         rec.orientation = o as i32;
+    }
+    if x.regions.is_some() {
+        rec.regions = x.regions.clone();
+    }
+    if let Some(p) = &x.persons {
+        rec.persons = p.clone();
     }
     if rec.taken_str.is_none() {
         rec.taken_str = x.date_taken.clone();

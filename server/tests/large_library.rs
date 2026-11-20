@@ -309,6 +309,72 @@ fn generate(state: &AppState, n: usize) -> Generated {
     Generated { root_id, year_ids, event_ids, big_event, photos }
 }
 
+/// People and pets: faces in about half the photos (1 to 4 each), a family of 12 seen
+/// everywhere, 300 friends, 2,000 unnamed groups and unknown faces; dogs and cats in a
+/// few. Returns (a family member, a pet, an unnamed group, a photo with faces).
+fn generate_people(state: &AppState) -> (i64, i64, i64, i64, usize) {
+    let mut rng = Rng(0xface_5eed_0042_1234);
+    let mut c = state.db.get().unwrap();
+    let tx = c.transaction().unwrap();
+    let photos: Vec<i64> = {
+        let mut st = tx.prepare("SELECT id FROM photos WHERE pair_of IS NULL ORDER BY id").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    };
+    let subject = |kind: i64, species: i64, name: Option<String>| -> i64 {
+        tx.query_row(
+            "INSERT INTO subjects(kind, species, name, hidden, created, updated) VALUES(?1, ?2, ?3, 0, 0, 0) RETURNING id",
+            params![kind, species, name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let family: Vec<i64> = ["Ann", "Ben", "Chris", "Dana", "Eli", "Fran", "Gus", "Hana", "Ivan", "Jules", "Kai", "Lena"]
+        .iter()
+        .map(|n| subject(1, 1, Some(n.to_string())))
+        .collect();
+    let friends: Vec<i64> = (0..300).map(|i| subject(1, 1, Some(format!("Friend {i:03}")))).collect();
+    let groups: Vec<i64> = (0..2000).map(|_| subject(1, 1, None)).collect();
+    let pets = [subject(2, 2, Some("Rex".into())), subject(2, 3, Some("Mittens".into())), subject(2, 2, Some("Biscuit".into()))];
+    let mut ins = tx
+        .prepare(
+            "INSERT INTO detections(photo_id, kind, x, y, w, h, score, quality, emb, subject_id, state, sim, source, created)
+             VALUES(?1, ?2, ?3, 0.3, 0.08, 0.1, 0.9, ?4, NULL, ?5, ?6, ?7, 0, 0)",
+        )
+        .unwrap();
+    let mut n = 0usize;
+    let mut with_faces = 0i64;
+    for &p in &photos {
+        if rng.chance(0.5) {
+            let faces = 1 + rng.below(4);
+            let mut seen = std::collections::HashSet::new();
+            for f in 0..faces {
+                let who: Option<i64> = match rng.below(100) {
+                    0..=49 => Some(*rng.pick(&family)),
+                    50..=64 => Some(*rng.pick(&friends)),
+                    65..=74 => Some(*rng.pick(&groups)),
+                    _ => None,
+                };
+                let who = who.filter(|w| seen.insert(*w));
+                let named = who.is_some_and(|w| !groups.contains(&w));
+                let state = if named && rng.chance(0.7) { 1 } else { 0 };
+                ins.execute(params![p, 1, 0.1 + f as f64 * 0.2, rng.below(100) as f64 / 100.0, who, state, who.map(|_| 0.5)]).unwrap();
+                n += 1;
+            }
+            with_faces = p;
+        }
+        if rng.chance(0.08) {
+            let pet = *rng.pick(&pets);
+            ins.execute(params![p, if pet == pets[1] { 3 } else { 2 }, 0.5, 0.9, Some(pet), 1, Option::<f64>::None]).unwrap();
+            n += 1;
+        }
+        // Analysed (so the status counts and the photo panels see them).
+        tx.execute("INSERT INTO analysis(photo_id, size, mtime, orientation, models, at, error, w, h) SELECT id, size, mtime, orientation, 'm', 0, NULL, 2048, 1365 FROM photos WHERE id = ?1", [p]).unwrap();
+    }
+    drop(ins);
+    tx.commit().unwrap();
+    (family[0], pets[0], groups[0], with_faces, n)
+}
+
 fn rss_mb() -> (f64, f64) {
     let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let field = |k: &str| -> f64 {
@@ -385,8 +451,13 @@ async fn large_library() {
         let st = state.clone();
         tokio::task::spawn_blocking(move || generate(&st, n)).await.unwrap()
     };
+    let (ann, rex, group, face_photo, detections) = {
+        let st = state.clone();
+        tokio::task::spawn_blocking(move || generate_people(&st)).await.unwrap()
+    };
     let gen_time = t.elapsed();
     hyperfocal::db::optimize(&state.db.get().unwrap()).unwrap();
+    println!("generated {detections} faces and pets");
     let db_mb = std::fs::metadata(dir.join("config/hyperfocal.db")).map(|m| m.len()).unwrap_or(0) as f64 / 1048576.0;
     println!(
         "generated {} photos in {} folders in {:.1}s; database {db_mb:.0} MB; RSS {:.0} MB",
@@ -402,8 +473,10 @@ async fn large_library() {
     let year = g.year_ids[g.year_ids.len() / 2];
     let event = g.event_ids[g.event_ids.len() / 3];
     let big = g.big_event;
-    let mut rss_after = Vec::new();
-    for round in 0..3 {
+    let mut rss_after: Vec<f64> = Vec::new();
+    // Rounds of the same queries until memory settles (each pooled connection warms its
+    // own page cache, and the allocator keeps what it freed, so the first rounds grow).
+    for round in 0..6 {
         b.get("status", "/api/status", ms(100)).await;
         let tree = b.get("tree", "/api/tree", ms(200)).await;
         if round == 0 {
@@ -451,13 +524,36 @@ async fn large_library() {
         if let Some(id) = detail["id"].as_array().and_then(|a| a.first()).and_then(Value::as_i64) {
             b.get("photo: detail", &format!("/api/photo/{id}"), ms(100)).await;
         }
+        // People & pets.
+        b.get("people: status", "/api/people/status", ms(800)).await;
+        let named = b.get("people: named", "/api/people?kind=person&named=named&limit=2000", ms(1500)).await;
+        if round == 0 {
+            assert!(named["subjects"].as_array().unwrap().len() >= 300, "{}", named["total"]);
+        }
+        b.get("people: unnamed groups", "/api/people?kind=person&named=unnamed&min=2&limit=600", ms(1500)).await;
+        b.get("people: pets", "/api/people?kind=pet&named=named", ms(400)).await;
+        b.get("people: one person", &format!("/api/people/{ann}"), ms(200)).await;
+        b.get("people: to review", &format!("/api/people/{ann}/detections?state=auto&limit=240"), ms(300)).await;
+        b.get("people: confirmed", &format!("/api/people/{ann}/detections?state=confirmed&limit=240"), ms(300)).await;
+        b.get("people: a group", &format!("/api/people/{group}/detections?limit=240"), ms(100)).await;
+        b.get("people: names", "/api/people/names?q=fr", ms(300)).await;
+        b.get("people: photo", &format!("/api/photo/{face_photo}/people"), ms(50)).await;
+        let pa = b.get("photos: one person", &format!("/api/photos?folder={root}&rec=1&subj={ann}"), ms(600)).await;
+        if round == 0 {
+            assert!(pa["id"].as_array().unwrap().len() > 1000);
+        }
+        b.get("photos: person and pet", &format!("/api/photos?folder={root}&rec=1&subj={ann},{rex}"), ms(600)).await;
         rss_after.push(rss_mb().0);
+        if round >= 2 && rss_after[round] - rss_after[round - 1] < 64.0 {
+            break;
+        }
     }
     let slow = b.report();
     let (rss, hwm) = rss_mb();
     println!("\nRSS {rss:.0} MB (peak {hwm:.0} MB); after each round: {rss_after:.0?}");
-    // Memory must settle: the third round of identical queries may not keep growing.
-    let growth = rss_after[2] - rss_after[1];
+    // Memory must settle: a round of identical queries may not keep growing.
+    let k = rss_after.len();
+    let growth = rss_after[k - 1] - rss_after[k - 2];
     assert!(growth < 64.0, "memory grew by {growth:.0} MB between identical rounds: {rss_after:?}");
     assert!(slow.is_empty(), "slow queries:\n{}", slow.join("\n"));
 }

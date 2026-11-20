@@ -97,6 +97,11 @@ pub struct PhotoRec {
     pub country_code: Option<String>,
     pub sublocation: Option<String>,
     pub meta_err: Option<String>,
+    /// Face, pet and other regions from the XMP (not kept in the index: read when
+    /// needed, for writes and for the people analysis).
+    pub regions: Option<crate::meta::regions::Regions>,
+    /// IPTC "person shown" names (likewise not in the index).
+    pub persons: Vec<String>,
 }
 
 /// Seconds since the epoch for a capture time, treating the camera's local clock as UTC

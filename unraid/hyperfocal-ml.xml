@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Hyperfocal-ML</Name>
+  <Repository>ghcr.io/au12/hyperfocal-ml:latest</Repository>
+  <Registry>https://github.com/au12/Hyperfocal/pkgs/container/hyperfocal-ml</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/au12/Hyperfocal/issues</Support>
+  <Project>https://github.com/au12/Hyperfocal#people--pets</Project>
+  <Overview>Face and pet recognition for Hyperfocal (optional companion container). It finds faces, dogs and cats in the photos Hyperfocal sends it and tells who is who; Hyperfocal groups them, lets you name people and pets, and writes the names to your XMP sidecars (People|Name and Pets|Name keywords, face regions, IPTC person shown). Stateless and offline: the models are inside the image, it keeps nothing and reaches nothing on the internet, and it never sees your photo share. Runs on the CPU, or on an NVIDIA GPU with the :cuda tag (Nvidia Driver plugin, driver 580 or newer). After installing, set "People and pets: ML service URL" in the Hyperfocal container to http://[IP of this server]:8090.</Overview>
+  <Category>MediaApp:Photos Tools:</Category>
+  <WebUI/>
+  <TemplateURL>https://raw.githubusercontent.com/au12/Hyperfocal/main/unraid/hyperfocal-ml.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/au12/Hyperfocal/main/assets/icon-ml-512.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Hyperfocal (this is its companion). For the GPU: the :cuda tag, the Nvidia Driver plugin, --runtime=nvidia under Extra Parameters and your GPU's UUID in NVIDIA_VISIBLE_DEVICES.</Requires>
+  <Config Name="Port" Target="8090" Default="8090" Mode="tcp" Description="Hyperfocal sends photos here. Only Hyperfocal needs to reach it: there is no web UI." Type="Port" Display="always" Required="true" Mask="false">8090</Config>
+  <Config Name="Token" Target="HFML_TOKEN" Default="" Mode="" Description="Optional shared secret. Set the same value as 'People and pets: ML token' in Hyperfocal, so nothing else on your network can use the service." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Device" Target="HFML_DEVICE" Default="auto|cpu|cuda" Mode="" Description="auto: the NVIDIA GPU when the :cuda image can reach one, else the CPU." Type="Variable" Display="always" Required="false" Mask="false">auto</Config>
+  <Config Name="NVIDIA_VISIBLE_DEVICES" Target="NVIDIA_VISIBLE_DEVICES" Default="" Mode="" Description="GPU only (:cuda tag, with --runtime=nvidia in Extra Parameters): the GPU's UUID from the Nvidia Driver plugin page, or 'all'." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="CPU threads" Target="HFML_THREADS" Default="" Mode="" Description="Threads per model on the CPU. Empty = every core (Hyperfocal pauses the analysis while you browse). Set it lower to leave cores for other containers." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Parallel requests" Target="HFML_WORKERS" Default="" Mode="" Description="Photos analysed at once. Empty = 1 on the CPU (each one already uses every thread), 2 on a GPU." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Pet detector" Target="HFML_ANIMAL_DETECTOR" Default="auto|rfdetr-small.onnx|rfdetr-nano.onnx" Mode="" Description="auto = RF-DETR Small (finds more small and half-hidden pets). rfdetr-nano.onnx is about 0.3 s a photo faster on a weak CPU." Type="Variable" Display="advanced" Required="false" Mask="false">auto</Config>
+  <Config Name="GPU memory limit (MB)" Target="HFML_GPU_MEM_MB" Default="" Mode="" Description="Optional cap on the memory ONNX Runtime takes on the GPU (the models are about 0.7 GB)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Log level" Target="HFML_LOG" Default="info|debug|warning" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
+</Container>

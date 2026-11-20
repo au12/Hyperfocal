@@ -95,6 +95,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/settings", get(get_settings).post(set_settings))
         .merge(crate::geotag::routes())
         .merge(crate::integrity::routes())
+        .merge(crate::people::api::routes())
         .route("/login", post(login))
         .route("/logout", post(logout))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -250,6 +251,8 @@ pub struct ListQuery {
     count: Option<u8>,
     /// 1: only photos without a capture time.
     nodate: Option<u8>,
+    /// People, pets or groups (ids, comma-separated): photos with all of them.
+    subj: Option<String>,
 }
 
 /// SQL for "this folder and everything below it" on `f.path`, as an index range (paths
@@ -347,6 +350,12 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
         a.push(Box::new(v.to_string()));
         a.push(Box::new(format!("{v}|")));
         a.push(Box::new(format!("{v}}}")));
+    }
+    if let Some(v) = q.subj.as_deref().filter(|s| !s.is_empty()) {
+        for id in v.split(',').filter_map(|x| x.trim().parse::<i64>().ok()).take(8) {
+            w.push("p.id IN (SELECT photo_id FROM detections WHERE subject_id = ?)".into());
+            a.push(Box::new(id));
+        }
     }
     if let Some(text) = q.q.as_deref() {
         let s = crate::db::search_query(text, trigram);
@@ -742,6 +751,11 @@ async fn keyword_move(State(state): St, Json(b): Json<KwMoveBody>) -> ApiResult<
     let from = crate::keywords::split(&b.from);
     let to = b.to.as_deref().map(crate::keywords::split);
     crate::keywords::check_move(&from, to.as_deref()).map_err(bad)?;
+    // Names of people and pets go with face regions and the index: they are renamed,
+    // merged and removed in the People view.
+    if from.first().is_some_and(|r| r.eq_ignore_ascii_case("People") || r.eq_ignore_ascii_case("Pets")) {
+        return Err(bad("people and pets are renamed, merged and removed in the People & pets view"));
+    }
     let st = state.clone();
     let from2 = from.clone();
     let ids = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<i64>> {

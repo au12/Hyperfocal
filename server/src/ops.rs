@@ -29,6 +29,22 @@ pub struct KwMove {
     pub to: Option<String>,
 }
 
+/// Face and pet regions (MWG) and person names (IPTC "person shown") for a photo, as
+/// the people analysis has them confirmed. Replaces the photo's face and pet regions;
+/// its other regions (focus points, ...) are kept, unless `exact`, which writes the list
+/// as given (undo).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PeopleXmp {
+    /// MWG convention: centre and size, normalized to the stored image.
+    pub regions: Vec<crate::meta::regions::Region>,
+    /// `AppliedToDimensions` (the stored image's size).
+    pub w: f64,
+    pub h: f64,
+    pub persons: Vec<String>,
+    #[serde(default)]
+    pub exact: bool,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Gps {
     pub lat: f64,
@@ -82,6 +98,9 @@ pub struct Patch {
     /// Relative rotation in degrees (90, -90, 180).
     #[serde(default)]
     pub rotate: Option<i32>,
+    /// Face and pet regions and person names (people analysis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub people: Option<PeopleXmp>,
 }
 
 fn clean_opt(v: &Option<String>) -> Option<String> {
@@ -115,6 +134,7 @@ fn snapshot(r: &PhotoRec) -> Value {
         "gps": r.lat.zip(r.lon).map(|(lat, lon)| json!({"lat": lat, "lon": lon, "alt": r.alt})),
         "city": r.city, "state": r.state, "country": r.country, "country_code": r.country_code,
         "sublocation": r.sublocation, "orientation": r.orientation,
+        "regions": r.regions, "persons": r.persons,
     })
 }
 
@@ -146,6 +166,12 @@ fn patch_from_snapshots(before: &Value, after: &Value) -> Patch {
         country_code: s("country_code"),
         sublocation: s("sublocation"),
         orientation: if changed("orientation") { before.get("orientation").and_then(|x| x.as_u64()).map(|x| x as u8) } else { None },
+        // Snapshots from before people support have neither field: nothing changed then.
+        people: (changed("regions") || changed("persons")).then(|| {
+            let regions: Option<crate::meta::regions::Regions> = before.get("regions").and_then(|r| serde_json::from_value(r.clone()).ok());
+            let r = regions.unwrap_or_default();
+            PeopleXmp { regions: r.list, w: r.w, h: r.h, persons: list("persons"), exact: true }
+        }),
         ..Default::default()
     }
 }
@@ -365,7 +391,39 @@ fn build_args(cur: &PhotoRec, p: &Patch, seed: Option<&Xmp>) -> (Vec<String>, Ph
         a.push(format!("-XMP-tiff:Orientation#={o}"));
         after.orientation = o as i32;
     }
+    if let Some(pp) = &p.people {
+        people_args(&mut a, cur, pp, &mut after);
+    }
     (a, after)
+}
+
+/// ExifTool arguments for the face and pet regions and the person names of a photo.
+fn people_args(a: &mut Vec<String>, cur: &PhotoRec, pp: &PeopleXmp, after: &mut PhotoRec) {
+    use crate::meta::regions::{Region, Regions, exiftool_value};
+    let old = cur.regions.clone().unwrap_or_default();
+    let mut list: Vec<Region> = if pp.exact { Vec::new() } else { old.list.iter().filter(|g| !g.is_people()).cloned().collect() };
+    list.extend(pp.regions.iter().map(|r| Region {
+        name: r.name.as_ref().map(|n| n.replace(['\n', '\r'], " ")),
+        kind: r.kind.clone(),
+        x: r.x.clamp(0.0, 1.0),
+        y: r.y.clamp(0.0, 1.0),
+        w: r.w.clamp(0.0, 1.0),
+        h: r.h.clamp(0.0, 1.0),
+    }));
+    let (w, h) = if pp.w > 0.0 && pp.h > 0.0 { (pp.w, pp.h) } else { (old.w, old.h) };
+    let new = Regions { w, h, list };
+    if new.list != old.list || (!new.list.is_empty() && (new.w, new.h) != (old.w, old.h)) {
+        if new.list.is_empty() {
+            a.push("-XMP-mwg-rs:RegionInfo=".into());
+        } else {
+            a.push(format!("-XMP-mwg-rs:RegionInfo={}", exiftool_value(&new)));
+        }
+    }
+    after.regions = (!new.list.is_empty()).then_some(new);
+    if pp.persons != cur.persons {
+        push_list(a, "XMP-iptcExt:PersonInImage", &pp.persons);
+        after.persons = pp.persons.clone();
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -550,6 +608,54 @@ pub fn spawn_patch_job(state: &Arc<AppState>, label: String, items: Vec<(i64, Pa
     Ok(status)
 }
 
+/// Write per-photo changes worked out just before each photo is written (under the
+/// write lock), as one background batch: for changes whose content depends on the
+/// moment they land, such as a photo's people regions, which several quick edits in a
+/// row may change. `make` returns None for a photo with nothing to write.
+pub async fn write_lazy(state: &Arc<AppState>, label: String, mut ids: Vec<i64>, make: &(dyn Fn(i64) -> Option<Patch> + Send + Sync)) -> JobStatus {
+    let batch = new_batch();
+    let mut job = Job::start(state, label, ids.len(), batch.clone());
+    let folder_of = folders_of(state, ids.iter().copied()).unwrap_or_default();
+    ids.sort_by_key(|i| (folder_of.get(i).copied().unwrap_or(i64::MAX), *i));
+    ids.dedup();
+    let mut ok = Vec::new();
+    let mut pending: Option<i64> = None;
+    for id in ids {
+        let res = if state.is_readonly() {
+            Err(anyhow!("Hyperfocal is in read-only mode"))
+        } else {
+            let _w = state.write_lock.lock().await;
+            match make(id) {
+                Some(patch) => {
+                    let summary = summarize(&patch);
+                    write_one(state, id, &patch, &batch, None, &summary).await.map(Some)
+                }
+                None => Ok(None),
+            }
+        };
+        let err = match res {
+            Ok(Some(fid)) => {
+                ok.push(id);
+                if let Some(prev) = pending.filter(|p| *p != fid) {
+                    rescan(state, prev).await;
+                }
+                pending = Some(fid);
+                None
+            }
+            Ok(None) => None,
+            Err(e) => Some((id, format!("{e:#}"))),
+        };
+        job.tick(err);
+    }
+    if let Some(f) = pending {
+        rescan(state, f).await;
+    }
+    for chunk in ok.chunks(5000) {
+        state.emit(Event::Photos { ids: chunk.to_vec() });
+    }
+    job.finish()
+}
+
 pub fn new_batch() -> String {
     format!("{:x}{:04x}", crate::db::now_ms(), rand::random::<u16>())
 }
@@ -604,6 +710,9 @@ fn summarize(p: &Patch) -> String {
     }
     if p.creator.is_some() || p.rights.is_some() {
         parts.push("credit".into());
+    }
+    if p.people.is_some() {
+        parts.push("people".into());
     }
     parts.join(", ")
 }
@@ -701,6 +810,18 @@ async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_o
             "before": snapshot(&cur), "after": snapshot(&after),
         }),
     )?;
+    // A person's (or pet's) keyword taken off by hand: that face is not them after all.
+    if undo_of.is_none() && patch.people.is_none() {
+        let gone: Vec<String> = cur
+            .hkeywords
+            .iter()
+            .filter(|k| crate::people::is_name_keyword(k) && !after.hkeywords.iter().any(|a| a.eq_ignore_ascii_case(k)))
+            .cloned()
+            .collect();
+        if !gone.is_empty() {
+            state.people.unname(id, gone);
+        }
+    }
     Ok(loc.rec.folder_id)
 }
 
@@ -912,6 +1033,8 @@ async fn undo_in(state: &Arc<AppState>, batch: &str, mut job: Option<Job>) -> Re
     if let Some(j) = job {
         j.finish();
     }
+    // The names in the sidecars are the truth again: the people index follows.
+    state.people.after_undo(&ok);
     Ok(BatchResult { batch: new_batch, ok, failed, job: None })
 }
 

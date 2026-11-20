@@ -20,15 +20,15 @@ Heavy features are optional add-ons.
 
 ### How they fit
 
-AI runs in an **optional companion container** (`hyperfocal-ml`), so the main image stays small. It talks to Hyperfocal over a small HTTP API and uses ONNX Runtime, on an NVIDIA GPU when one is passed through (a 4 GB card is plenty) and on the CPU otherwise. It works from the 512 px thumbnails Hyperfocal already makes, plus larger previews for faces, all fetched through Hyperfocal's API. It never decodes a RAW file and doesn't need the photo share mounted at all.
+AI runs in the **optional companion container** (`hyperfocal-ml`), so the main image stays small. It now exists, for People & pets: a stateless HTTP service on ONNX Runtime, on an NVIDIA GPU (`:cuda`) or the CPU. Hyperfocal sends it an upright JPEG of each photo and keeps everything it answers; the container never decodes a RAW file and doesn't mount the photo share. New models are added to it the same way: pinned by sha256, licensed for commercial use, loaded once in the image build.
 
 Results live in Hyperfocal's database, never in the photos:
 
-- an embedding of about 1 KB per photo (300,000 photos ≈ 300 MB);
-- face boxes and clusters;
+- embeddings (int8: 512 bytes a face; about 1 KB a photo for search);
+- face and pet boxes, groups and names;
 - scores.
 
-Anything worth keeping beyond the app (keywords, person names, face regions) goes to sidecars only after you accept it, journaled and undoable like every other edit. Indexing runs at idle, newest folders first, and resumes after restarts.
+Anything worth keeping beyond the app (keywords, person names, face regions) goes to sidecars only after you accept it, journaled and undoable like every other edit. Analysis runs at idle, photos on screen first, and resumes after restarts.
 
 | # | Feature | Value | Effort | Notes |
 | --- | --- | --- | --- | --- |
@@ -36,9 +36,9 @@ Anything worth keeping beyond the app (keywords, person names, face regions) goe
 | 2 | **Similar photos** ("more like this") | High | S | Free once #1 exists: the nearest neighbours of a photo's embedding, across the whole library or within a date range. |
 | 3 | **Duplicates and near-duplicates** | High | S–M | Exact copies (the same file imported into two folders) come free with the integrity monitor's content hashes, which every original now has. Near-duplicates (edits, exports, re-saves) by perceptual hash plus embedding distance. Report-only, with a jump to each copy. Hyperfocal still never deletes: you reject the copy you don't want. |
 | 4 | **Bursts and best-of-burst** | High | M | Group frames shot seconds apart that look alike into one stack. Rank them by sharpness, open eyes and exposure, and suggest the keeper. Nothing is rejected automatically. |
-| 5 | **Faces** | High | L | Detection (SCRFD), recognition embeddings (ArcFace) and clustering (HDBSCAN) into "unnamed people" you can name, merge and split. Names go to sidecars as person keywords, which Excire reads like any other keyword, and as MWG face regions (`mwg-rs:Regions`), the format Lightroom Classic and digiKam use. Regions those apps wrote are read too. Nothing leaves the server. Check model licences: InsightFace's pretrained weights are for non-commercial research use only. |
-| 6 | **Cull assist** | Medium–high | M | Per-photo scores: sharpness on the subject or face (from the RAW, not the JPEG), motion blur, closed eyes, and clipping (measured on the RAW data, as the view tools already do). Optionally an aesthetic score from the CLIP embedding. Shown as "possible rejects" filters, never as automatic rejects. |
-| 7 | **Auto keywords and captions** | Medium | M | Zero-shot tags matched against your own keyword tree first; optionally captions from a small vision-language model. Bulk accept/reject UI, then written to sidecars. |
+| 5 | **Cull assist** | Medium–high | M | Per-photo scores: sharpness on the subject or face (from the RAW, not the JPEG), motion blur, closed eyes, and clipping (measured on the RAW data, as the view tools already do). Optionally an aesthetic score from the CLIP embedding. Shown as "possible rejects" filters, never as automatic rejects. The face boxes and qualities People & pets stores are the starting point: sharpness and open eyes per face. |
+| 6 | **Auto keywords and captions** | Medium | M | Zero-shot tags matched against your own keyword tree first; optionally captions from a small vision-language model. Bulk accept/reject UI, then written to sidecars. |
+| 7 | **More from People & pets** | Medium | S–M | Birthdays and "who was there" for a period; a person's photos by year; manual face boxes for faces the detector misses; more animals (horses, birds) when someone asks. |
 
 ## Functionality
 
@@ -72,6 +72,7 @@ Anything worth keeping beyond the app (keywords, person names, face regions) goe
 
 ## Done
 
+- **People & pets.** The companion container `hyperfocal-ml` (CPU or NVIDIA) finds faces (YuNet at three scales), dogs and cats (RF-DETR Small) and embeds them (AuraFace, pet re-identification), all models licensed for commercial use. Hyperfocal matches them in memory (int8, AVX2), forms unnamed groups, and lets you name, merge, review suggestions, reject, hide and ignore; confirmed names go to the sidecars as `People|`/`Pets|` keywords, MWG regions and IPTC person shown, and names other apps wrote come in. Undo is read back from the sidecars.
 - **Compare view.** Two to four photos side by side, zoom and pan synced (1:1) or separate, rating and rejecting from the panes, and stepping one pane through the folder against the others.
 - **Archive integrity monitor.** Content hashes of every original (image data only for JPEG, HEIC and TIFF/DNG), verified again in a paced nightly window, with moves recognised by hash, and alerts through ntfy, Gotify or a webhook.
 - **Full-resolution RAW view.** RCD demosaicing of the visible tiles at 1:1, on the device's GPU (WebGL2) or on the server.

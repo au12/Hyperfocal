@@ -40,6 +40,10 @@ pub struct Xmp {
     pub sublocation: Option<String>,
     pub orientation: Option<u8>,
     pub date_taken: Option<String>,
+    /// Face, pet and other regions (MWG), when the packet has any.
+    pub regions: Option<super::regions::Regions>,
+    /// IPTC "person shown" names.
+    pub persons: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +252,11 @@ impl Xmp {
         }
         if out.date_taken.is_none() {
             out.date_taken = acc.date_created.or(acc.create_date);
+        }
+        if super::regions::mentions(data) {
+            let (regions, persons) = super::regions::parse(data);
+            out.regions = regions;
+            out.persons = persons;
         }
         out
     }

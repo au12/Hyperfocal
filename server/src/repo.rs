@@ -60,6 +60,8 @@ pub fn photo_from_row(r: &Row) -> rusqlite::Result<PhotoRec> {
         country_code: r.get(40)?,
         sublocation: r.get(41)?,
         meta_err: r.get(42)?,
+        regions: None,
+        persons: Vec::new(),
     })
 }
 

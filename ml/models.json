@@ -1,0 +1,45 @@
+{
+  "comment": "Models baked into the hyperfocal-ml image. Every one is licensed for commercial use. The build fails if a download does not match its sha256.",
+  "models": [
+    {
+      "file": "yunet.onnx",
+      "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx",
+      "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0",
+      "what": "Face detector: YuNet 2026may (dynamic input), OpenCV Zoo",
+      "license": "MIT",
+      "home": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet"
+    },
+    {
+      "file": "auraface.onnx",
+      "url": "https://huggingface.co/fal/AuraFace-v1/resolve/af6d057c9b0ec4071d4c49c80e3539258798b609/glintr100.onnx",
+      "sha256": "a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60",
+      "what": "Face recognition: AuraFace v1 (ResNet100, ArcFace loss), trained on commercially licensed data",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/fal/AuraFace-v1"
+    },
+    {
+      "file": "rfdetr-nano.onnx",
+      "url": "https://huggingface.co/open-noodle/rfdetr-nano/resolve/1618db5f22919339f4347d436da8c43afaf91926/detection/model.onnx",
+      "sha256": "21045851f3906c7d424874363fe933477fda7210bad0d7a69659fb98f8845890",
+      "what": "Dog and cat detector: RF-DETR Nano (COCO), 384 px",
+      "license": "Apache-2.0",
+      "home": "https://github.com/roboflow/rf-detr"
+    },
+    {
+      "file": "rfdetr-small.onnx",
+      "url": "https://huggingface.co/open-noodle/rfdetr-small/resolve/2273529e3faaf306659186df6da4333bc2a763dc/detection/model.onnx",
+      "sha256": "31fe724f8d5dbff5d09eb4c2c44d2d4083c086c167aec54e11e694e652307f9b",
+      "what": "Dog and cat detector: RF-DETR Small (COCO), 512 px",
+      "license": "Apache-2.0",
+      "home": "https://github.com/roboflow/rf-detr"
+    },
+    {
+      "file": "pet-recognition.onnx",
+      "url": "https://huggingface.co/open-noodle/pet-recognition-base/resolve/fa30eb7785ceb764d5c2840c4585fb89821be385/recognition/model.onnx",
+      "sha256": "8691f5f6d0cebbd1602d21def63a34f7a58f78e08b3d4914cb81adcc2efd83f8",
+      "what": "Which dog or cat: pet re-identification, DINOv2-base plus a projection trained on CC0 and CC BY data",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/open-noodle/pet-recognition-base"
+    }
+  ]
+}

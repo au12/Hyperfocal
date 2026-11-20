@@ -55,6 +55,17 @@ pub struct Config {
     pub alert_format: String,
     /// Token for the alert service (ntfy access token, Gotify app token, webhook bearer).
     pub alert_token: Option<String>,
+    /// The companion ML service (`hyperfocal-ml`) for faces and pets, e.g.
+    /// `http://hyperfocal-ml:8090`. None: people and pets are off.
+    pub ml_url: Option<String>,
+    /// Shared token for the ML service (its HFML_TOKEN).
+    pub ml_token: Option<String>,
+    /// Long side of the image sent for analysis (px).
+    pub ml_size: usize,
+    /// Photos in flight to the ML service at once.
+    pub ml_concurrency: usize,
+    /// Write confirmed names to the sidecars (keywords, face regions, person shown).
+    pub people_xmp: bool,
 }
 
 fn env_str(key: &str) -> Option<String> {
@@ -105,6 +116,11 @@ impl Config {
             alert_url: None,
             alert_format: "auto".into(),
             alert_token: None,
+            ml_url: None,
+            ml_token: None,
+            ml_size: 2048,
+            ml_concurrency: 2,
+            people_xmp: true,
         }
     }
 
@@ -146,6 +162,11 @@ impl Config {
             alert_url: env_str("HYPERFOCAL_ALERT_URL"),
             alert_format: env_str("HYPERFOCAL_ALERT_FORMAT").unwrap_or_else(|| "auto".into()),
             alert_token: env_str("HYPERFOCAL_ALERT_TOKEN"),
+            ml_url: env_str("HYPERFOCAL_ML_URL").map(|u| u.trim_end_matches('/').to_string()),
+            ml_token: env_str("HYPERFOCAL_ML_TOKEN"),
+            ml_size: env_num("HYPERFOCAL_ML_SIZE", 2048usize).clamp(640, 4096),
+            ml_concurrency: env_num("HYPERFOCAL_ML_CONCURRENCY", 2usize).clamp(1, 16),
+            people_xmp: env_bool("HYPERFOCAL_PEOPLE_XMP", true),
         }
     }
 }

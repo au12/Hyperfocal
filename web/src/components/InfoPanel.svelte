@@ -6,6 +6,8 @@
   import Icon from './Icon.svelte';
   import EditField from './EditField.svelte';
   import KeywordEditor from './KeywordEditor.svelte';
+  import PhotoPeople from './PhotoPeople.svelte';
+  import { people } from '../lib/people.svelte';
 
   let { compact = false }: { compact?: boolean } = $props();
 
@@ -104,6 +106,18 @@
       <EditField label="Title" value={d.title} onsave={(v) => save({ title: v })} readonly={ro} bind:inputRef={titleRef} />
       <EditField label="Caption" value={d.description} multiline onsave={(v) => save({ description: v })} readonly={ro} />
     </section>
+
+    {#if people.enabled}
+      <section>
+        <div class="lab row">
+          <span class="grow">People & pets</span>
+          {#if store.loupe}
+            <button class="btn sm ghost" class:on={store.panels.faces} onclick={() => { store.panels.faces = !store.panels.faces; store.persist(); }} title={'Show the faces and pets on the photo' + store.keyHint('faces')}><Icon name="scan-face" /> Show</button>
+          {/if}
+        </div>
+        <PhotoPeople photo={d.id} />
+      </section>
+    {/if}
 
     <section>
       <div class="lab row">
