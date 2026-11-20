@@ -26,7 +26,7 @@ jobs:
     env:
       SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '300' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install exiftool, nasm, libheif and LibRaw
         run: |
           sudo apt-get update
