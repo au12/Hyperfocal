@@ -26,7 +26,6 @@
   const kind = $derived(subject?.kind ?? 'person');
   const isPet = $derived(kind !== 'person');
   const label = $derived(subject ? subjectLabel(subject) : '');
-  const ro = $derived(!!store.status?.readonly);
   const detKind = $derived(kind === 'person' ? 'face' : kind);
 
   async function loadSubject() {
@@ -177,12 +176,12 @@
         {#if subject?.cover}<img src={urls.crop(subject.cover)} alt="" />{:else}<Icon name={isPet ? 'paw' : 'user'} size={26} />{/if}
       </span>
       <div class="who grow">
-        {#if subject && !ro && (!named || renaming)}
+        {#if subject && (!named || renaming)}
           <NameInput kind={detKind} value={subject.name ?? ''} exclude={subject.id} onpick={onName} oncancel={() => (named ? (renaming = false) : close())} placeholder={named ? 'New name' : isPet ? 'Name this pet' : 'Who is this?'} />
         {:else}
           <h2 class="ellipsis">
             {label}
-            {#if named && !ro}<button class="btn sm ghost icon" onclick={() => (renaming = true)} title="Rename (or merge with someone of the same name)" aria-label="Rename"><Icon name="edit" /></button>{/if}
+            {#if named}<button class="btn sm ghost icon" onclick={() => (renaming = true)} title="Rename (or merge with someone of the same name)" aria-label="Rename"><Icon name="edit" /></button>{/if}
           </h2>
         {/if}
         {#if subject}
@@ -192,31 +191,29 @@
         {/if}
       </div>
       <div class="acts">
-        {#if subject && !named && !ro}
+        {#if subject && !named}
           <button class="btn sm" onclick={skip} title="The next group">Skip</button>
         {/if}
         {#if subject}
           <button class="btn sm" onclick={() => people.showPhotos(subject!)} title="Show these photos in the grid"><Icon name="grid" />{store.mobile ? '' : 'Photos'}</button>
-          {#if !ro}
-            <Popover align="right" width="15rem">
-              {#snippet trigger(toggle, open)}
-                <button class="btn sm icon" class:on={open} onclick={toggle} aria-label="More"><Icon name="more" /></button>
-              {/snippet}
-              {#snippet children(closeMenu)}
-                {#if named}
-                  <button class="menu-item" onclick={() => { closeMenu(); renaming = true; }}><Icon name="edit" />Rename or merge…</button>
-                {/if}
-                <button class="menu-item" onclick={() => { closeMenu(); people.setHidden(subject!, !subject!.hidden); }}>
-                  <Icon name={subject!.hidden ? 'eye' : 'eye-off'} />{subject!.hidden ? 'Show again' : named ? 'Hide' : 'Hide (not of interest)'}
-                </button>
-                {#if named}
-                  <button class="menu-item" onclick={() => { closeMenu(); people.removeName(subject!); }}><Icon name="tag" />Take the name off</button>
-                {/if}
-                <div class="menu-sep"></div>
-                <button class="menu-item danger" onclick={() => { closeMenu(); remove(); }}><Icon name="x" />{named ? `Remove ${subject!.name}` : 'Remove this group'}</button>
-              {/snippet}
-            </Popover>
-          {/if}
+          <Popover align="right" width="15rem">
+            {#snippet trigger(toggle, open)}
+              <button class="btn sm icon" class:on={open} onclick={toggle} aria-label="More"><Icon name="more" /></button>
+            {/snippet}
+            {#snippet children(closeMenu)}
+              {#if named}
+                <button class="menu-item" onclick={() => { closeMenu(); renaming = true; }}><Icon name="edit" />Rename or merge…</button>
+              {/if}
+              <button class="menu-item" onclick={() => { closeMenu(); people.setHidden(subject!, !subject!.hidden); }}>
+                <Icon name={subject!.hidden ? 'eye' : 'eye-off'} />{subject!.hidden ? 'Show again' : named ? 'Hide' : 'Hide (not of interest)'}
+              </button>
+              {#if named}
+                <button class="menu-item" onclick={() => { closeMenu(); people.removeName(subject!); }}><Icon name="tag" />Take the name off</button>
+              {/if}
+              <div class="menu-sep"></div>
+              <button class="menu-item danger" onclick={() => { closeMenu(); remove(); }}><Icon name="x" />{named ? `Remove ${subject!.name}` : 'Remove this group'}</button>
+            {/snippet}
+          </Popover>
         {/if}
         <button class="btn ghost icon" onclick={close} aria-label="Close"><Icon name="x" /></button>
       </div>
@@ -228,12 +225,12 @@
           <button class:on={tab === 'auto'} onclick={() => setTab('auto')} disabled={!subject?.review}>To review{#if subject?.review}<span class="n tnum">{fmt(subject.review)}</span>{/if}</button>
           <button class:on={tab === 'confirmed'} onclick={() => setTab('confirmed')}>Confirmed<span class="n tnum">{fmt(subject?.confirmed ?? 0)}</span></button>
         </div>
-        {#if tab === 'auto' && subject?.review && !ro}
+        {#if tab === 'auto' && subject?.review}
           <span class="dim q">Is this {subject.name}?</span>
           <button class="btn sm primary" onclick={() => people.confirm({ subject: id })}><Icon name="check" />Yes, all {fmt(subject.review)}</button>
         {/if}
       </div>
-    {:else if subject && !ro}
+    {:else if subject}
       <div class="tabs"><span class="dim q">{isPet ? 'The same pet?' : 'The same person?'} Take out any that are not, then name the group.</span></div>
     {/if}
 
@@ -246,13 +243,11 @@
               {#if d.q < 0.35 && d.kind === 'face'}<span class="poor" title="A poor view (small, blurred, turned away or masked)"></span>{/if}
               <span class="check"><Icon name="check" size={14} /></span>
             </button>
-            {#if !ro}
-              <div class="tools">
-                {#if d.state === 0 && named}<button onclick={() => confirmIds([d.id])} title={`Yes, ${subject?.name}`} aria-label="Confirm"><Icon name="check" size={15} /></button>{/if}
-                <button onclick={() => rejectIds([d.id])} title={named ? `Not ${subject?.name}` : 'Not in this group'} aria-label="Not this one"><Icon name="x" size={15} /></button>
-                <button onclick={() => subject && people.openPhoto(subject, d)} title="Open the photo" aria-label="Open the photo"><Icon name="image" size={15} /></button>
-              </div>
-            {/if}
+            <div class="tools">
+              {#if d.state === 0 && named}<button onclick={() => confirmIds([d.id])} title={`Yes, ${subject?.name}`} aria-label="Confirm"><Icon name="check" size={15} /></button>{/if}
+              <button onclick={() => rejectIds([d.id])} title={named ? `Not ${subject?.name}` : 'Not in this group'} aria-label="Not this one"><Icon name="x" size={15} /></button>
+              <button onclick={() => subject && people.openPhoto(subject, d)} title="Open the photo" aria-label="Open the photo"><Icon name="image" size={15} /></button>
+            </div>
           </div>
         {/each}
       </div>
@@ -261,7 +256,7 @@
       {#if more}<button class="btn sm ghost loadmore" onclick={() => loadDets(true)} disabled={loading}>Show more</button>{/if}
     </div>
 
-    {#if sel.size > 0 && !ro}
+    {#if sel.size > 0}
       <footer class="selbar">
         <span class="tnum"><b>{sel.size}</b> selected</span>
         <div class="grow"></div>

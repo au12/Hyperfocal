@@ -35,7 +35,6 @@
     });
   });
 
-  const ro = $derived(!!store.status?.readonly);
   const dets = $derived((data?.detections ?? []).filter((d) => !d.who?.hidden));
   const hiddenCount = $derived((data?.detections ?? []).length - dets.length);
 
@@ -73,23 +72,17 @@
         <div class="grow"><NameInput kind={d.kind} compact onpick={(p) => name(d, p)} oncancel={() => (naming = null)} /></div>
       {:else if who?.name && d.state === 1}
         <button class="nm grow ellipsis" onclick={() => show(d)} title={`Photos of ${who.name}`}>{who.name}</button>
-        {#if !ro}
-          <button class="btn sm ghost icon" onclick={() => (naming = d.id)} title="Someone else" aria-label="Someone else"><Icon name="edit" /></button>
-          <button class="btn sm ghost icon" onclick={() => people.reject([d.id])} title={`Not ${who.name}`} aria-label={`Not ${who.name}`}><Icon name="user-x" /></button>
-        {/if}
+        <button class="btn sm ghost icon" onclick={() => (naming = d.id)} title="Someone else" aria-label="Someone else"><Icon name="edit" /></button>
+        <button class="btn sm ghost icon" onclick={() => people.reject([d.id])} title={`Not ${who.name}`} aria-label={`Not ${who.name}`}><Icon name="user-x" /></button>
       {:else if who?.name}
         <span class="grow ellipsis"><span class="nm sug">{who.name}?</span></span>
-        {#if !ro}
-          <button class="btn sm icon yes" onclick={() => people.confirm({ ids: [d.id] })} title={`Yes, ${who.name}`} aria-label="Yes"><Icon name="check" /></button>
-          <button class="btn sm icon" onclick={() => people.reject([d.id])} title={`Not ${who.name}`} aria-label="No"><Icon name="x" /></button>
-          <button class="btn sm ghost icon" onclick={() => (naming = d.id)} title="Someone else" aria-label="Someone else"><Icon name="edit" /></button>
-        {/if}
+        <button class="btn sm icon yes" onclick={() => people.confirm({ ids: [d.id] })} title={`Yes, ${who.name}`} aria-label="Yes"><Icon name="check" /></button>
+        <button class="btn sm icon" onclick={() => people.reject([d.id])} title={`Not ${who.name}`} aria-label="No"><Icon name="x" /></button>
+        <button class="btn sm ghost icon" onclick={() => (naming = d.id)} title="Someone else" aria-label="Someone else"><Icon name="edit" /></button>
       {:else}
         <span class="grow dim ellipsis">{who ? `Unnamed ${what(d) === 'face' ? 'person' : what(d)}` : `Unknown ${what(d)}`}</span>
-        {#if !ro}
-          <button class="btn sm" onclick={() => (naming = d.id)}>Name</button>
-          <button class="btn sm ghost icon" onclick={() => people.ignore([d.id])} title={d.kind === 'face' ? 'Not a face, or not of interest' : 'Not of interest'} aria-label="Ignore"><Icon name="eye-off" /></button>
-        {/if}
+        <button class="btn sm" onclick={() => (naming = d.id)}>Name</button>
+        <button class="btn sm ghost icon" onclick={() => people.ignore([d.id])} title={d.kind === 'face' ? 'Not a face, or not of interest' : 'Not of interest'} aria-label="Ignore"><Icon name="eye-off" /></button>
       {/if}
     </div>
   {/each}

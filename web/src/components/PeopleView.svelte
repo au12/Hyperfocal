@@ -17,7 +17,6 @@
   const total = $derived(s ? s.analyzed + s.pending : 0);
   const pct = $derived(total ? Math.min(100, (100 * (s?.analyzed ?? 0)) / total) : 0);
   const pets = $derived(people.tab === 'pet');
-  const ro = $derived(!!store.status?.readonly);
 
   const phaseText: Record<string, string> = {
     off: 'Face and pet recognition is off',
@@ -70,7 +69,7 @@
         <div class="menu-sep"></div>
         <div class="menu-label">
           {#if st}{fmt(st.faces)} faces and {fmt(st.animals)} dogs and cats found{#if s && s.failed} · {fmt(s.failed)} photos unreadable{/if}{/if}
-          {#if st && !st.xmp}<br />Names stay in Hyperfocal (sidecar writing is off){/if}
+          {#if st && !st.xmp}<br />Names stay in Hyperfocal: no sidecars are written (read-only mode, or HYPERFOCAL_PEOPLE_XMP=false){/if}
         </div>
       {/snippet}
     </Popover>
@@ -114,7 +113,7 @@
               <span class="face" class:pet={pets}>
                 {#if x.cover}<img src={urls.crop(x.cover)} alt="" loading="lazy" draggable="false" />{/if}
               </span>
-              <span class="name dim">{ro ? subjectLabel(x) : 'Add name'}</span>
+              <span class="name dim">Add name</span>
               <span class="cnt dim tnum">{fmt(x.photos)} {x.photos === 1 ? 'photo' : 'photos'}</span>
             </button>
           {/each}

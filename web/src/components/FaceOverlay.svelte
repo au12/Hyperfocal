@@ -32,7 +32,6 @@
     });
   });
 
-  const ro = $derived(!!store.status?.readonly);
   const dets = $derived((data?.detections ?? []).filter((d) => !d.who?.hidden));
 
   function label(d: Detection): string {
@@ -59,15 +58,15 @@
           </div>
         {:else if label(d)}
           <div class="tag">
-            {#if d.state === 0 && d.who?.name && !ro}
+            {#if d.state === 0 && d.who?.name}
               <button class="lbl" onclick={() => (naming = d.id)} title="Someone else">{label(d)}</button>
               <button class="yn" onclick={() => people.confirm({ ids: [d.id] })} title={`Yes, ${d.who?.name}`} aria-label="Yes"><Icon name="check" size={12} /></button>
               <button class="yn" onclick={() => people.reject([d.id])} title={`Not ${d.who?.name}`} aria-label="No"><Icon name="x" size={12} /></button>
             {:else}
-              <button class="lbl" onclick={() => !ro && (naming = d.id)} title={ro ? '' : 'Change'}>{label(d)}</button>
+              <button class="lbl" onclick={() => (naming = d.id)} title="Change">{label(d)}</button>
             {/if}
           </div>
-        {:else if !ro && w * rect.w >= 14}
+        {:else if w * rect.w >= 14}
           <!-- Unknown: a small button, so crowded photos stay readable. -->
           <div class="tag"><button class="yn add" onclick={() => (naming = d.id)} title={d.kind === 'face' ? 'Who is this?' : 'Name this pet'} aria-label="Name"><Icon name="plus" size={12} /></button></div>
         {/if}
