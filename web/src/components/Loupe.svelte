@@ -1116,8 +1116,15 @@
   .star.on {
     color: var(--star);
   }
-  .star:hover {
-    color: #ffd97a;
+  /* Hover previews the rating: fill up to the hovered star, overriding the set rating. */
+  @media (hover: hover) {
+    .rate:has(.star:hover) .star {
+      color: #4a5866;
+    }
+    .rate:has(.star:hover) .star:hover,
+    .rate:has(.star:hover) .star:has(~ .star:hover) {
+      color: #ffd97a;
+    }
   }
   .labels {
     display: flex;

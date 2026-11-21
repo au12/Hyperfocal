@@ -254,8 +254,15 @@
   .star.on {
     color: var(--star);
   }
-  .star:hover:not(:disabled) {
-    color: #ffd97a;
+  /* Hover previews the rating: fill up to the hovered star, overriding the set rating. */
+  @media (hover: hover) {
+    .stars:has(.star:hover:not(:disabled)) .star {
+      color: var(--border-strong);
+    }
+    .stars:has(.star:hover:not(:disabled)) .star:hover,
+    .stars:has(.star:hover:not(:disabled)) .star:has(~ .star:hover) {
+      color: #ffd97a;
+    }
   }
   .flagbtn {
     border: 1px solid var(--border-strong);

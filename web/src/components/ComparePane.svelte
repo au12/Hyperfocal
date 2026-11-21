@@ -638,6 +638,16 @@
   .stars button:hover {
     transform: scale(1.15);
   }
+  /* Hover previews the rating: fill up to the hovered star, overriding the set rating. */
+  @media (hover: hover) {
+    .stars:has(button:hover) button {
+      color: rgba(255, 255, 255, 0.35);
+    }
+    .stars:has(button:hover) button:hover,
+    .stars:has(button:hover) button:has(~ button:hover) {
+      color: #ffd97a;
+    }
+  }
   .act {
     display: inline-flex;
     align-items: center;

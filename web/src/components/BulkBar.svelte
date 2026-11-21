@@ -61,6 +61,16 @@
     opacity: 1;
     transform: scale(1.15);
   }
+  /* Hover previews the rating: stars after the hovered one dim. */
+  @media (hover: hover) {
+    .stars:has(button:hover) button {
+      opacity: 0.3;
+    }
+    .stars:has(button:hover) button:hover,
+    .stars:has(button:hover) button:has(~ button:hover) {
+      opacity: 1;
+    }
+  }
   .labels {
     display: flex;
     gap: 0.125rem;
