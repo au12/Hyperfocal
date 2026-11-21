@@ -17,6 +17,8 @@
 //! the ungrouped faces close to it (one per photo).
 
 use super::index::{Hit, Space, from_blob};
+#[cfg(test)]
+use super::index::{code_distance, code_radius, sign_code};
 use super::{AUTO, CONFIRMED, DOG, FACE, IGNORED, PERSON, PET};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -72,18 +74,45 @@ impl Engine {
 
     /// Load every usable embedding from the index.
     pub fn load(c: &Connection) -> Result<Engine> {
+        use rayon::prelude::*;
         let mut e = Engine::empty();
         let mut st = c.prepare("SELECT id, photo_id, kind, quality, emb, subject_id, state FROM detections WHERE emb IS NOT NULL AND state != ?1")?;
         let mut rows = st.query([IGNORED])?;
-        while let Some(r) = rows.next()? {
-            let (id, photo, kind, q): (i64, i64, i64, f64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
-            if !usable(kind, q) {
-                continue;
+        // Read in batches, so that the sign codes of a batch are worked out in parallel
+        // (a few microseconds each: seconds for a large library on one core).
+        struct Row {
+            id: i64,
+            photo: i64,
+            kind: i64,
+            q: f32,
+            v: Vec<i8>,
+            subject: i64,
+            confirmed: bool,
+        }
+        const BATCH: usize = 8192;
+        let mut batch: Vec<Row> = Vec::with_capacity(BATCH);
+        loop {
+            let r = rows.next()?;
+            if let Some(r) = r {
+                let (id, photo, kind, q): (i64, i64, i64, f64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+                if usable(kind, q)
+                    && let Some(v) = from_blob(r.get_ref(4)?.as_blob()?)
+                {
+                    let subject: Option<i64> = r.get(5)?;
+                    let state: i64 = r.get(6)?;
+                    batch.push(Row { id, photo, kind, q: q as f32, v, subject: subject.unwrap_or(0), confirmed: state == CONFIRMED });
+                }
+                if batch.len() < BATCH {
+                    continue;
+                }
             }
-            let Some(v) = from_blob(r.get_ref(4)?.as_blob()?) else { continue };
-            let subject: Option<i64> = r.get(5)?;
-            let state: i64 = r.get(6)?;
-            e.space(kind).insert(id, photo, &v, q as f32, subject.unwrap_or(0), state == CONFIRMED);
+            let codes: Vec<_> = batch.par_iter().map(|b| super::index::sign_code(&b.v)).collect();
+            for (b, code) in batch.drain(..).zip(codes) {
+                e.space(b.kind).insert_coded(b.id, b.photo, &b.v, code, b.q, b.subject, b.confirmed);
+            }
+            if r.is_none() {
+                break;
+            }
         }
         let mut st = c.prepare("SELECT detection_id, subject_id FROM detection_rejects")?;
         for r in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
@@ -232,7 +261,7 @@ impl Engine {
                 continue;
             }
             let qs: Vec<&[i8]> = ids.iter().map(|&(_, s)| sp.vector(s)).collect();
-            for ((id, _), h) in ids.iter().zip(sp.search_many(&qs, floor(kind), k)) {
+            for ((id, _), h) in ids.iter().zip(sp.search_batch(&qs, floor(kind), k)) {
                 out.insert(*id, h);
             }
         }
@@ -366,8 +395,9 @@ impl Engine {
 /// groups stay as they are. `progress` gets 0..1.
 ///
 /// The faces go in chunks: the neighbours of a chunk are found in one pass over the
-/// index (`search_many`), then the chunk is matched in order. The engine is locked one
-/// chunk at a time, so edits made meanwhile wait a moment at most.
+/// index (`search_many`; in a large library through the sign codes first), then the
+/// chunk is matched in order. The engine is locked one chunk at a time, so edits made
+/// meanwhile wait a moment at most.
 pub fn regroup(lock: &parking_lot::Mutex<Option<Engine>>, conn: &mut Connection, progress: &dyn Fn(f64)) -> Result<Assigned> {
     let todo: Vec<(i64, i64)> = {
         let mut g = lock.lock();
@@ -405,7 +435,8 @@ pub fn regroup(lock: &parking_lot::Mutex<Option<Engine>>, conn: &mut Connection,
             let sp = eng.space_ref(kind);
             let ids: Vec<i64> = chunk.iter().filter(|c| c.1 == kind && sp.contains(c.0)).map(|c| c.0).collect();
             let qs: Vec<&[i8]> = ids.iter().filter_map(|&id| sp.slot(id)).map(|s| sp.vector(s)).collect();
-            for (id, h) in ids.iter().zip(sp.search_many(&qs, floor(kind), 64)) {
+            let found = sp.search_batch(&qs, floor(kind), 64);
+            for (id, h) in ids.iter().zip(found) {
                 hits.insert(*id, h);
             }
         }
@@ -441,6 +472,104 @@ pub fn subject_by_name(c: &Connection, name: &str, det_kind: i64) -> Result<i64>
 
 #[cfg(test)]
 mod tests {
+    /// Synthetic faces: identities (random directions) with faces scattered around each,
+    /// so that two faces of one person have a similarity of about 0.4 to 0.8 and of two
+    /// people about 0 (as AuraFace's are).
+    fn crowd(n: usize, per: usize, seed: u64) -> Space {
+        let mut x = seed | 1;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % 20001) as f32 / 10000.0 - 1.0
+        };
+        let mut sp = Space::default();
+        let mut id = 0i64;
+        while (id as usize) < n {
+            let c: Vec<f32> = (0..super::super::DIM).map(|_| rnd()).collect();
+            for _ in 0..(1 + (rnd().abs() * (2 * per) as f32) as usize) {
+                let a = 0.5 + 0.75 * rnd().abs();
+                let v: Vec<f32> = c.iter().map(|&m| m + a * rnd()).collect();
+                id += 1;
+                sp.insert(id, id, &super::super::index::quantize(&v), 0.9, 0, false);
+                if id as usize >= n {
+                    break;
+                }
+            }
+        }
+        sp
+    }
+
+    #[test]
+    fn coded_search_finds_almost_every_neighbour_a_full_search_finds() {
+        let sp = crowd(24_000, 8, 7);
+        let qs: Vec<&[i8]> = (0..sp.len()).step_by(48).map(|q| sp.vector(q)).collect();
+        let full = sp.search_many(&qs, floor(FACE), 64);
+        let coded = sp.search_many_coded(&qs, floor(FACE), 64);
+        let (mut want, mut got) = (0usize, 0usize);
+        for (f, c) in full.iter().zip(&coded) {
+            let near: std::collections::HashSet<usize> = c.iter().map(|h| h.slot).collect();
+            want += f.len();
+            got += f.iter().filter(|h| near.contains(&h.slot)).count();
+            // Nothing that a full search would not find, with the same similarity.
+            for h in c {
+                assert!(f.iter().any(|x| x.slot == h.slot && x.sim == h.sim));
+            }
+        }
+        let recall = got as f64 / want as f64;
+        eprintln!("recall {recall:.5} ({want} neighbours)");
+        assert!(want > 1000, "{want}");
+        assert!(recall >= 0.998, "recall {recall}");
+    }
+
+    #[test]
+    fn sign_codes_estimate_the_angle() {
+        let sp = crowd(400, 4, 3);
+        let mut worst = 0f32;
+        for i in 0..50 {
+            for j in 0..50 {
+                let (a, b) = (sp.vector(i), sp.vector(j));
+                let est = (std::f32::consts::PI * code_distance(&sign_code(a), &sign_code(b)) as f32 / 512.0).cos();
+                worst = worst.max((est - super::super::index::cosine(a, b)).abs());
+            }
+        }
+        assert!(worst < 0.25, "{worst}");
+        // The radius keeps a neighbour at the floor: its expected bits plus a margin.
+        assert!(code_radius(0.37) > 194 && code_radius(0.37) < 240);
+    }
+
+    /// cargo test --release -- --ignored regroup_speed --nocapture (FACES=600000: sign codes,
+    /// one face and batched searches, coded and full)
+    #[test]
+    #[ignore]
+    fn regroup_speed() {
+        let n: usize = std::env::var("FACES").ok().and_then(|v| v.parse().ok()).unwrap_or(600_000);
+        let sp = crowd(n, 8, 11);
+        let qs: Vec<usize> = (0..sp.len()).step_by((n / 2000).max(1)).collect();
+        let vs: Vec<&[i8]> = qs.iter().map(|&q| sp.vector(q)).collect();
+        let t = std::time::Instant::now();
+        let codes: u64 = (0..sp.len()).map(|i| sign_code(sp.vector(i))[0] & 1).sum();
+        println!("{n} sign codes in {:?} ({codes})", t.elapsed());
+        let t = std::time::Instant::now();
+        let one_coded: usize = vs.iter().take(50).map(|q| sp.search_many_coded(&[q], floor(FACE), 64)[0].len()).sum();
+        let one_c = t.elapsed() / 50;
+        let t = std::time::Instant::now();
+        let one_full: usize = vs.iter().take(50).map(|q| sp.search(q, floor(FACE), 64).len()).sum();
+        println!("one face: coded {one_c:?}, full {:?} ({one_coded} vs {one_full})", t.elapsed() / 50);
+        let t = std::time::Instant::now();
+        let a: usize = vs.chunks(256).map(|c| sp.search_many_coded(c, floor(FACE), 64).iter().map(Vec::len).sum::<usize>()).sum();
+        let coded = t.elapsed();
+        let t = std::time::Instant::now();
+        let b: usize = vs.chunks(256).map(|c| sp.search_many(c, floor(FACE), 64).iter().map(Vec::len).sum::<usize>()).sum();
+        let full = t.elapsed();
+        println!(
+            "{n} faces, {} queries: coded {coded:?} ({:.2} ms each), full {full:?} ({:.2} ms each); hits {a} vs {b}",
+            qs.len(),
+            coded.as_secs_f64() * 1000.0 / qs.len() as f64,
+            full.as_secs_f64() * 1000.0 / qs.len() as f64
+        );
+    }
+
     use super::*;
     use crate::people::index::quantize;
 

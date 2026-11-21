@@ -139,6 +139,98 @@ pub fn to_blob(v: &[i8]) -> Vec<u8> {
     v.iter().map(|&x| x as u8).collect()
 }
 
+// ---------------------------------------------------------------- sign codes
+
+/// Above this many vectors in a space, batched searches compare sign codes first
+/// (`Space::search_batch`): about six times faster at 600,000 faces, and the same matches
+/// but for about one neighbour in 2,000 right at the floor.
+pub const CODED_FROM: usize = 50_000;
+
+/// 64-bit words of a sign code: one bit per dimension.
+pub const WORDS: usize = DIM / 64;
+
+/// A random rotation's sign flips (a fixed seed: codes are comparable across runs).
+fn flips(seed: u64) -> [f32; DIM] {
+    let mut x = seed;
+    std::array::from_fn(|_| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        if x & 1 == 0 { 1.0 } else { -1.0 }
+    })
+}
+
+fn fwht(x: &mut [f32; DIM]) {
+    // The first three rounds within each run of eight, then wider ones over contiguous
+    // halves (which the compiler turns into vector instructions).
+    for c in x.chunks_exact_mut(8) {
+        let mut v: [f32; 8] = [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]];
+        for h in [1, 2, 4] {
+            for i in (0..8).step_by(h * 2) {
+                for j in i..i + h {
+                    let (a, b) = (v[j], v[j + h]);
+                    v[j] = a + b;
+                    v[j + h] = a - b;
+                }
+            }
+        }
+        c.copy_from_slice(&v);
+    }
+    let mut h = 8;
+    while h < DIM {
+        for blk in x.chunks_exact_mut(2 * h) {
+            let (lo, hi) = blk.split_at_mut(h);
+            for (a, b) in lo.iter_mut().zip(hi.iter_mut()) {
+                let t = *a;
+                *a = t + *b;
+                *b = t - *b;
+            }
+        }
+        h *= 2;
+    }
+}
+
+/// A vector's sign code (SimHash, Charikar 2002): the signs of its components after a
+/// random rotation (two rounds of random sign flips and a Walsh-Hadamard transform).
+/// The share of bits two codes differ in estimates the angle between the vectors:
+/// cos ≈ cos(π · differing / 512), within about ±0.06 at the matching floor. Comparing
+/// codes takes eight XOR-and-count instructions instead of 512 multiplications, so a
+/// search first keeps the vectors whose codes are near enough (with a safe margin) and
+/// then checks only those exactly.
+pub fn sign_code(v: &[i8]) -> [u64; WORDS] {
+    use std::sync::OnceLock;
+    static F: OnceLock<([f32; DIM], [f32; DIM])> = OnceLock::new();
+    let (f1, f2) = F.get_or_init(|| (flips(0x9E37_79B9_7F4A_7C15), flips(0xD1B5_4A32_D192_ED03)));
+    let mut x: [f32; DIM] = std::array::from_fn(|i| v[i] as f32 * f1[i]);
+    fwht(&mut x);
+    for (a, f) in x.iter_mut().zip(f2) {
+        *a *= f;
+    }
+    fwht(&mut x);
+    let mut out = [0u64; WORDS];
+    for (i, a) in x.iter().enumerate() {
+        if *a > 0.0 {
+            out[i / 64] |= 1 << (i % 64);
+        }
+    }
+    out
+}
+
+/// The most differing bits of two codes whose vectors may still have a cosine of at
+/// least `floor`: the bits the angle of `floor` gives, plus 3.3 standard deviations of
+/// the estimate (a true neighbour is kept with a probability of 99.95%).
+pub fn code_radius(floor: f32) -> u32 {
+    let bits = DIM as f64;
+    let p = (floor.clamp(-1.0, 1.0) as f64).acos() / std::f64::consts::PI;
+    let sd = (bits * p * (1.0 - p)).sqrt();
+    (bits * p + 3.3 * sd).ceil().min(bits) as u32
+}
+
+#[cfg(test)]
+pub(crate) fn code_distance(a: &[u64], b: &[u64]) -> u32 {
+    a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Hit {
     pub slot: usize,
@@ -152,6 +244,8 @@ pub struct Space {
     photos: Vec<i64>,
     vecs: Vec<i8>,
     norms: Vec<f32>,
+    /// Sign codes (`WORDS` per vector), for searches over many vectors.
+    codes: Vec<u64>,
     quality: Vec<f32>,
     subject: Vec<i64>,
     confirmed: Vec<bool>,
@@ -201,9 +295,16 @@ impl Space {
     }
 
     pub fn insert(&mut self, id: i64, photo: i64, v: &[i8], quality: f32, subject: i64, confirmed: bool) {
+        self.insert_coded(id, photo, v, sign_code(v), quality, subject, confirmed);
+    }
+
+    /// `insert`, given the vector's sign code (worked out ahead, in parallel).
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_coded(&mut self, id: i64, photo: i64, v: &[i8], code: [u64; WORDS], quality: f32, subject: i64, confirmed: bool) {
         debug_assert_eq!(v.len(), DIM);
         if let Some(s) = self.slot(id) {
             self.vecs[s * DIM..(s + 1) * DIM].copy_from_slice(v);
+            self.codes[s * WORDS..(s + 1) * WORDS].copy_from_slice(&code);
             self.norms[s] = norm(v);
             self.quality[s] = quality;
             self.photos[s] = photo;
@@ -215,6 +316,7 @@ impl Space {
         self.ids.push(id);
         self.photos.push(photo);
         self.vecs.extend_from_slice(v);
+        self.codes.extend_from_slice(&code);
         self.norms.push(norm(v));
         self.quality.push(quality);
         self.subject.push(subject);
@@ -234,6 +336,8 @@ impl Space {
             self.confirmed.swap(s, last);
             let (a, b) = self.vecs.split_at_mut(last * DIM);
             a[s * DIM..(s + 1) * DIM].copy_from_slice(&b[..DIM]);
+            let (a, b) = self.codes.split_at_mut(last * WORDS);
+            a[s * WORDS..(s + 1) * WORDS].copy_from_slice(&b[..WORDS]);
             self.pos.insert(moved, s);
         }
         self.ids.pop();
@@ -243,6 +347,7 @@ impl Space {
         self.subject.pop();
         self.confirmed.pop();
         self.vecs.truncate(last * DIM);
+        self.codes.truncate(last * WORDS);
     }
 
     pub fn set_label(&mut self, id: i64, subject: i64, confirmed: bool) {
@@ -300,6 +405,103 @@ impl Space {
         hits.sort_by(|a, b| b.sim.total_cmp(&a.sim).then(a.slot.cmp(&b.slot)));
         hits.truncate(k);
         hits
+    }
+
+    /// `search_many`, through the sign codes in a large space (`search_many_coded`).
+    pub fn search_batch(&self, qs: &[&[i8]], floor: f32, k: usize) -> Vec<Vec<Hit>> {
+        if self.len() > CODED_FROM { self.search_many_coded(qs, floor, k) } else { self.search_many(qs, floor, k) }
+    }
+
+    /// `search_many` through the sign codes: each stored vector's code is compared with
+    /// the queries' first, and only vectors whose codes are near enough are compared
+    /// exactly (`code_radius`). The same hits but for about one true neighbour in 2,000
+    /// at the floor; several times faster than `search_many` on large spaces.
+    pub fn search_many_coded(&self, qs: &[&[i8]], floor: f32, k: usize) -> Vec<Vec<Hit>> {
+        let nq = qs.len();
+        if nq == 0 || self.is_empty() {
+            return vec![Vec::new(); nq];
+        }
+        let qn: Vec<f32> = qs.iter().map(|q| norm(q)).collect();
+        let qc: Vec<[u64; WORDS]> = qs.iter().map(|q| sign_code(q)).collect();
+        let radius = code_radius(floor);
+        let n = self.len();
+        const CHUNK: usize = 8192;
+        let parts: Vec<Vec<Vec<Hit>>> = (0..n.div_ceil(CHUNK))
+            .into_par_iter()
+            .map(|c| {
+                let range = c * CHUNK..((c + 1) * CHUNK).min(n);
+                #[cfg(target_arch = "x86_64")]
+                if std::arch::is_x86_feature_detected!("popcnt") {
+                    // SAFETY: the CPU has the instruction (checked above).
+                    return unsafe { self.coded_chunk_popcnt(range, qs, &qn, &qc, radius, floor) };
+                }
+                self.coded_chunk(range, qs, &qn, &qc, radius, floor)
+            })
+            .collect();
+        let mut res: Vec<Vec<Hit>> = vec![Vec::new(); nq];
+        for part in parts {
+            for (j, h) in part.into_iter().enumerate() {
+                res[j].extend(h);
+            }
+        }
+        for h in res.iter_mut() {
+            h.sort_by(|a, b| b.sim.total_cmp(&a.sim).then(a.slot.cmp(&b.slot)));
+            h.truncate(k);
+        }
+        res
+    }
+
+    /// One chunk of `search_many_coded`: the stored vectors in `range` against every
+    /// query, codes first.
+    #[inline(always)]
+    fn coded_chunk(
+        &self,
+        range: std::ops::Range<usize>,
+        qs: &[&[i8]],
+        qn: &[f32],
+        qc: &[[u64; WORDS]],
+        radius: u32,
+        floor: f32,
+    ) -> Vec<Vec<Hit>> {
+        let mut out: Vec<Vec<Hit>> = vec![Vec::new(); qs.len()];
+        for i in range {
+            let code: &[u64; WORDS] = self.codes[i * WORDS..(i + 1) * WORDS].try_into().unwrap();
+            let vn = self.norms[i];
+            for (j, c) in qc.iter().enumerate() {
+                let mut d = 0;
+                for w in 0..WORDS {
+                    d += (code[w] ^ c[w]).count_ones();
+                }
+                if d > radius {
+                    continue;
+                }
+                let den = qn[j] * vn;
+                if den <= 0.0 {
+                    continue;
+                }
+                let dp = dot(qs[j], &self.vecs[i * DIM..(i + 1) * DIM]) as f32;
+                if dp >= floor * den {
+                    out[j].push(Hit { slot: i, sim: dp / den });
+                }
+            }
+        }
+        out
+    }
+
+    /// `coded_chunk` with the CPU's population-count instruction (one instruction per
+    /// word instead of a dozen).
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn coded_chunk_popcnt(
+        &self,
+        range: std::ops::Range<usize>,
+        qs: &[&[i8]],
+        qn: &[f32],
+        qc: &[[u64; WORDS]],
+        radius: u32,
+        floor: f32,
+    ) -> Vec<Vec<Hit>> {
+        self.coded_chunk(range, qs, qn, qc, radius, floor)
     }
 
     /// `search` for many queries at once (the same results): each stored vector is read
