@@ -31,6 +31,12 @@ use std::time::{Duration, Instant};
 use tone::ToneMode;
 
 pub const THUMB_LONG: usize = 512;
+/// JPEG quality of thumbnails and previews: made while someone waits (libjpeg-turbo, fast)
+/// or in the background (`jpeg::encode_small`, the same visual quality in fewer bytes).
+const THUMB_Q: i32 = 78;
+const THUMB_Q_SMALL: u8 = 80;
+const PREVIEW_Q: i32 = 85;
+const PREVIEW_Q_SMALL: u8 = 88;
 /// Exposure added to every RAW render: none. The tone curves (`tone`) are calibrated on
 /// FastRawViewer's output, and the developed data already renders Canon's NormalWhiteLevel
 /// as white (see `raw::BayerFrame::render_white`). Kept for the API's `boost_ev`.
@@ -432,9 +438,9 @@ impl Images {
             if kind == Kind::Heic {
                 let (img, info) = native::heic_thumb(&src, THUMB_LONG, DRAFT_MIN)?;
                 let img = jpeg::orient(jpeg::fit_long(img, THUMB_LONG)?, orient);
-                return Ok((jpeg::encode(&img, 78, false)?, info.source == "draft"));
+                return Ok((jpeg::encode(&img, THUMB_Q, false)?, info.source == "draft"));
             }
-            Ok((make_thumb(&src, kind, orient)?, false))
+            Ok((make_thumb(&src, kind, orient, false)?, false))
         })
         .await;
         drop(busy);
@@ -503,7 +509,7 @@ impl Images {
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         let kind = Kind::from_i32(loc.rec.kind);
         let out = path.clone();
-        let res = tokio::task::spawn_blocking(move || make_preview(&src, kind, long, &out)).await;
+        let res = tokio::task::spawn_blocking(move || make_preview(&src, kind, long, &out, false)).await;
         drop(busy);
         res??;
         Ok(path)
@@ -824,7 +830,7 @@ pub fn build_thumb(st: &AppState, id: i64) -> bool {
     }
     let sig = sig48(&loc.rec);
     let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
-    match raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8)) {
+    match raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, true)) {
         Ok(bytes) => {
             if let Err(e) = st.images.thumbs.put(id, sig, thumbstore::Kind::Thumb, &bytes) {
                 tracing::warn!("thumbnail of {} not cached: {e:#}", src.display());
@@ -856,7 +862,7 @@ pub fn thumb_pixels(st: &AppState, loc: &Located) -> Result<Rgb> {
         Ok(jpeg::orient(jpeg::fit_long(img, THUMB_LONG)?, orientation))
     })
     .map_err(|e| anyhow!(e))?;
-    if let Ok(bytes) = jpeg::encode(&img, 78, false) {
+    if let Ok(bytes) = jpeg::encode_small(&img, THUMB_Q_SMALL) {
         let _ = st.images.thumbs.put(loc.rec.id, sig, thumbstore::Kind::Thumb, &bytes);
     }
     Ok(img)
@@ -869,7 +875,7 @@ pub fn thumb_jpeg(st: &AppState, loc: &Located) -> Result<Vec<u8>> {
         return Ok(data);
     }
     let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
-    let bytes = raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8)).map_err(|e| anyhow!(e))?;
+    let bytes = raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, true)).map_err(|e| anyhow!(e))?;
     let _ = st.images.thumbs.put(loc.rec.id, sig, thumbstore::Kind::Thumb, &bytes);
     Ok(bytes)
 }
@@ -998,7 +1004,7 @@ pub fn pregen_pass(st: &AppState, since: i64, busy: &dyn Fn() -> bool) -> usize 
                 continue;
             }
             let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
-            match raw::catch(|| make_preview(&src, Kind::from_i32(loc.rec.kind), long, &out)) {
+            match raw::catch(|| make_preview(&src, Kind::from_i32(loc.rec.kind), long, &out, true)) {
                 Ok(()) => {
                     used += std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
                     made += 1;
@@ -1031,19 +1037,22 @@ fn touch(path: &Path) {
     }
 }
 
-/// Write a preview of `src` (sensor orientation, long edge `long`) to `out`.
-fn make_preview(src: &Path, kind: Kind, long: usize, out: &Path) -> Result<()> {
+/// Write a preview of `src` (sensor orientation, long edge `long`) to `out`; `small`: for
+/// previews made in the background (see `jpeg::encode_small`).
+fn make_preview(src: &Path, kind: Kind, long: usize, out: &Path, small: bool) -> Result<()> {
     let img = load_display_rgb(src, kind, long)?;
     let img = jpeg::fit_long(img, long)?;
-    write_atomic(out, &jpeg::encode(&img, 85, false)?)
+    let bytes = if small { jpeg::encode_small(&img, PREVIEW_Q_SMALL)? } else { jpeg::encode(&img, PREVIEW_Q, false)? };
+    write_atomic(out, &bytes)
 }
 
-/// A photo's thumbnail as JPEG bytes (upright, long edge `THUMB_LONG`).
-fn make_thumb(src: &Path, kind: Kind, orientation: u8) -> Result<Vec<u8>> {
+/// A photo's thumbnail as JPEG bytes (upright, long edge `THUMB_LONG`); `small`: made in
+/// the background (see `jpeg::encode_small`).
+fn make_thumb(src: &Path, kind: Kind, orientation: u8, small: bool) -> Result<Vec<u8>> {
     let img = load_display_rgb(src, kind, THUMB_LONG)?;
     let img = jpeg::fit_long(img, THUMB_LONG)?;
     let img = jpeg::orient(img, orientation);
-    jpeg::encode(&img, 78, false)
+    if small { jpeg::encode_small(&img, THUMB_Q_SMALL) } else { jpeg::encode(&img, THUMB_Q, false) }
 }
 
 /// Delete the oldest cached previews beyond `budget` bytes (cache directory only).

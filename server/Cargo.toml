@@ -41,6 +41,9 @@ tower-http = { version = "0.6", features = ["compression-br", "compression-gzip"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 turbojpeg = { version = "1", features = ["cmake"] }
+# mozjpeg's trellis quantization in pure Rust: smaller thumbnails and previews made in the
+# background (see images::jpeg::encode_small).
+mozjpeg-rs = { version = "0.9", default-features = false }
 libc = "0.2"
 futures-util = "0.3"
 hmac = "0.12"
