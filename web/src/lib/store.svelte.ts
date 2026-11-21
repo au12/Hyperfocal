@@ -254,6 +254,8 @@ export interface Toast {
   kind: 'info' | 'ok' | 'error';
   text: string;
   action?: { label: string; run: () => void };
+  /** How long it stays (ms). */
+  ms?: number;
 }
 
 function loadLocal<T>(key: string, fallback: T): T {
@@ -277,7 +279,7 @@ function saveLocal(key: string, v: unknown) {
 export function applyTheme(t: Settings['theme']) {
   const light = t === 'light' || (t === 'auto' && matchMedia('(prefers-color-scheme: light)').matches);
   document.documentElement.dataset.theme = light ? 'light' : 'dark';
-  document.querySelector('meta[name=theme-color]')?.setAttribute('content', light ? '#ffffff' : '#12171c');
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', light ? '#f4f5f7' : '#0c0d10');
   try {
     localStorage.setItem('hf.theme', t);
   } catch {
@@ -329,6 +331,12 @@ class Store {
   /** Counts list and detail reads, to tell whether a read started after an edit was saved. */
   private readSeq = 0;
   index = new Map<number, number>();
+
+  /** Bumped when an edit reflows the grid (a reject, a restore): tiles glide into place. */
+  reflow = $state(0);
+  /** Photos on their way to (or out of) the reject folder: the grid fades them out
+   * while the server moves them. */
+  leaving = new SvelteSet<number>();
 
   /** Explicitly selected photos. Empty means the photo at the cursor is the selection,
    * as in a file manager where the focused item is the selected one. */
@@ -417,7 +425,8 @@ class Store {
   // ------------------------------------------------------------ toasts
   toast = (text: string, kind: Toast['kind'] = 'info', action?: Toast['action'], ms = 4500) => {
     const id = toastSeq++;
-    this.toasts = [...this.toasts, { id, kind, text, action }];
+    // At most four at once: the oldest goes first.
+    this.toasts = [...this.toasts.slice(-3), { id, kind, text, action, ms }];
     setTimeout(() => (this.toasts = this.toasts.filter((t) => t.id !== id)), ms);
   };
 
@@ -1131,7 +1140,12 @@ class Store {
     this.writeHash();
   };
 
+  /** Set by the single view while it is open: called just before it closes, so the
+   * photo can fly back to its tile. */
+  beforeCloseLoupe: (() => void) | null = null;
+
   closeLoupe = () => {
+    this.beforeCloseLoupe?.();
     this.loupe = false;
     this.cursor = this.current;
     this.writeHash();
@@ -1428,6 +1442,8 @@ class Store {
     const inRejectFolder = ids.every((id) => this.folders.get(this.list.f[this.index.get(id) ?? -1])?.isReject);
     if (inRejectFolder) return this.restore(ids);
     this.busy++;
+    const fading = !this.loupe && !this.compare && !(this.filters.showRejected && this.recursive);
+    if (fading) for (const id of ids) this.leaving.add(id);
     try {
       const r = await api.reject(ids);
       this.afterMove(r, ids, `Moved to ${this.status?.reject_dir ?? '_Rejected'}`);
@@ -1435,6 +1451,7 @@ class Store {
     } catch (e) {
       this.toast(`Not moved: ${(e as Error).message}`, 'error', undefined, 9000);
     } finally {
+      for (const id of ids) this.leaving.delete(id);
       this.busy--;
     }
   };
@@ -1485,6 +1502,7 @@ class Store {
         if (!this.settings.advanceAfterReject && this.current > 0 && ids.length === 1) this.current--;
         if (next.id.length === 0) this.loupe = false;
         this.pruneCompare();
+        this.reflow++;
         this.rev++;
         if (this.loupe || this.compare) this.loadDetail();
       } else {

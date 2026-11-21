@@ -212,14 +212,14 @@
   {/if}
 
   <div class="section">
-    <button class="sec-title toggle" onclick={toggleTimeline} aria-expanded={timelineShown}>
-      <Icon name={timelineShown ? 'chevron-down' : 'chevron'} size={14} />Timeline
+    <button class="sec-title toggle" class:open={timelineShown} onclick={toggleTimeline} aria-expanded={timelineShown}>
+      <Icon name="chevron" size={12} stroke={2.25} />Timeline
     </button>
     {#if timelineShown}
       {#each years as yr (yr.y)}
         {@const [yf, yt] = yearRange(yr.y)}
         <div class="item" class:active={isRange(yf, yt)} onclick={() => openRange(yf, yt)} onkeydown={(e) => e.key === 'Enter' && openRange(yf, yt)} role="treeitem" aria-selected={isRange(yf, yt)} aria-expanded={tlOpen.has(`y${yr.y}`)} tabindex="0">
-          <button class="tw" onclick={(e) => tlToggle(`y${yr.y}`, e)} aria-label="Expand"><Icon name={tlOpen.has(`y${yr.y}`) ? 'chevron-down' : 'chevron'} size={14} /></button>
+          <button class="tw" class:open={tlOpen.has(`y${yr.y}`)} onclick={(e) => tlToggle(`y${yr.y}`, e)} aria-label="Expand"><Icon name="chevron" size={14} /></button>
           <Icon name="calendar" size={16} />
           <span class="grow">{yr.y}</span><span class="count">{fmt(yr.n)}</span>
         </div>
@@ -228,7 +228,7 @@
             {@const [mf, mt] = monthRange(mo.y, mo.m)}
             {@const mk = `m${mo.y}-${mo.m}`}
             <div class="item" style:padding-left="1.5rem" class:active={isRange(mf, mt)} onclick={() => openRange(mf, mt)} onkeydown={(e) => e.key === 'Enter' && openRange(mf, mt)} role="treeitem" aria-selected={isRange(mf, mt)} aria-expanded={tlOpen.has(mk)} tabindex="0">
-              <button class="tw" onclick={(e) => tlToggle(mk, e)} aria-label="Expand"><Icon name={tlOpen.has(mk) ? 'chevron-down' : 'chevron'} size={14} /></button>
+              <button class="tw" class:open={tlOpen.has(mk)} onclick={(e) => tlToggle(mk, e)} aria-label="Expand"><Icon name="chevron" size={14} /></button>
               <span class="grow">{monthName(mo.m)}</span><span class="count">{fmt(mo.n)}</span>
             </div>
             {#if tlOpen.has(mk)}
@@ -268,8 +268,8 @@
         tabindex="0"
       >
         {#if f.children.length}
-          <button class="tw" onclick={(e) => toggle(f, e)} aria-label="Expand">
-            <Icon name={store.expanded.has(f.id) ? 'chevron-down' : 'chevron'} size={14} />
+          <button class="tw" class:open={store.expanded.has(f.id)} onclick={(e) => toggle(f, e)} aria-label="Expand">
+            <Icon name="chevron" size={14} />
           </button>
         {:else}
           <span class="tw"></span>
@@ -293,69 +293,102 @@
     background: var(--surface);
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 0.5rem 0.375rem 2rem;
+    padding: 0.625rem 0.5rem 2rem;
   }
   :global(.drawer) .sidebar {
     width: 100%;
     border: 0;
   }
   .section + .section {
-    border-top: 1px solid var(--border);
-    margin-top: 0.5rem;
-    padding-top: 0.5rem;
+    margin-top: 0.875rem;
   }
   .sec-title {
-    font-size: var(--fs-sm);
-    font-weight: 600;
+    font-size: var(--fs-xs);
+    font-weight: 650;
     color: var(--text-3);
-    padding: 0.375rem 0.625rem;
+    padding: 0.25rem 0.625rem 0.375rem;
+    text-transform: uppercase;
+    letter-spacing: 0.075em;
   }
   .sec-title.toggle {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.3125rem;
     width: 100%;
     border: 0;
     background: none;
     cursor: pointer;
     text-align: left;
-    padding-left: 0.375rem;
+    padding-left: 0.5rem;
+    transition: color var(--dur-fast);
   }
   .sec-title.toggle:hover {
     color: var(--text-2);
   }
+  .sec-title.toggle :global(svg) {
+    transition: transform var(--dur) var(--ease-out);
+  }
+  .sec-title.toggle.open :global(svg) {
+    transform: rotate(90deg);
+  }
   .item {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.5625rem;
     width: 100%;
-    min-height: 2rem;
+    min-height: 1.875rem;
     padding: 0 0.5rem;
     border: 0;
     border-radius: var(--r);
     background: none;
-    color: var(--text);
+    color: var(--text-2);
     cursor: pointer;
     text-align: left;
     user-select: none;
+    font-weight: 500;
+    transition:
+      background-color var(--dur-fast),
+      color var(--dur-fast);
   }
   .item :global(svg) {
     color: var(--text-3);
     flex: none;
+    transition: color var(--dur-fast);
   }
   .item:hover {
     background: var(--surface-2);
+    color: var(--text);
+  }
+  .item:hover :global(svg) {
+    color: var(--text-2);
   }
   .item.active {
     background: var(--accent-bg);
-    color: var(--accent);
+    color: var(--text);
     font-weight: 600;
   }
   .item.active :global(svg) {
     color: var(--accent);
   }
+  /* The active item's marker: a short bar that grows in at the left edge. */
+  .item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 3px;
+    height: 0;
+    border-radius: 0 3px 3px 0;
+    background: var(--accent);
+    transform: translateY(-50%);
+    transition: height var(--dur-slow) var(--ease-spring);
+  }
+  .item.active::before {
+    height: 1rem;
+  }
   .item.reject {
-    color: var(--text-2);
+    color: var(--text-3);
     font-style: italic;
   }
   .item.reject :global(svg) {
@@ -368,10 +401,10 @@
   .coll .main {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.5625rem;
     flex: 1;
     min-width: 0;
-    height: 2rem;
+    height: 1.875rem;
     border: 0;
     background: none;
     color: inherit;
@@ -384,13 +417,16 @@
     width: 1.5rem;
     height: 1.5rem;
     border: 0;
-    border-radius: 0.25rem;
+    border-radius: var(--r-sm);
     background: none;
     color: var(--text-3);
     display: grid;
     place-items: center;
     cursor: pointer;
     opacity: 0;
+    transition:
+      opacity var(--dur-fast),
+      background-color var(--dur-fast);
   }
   .coll:hover .more,
   .coll.active .more,
@@ -399,6 +435,7 @@
   }
   .more:hover {
     background: var(--surface-3);
+    color: var(--text);
   }
   .rename {
     flex: 1;
@@ -409,6 +446,7 @@
     background: var(--field);
     padding: 0 0.375rem;
     outline: none;
+    box-shadow: 0 0 0 3px var(--accent-bg);
   }
   .menu-item.danger,
   .menu-item.danger :global(svg) {
@@ -429,15 +467,26 @@
     padding: 0;
     color: var(--text-3);
     cursor: pointer;
-    border-radius: 0.25rem;
+    border-radius: var(--r-sm);
+    transition: background-color var(--dur-fast);
+  }
+  .tw :global(svg) {
+    transition: transform var(--dur) var(--ease-out);
+  }
+  .tw.open :global(svg) {
+    transform: rotate(90deg);
   }
   .tw:hover {
     background: var(--surface-3);
   }
   .count {
-    font-size: var(--fs-sm);
+    font-size: var(--fs-xs);
     color: var(--text-3);
     font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
+  .item.active .count {
+    color: var(--accent);
   }
   .empty {
     padding: 0.5rem 1rem;
@@ -446,6 +495,10 @@
   @media (max-width: 760px) {
     .more {
       opacity: 1;
+    }
+    .item {
+      min-height: 2.375rem;
+      font-size: var(--fs-lg);
     }
   }
 </style>

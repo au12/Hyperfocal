@@ -5,6 +5,7 @@
   import { aspectOf, justify, rowAt } from '../lib/layout';
   import { gridCtl } from '../lib/ctl';
   import { thumb, thumbs } from '../lib/thumbs';
+  import { bump } from '../lib/motion';
   import Icon from './Icon.svelte';
 
   let scroller: HTMLDivElement | undefined = $state();
@@ -27,6 +28,17 @@
   const pad = $derived(store.mobile ? 4 : PAD);
   const layout = $derived(justify(aspects, Math.max(0, width - pad * 2), target, gap));
 
+  // Tiles glide to their new places after a change that reflows the grid (a reject, a
+  // restore): `store.reflow` is bumped, and for a moment positions are transitioned.
+  let gliding = $state(false);
+  let glideTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    if (!store.reflow) return;
+    gliding = true;
+    clearTimeout(glideTimer);
+    glideTimer = setTimeout(() => (gliding = false), 520);
+  });
+
   const OVER = 1.2;
   const visible = $derived.by(() => {
     const rows = layout.rows;
@@ -37,6 +49,16 @@
     for (let r = a; r < rows.length; r++) {
       if (rows[r].top > scrollTop - pad + viewH + over) break;
       out.push(rows[r]);
+    }
+    return out;
+  });
+
+  /** The tiles to render (the visible rows, flattened), keyed by photo: a tile keeps its
+   * element when the grid reflows, so it can glide to its new place. */
+  const tiles = $derived.by(() => {
+    const out: { i: number; x: number; y: number; w: number; h: number }[] = [];
+    for (const row of visible) {
+      for (let k = 0; k < row.end - row.start; k++) out.push({ i: row.start + k, x: pad + row.x[k], y: pad + row.top, w: row.w[k], h: row.height });
     }
     return out;
   });
@@ -578,44 +600,44 @@
       {/if}
     </div>
   {/if}
-  <div class="spacer" style:height={`${layout.height + pad * 2}px`}>
-    {#each visible as row (row.start)}
-      {#each { length: row.end - row.start } as _, k (store.list.id[row.start + k])}
-        {@const i = row.start + k}
-        {@const id = store.list.id[i]}
-        {@const _r = store.rev}
-        <!-- Keyboard culling is handled by the global key map (arrows, ratings, P/X…). -->
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <div
-          class="tile"
-          class:cursor={i === store.cursor}
-          class:sel={store.selected.has(id)}
-          class:rejected={store.folders.get(store.list.f[i])?.isReject}
-          style:left={`${pad + row.x[k]}px`}
-          style:top={`${pad + row.top}px`}
-          style:width={`${row.w[k]}px`}
-          style:height={`${row.height}px`}
-          onclick={(e) => onClick(i, e)}
-          ondblclick={() => !store.mobile && store.openLoupe(i)}
-          onpointerdown={(e) => onDown(i, e)}
-          oncontextmenu={(e) => store.mobile && e.preventDefault()}
-          role="gridcell"
-          tabindex="-1"
-          aria-selected={store.selected.has(id) || (store.selected.size === 0 && i === store.cursor)}
-          title={store.list.n[i]}
-        >
-          <img use:thumb={{ url: urls.thumb(id, store.list.v[i], store.thumbRev[id]), i }} alt="" decoding="async" draggable="false" />
-          {#if store.list.lc[i] && _r >= 0}<span class="lc label-{store.list.lc[i]}"></span>{/if}
-          {#if store.list.p[i] === 1}<span class="flag"><Icon name="flag" size={14} fill /></span>{/if}
-          {#if store.selected.has(id)}<span class="check"><Icon name="check" size={14} /></span>{/if}
-          <div class="meta">
-            {#if store.list.r[i] > 0}<span class="stars">{stars(store.list.r[i])}</span>{:else if store.list.r[i] < 0}<span class="rej-r">✕</span>{/if}
-            <span class="grow"></span>
-            {#if store.settings.showNames}<span class="name ellipsis">{store.list.n[i]}</span>{/if}
-            <span class="ext">{store.list.x[i].toUpperCase()}</span>
-          </div>
+  <div class="spacer" class:gliding style:height={`${layout.height + pad * 2}px`}>
+    {#each tiles as t (store.list.id[t.i])}
+      {@const i = t.i}
+      {@const id = store.list.id[i]}
+      {@const _r = store.rev}
+      <!-- Keyboard culling is handled by the global key map (arrows, ratings, P/X…). -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class="tile"
+        class:cursor={i === store.cursor}
+        class:sel={store.selected.has(id)}
+        class:rejected={store.folders.get(store.list.f[i])?.isReject}
+        class:leaving={store.leaving.has(id)}
+        style:transform={`translate3d(${t.x}px, ${t.y}px, 0)`}
+        style:width={`${t.w}px`}
+        style:height={`${t.h}px`}
+        onclick={(e) => onClick(i, e)}
+        ondblclick={() => !store.mobile && store.openLoupe(i)}
+        onpointerdown={(e) => onDown(i, e)}
+        oncontextmenu={(e) => store.mobile && e.preventDefault()}
+        role="gridcell"
+        tabindex="-1"
+        aria-selected={store.selected.has(id) || (store.selected.size === 0 && i === store.cursor)}
+        title={store.list.n[i]}
+        data-id={id}
+      >
+        <img use:thumb={{ url: urls.thumb(id, store.list.v[i], store.thumbRev[id]), i }} alt="" decoding="async" draggable="false" onload={(e) => e.currentTarget.classList.add('ld')} />
+        <span class="sk" aria-hidden="true"></span>
+        {#if store.list.lc[i] && _r >= 0}<span class="lc label-{store.list.lc[i]}"></span>{/if}
+        {#if store.list.p[i] === 1}<span class="flag"><Icon name="flag" size={14} fill /></span>{/if}
+        {#if store.selected.has(id)}<span class="check"><Icon name="check" size={13} stroke={3} /></span>{/if}
+        <div class="meta">
+          {#if store.list.r[i] > 0}<span class="stars" use:bump={store.list.r[i]}>{stars(store.list.r[i])}</span>{:else if store.list.r[i] < 0}<span class="rej-r">✕</span>{/if}
+          <span class="grow"></span>
+          {#if store.settings.showNames}<span class="name ellipsis">{store.list.n[i]}</span>{/if}
+          <span class="ext">{store.list.x[i].toUpperCase()}</span>
         </div>
-      {/each}
+      </div>
     {/each}
     {#if band}
       <div class="band" style:left={`${pad + band.x}px`} style:top={`${pad + band.y}px`} style:width={`${band.w}px`} style:height={`${band.h}px`}></div>
@@ -638,20 +660,85 @@
   }
   .tile {
     position: absolute;
+    left: 0;
+    top: 0;
     overflow: hidden;
-    border-radius: 0.25rem;
+    border-radius: 0.375rem;
     background: var(--placeholder);
     cursor: pointer;
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
     contain: layout paint;
+    transition:
+      scale 0.22s var(--ease-out),
+      opacity 0.22s var(--ease-out),
+      filter 0.22s;
+  }
+  /* A reflow (a reject, a restore): tiles glide to their new places. */
+  .gliding .tile {
+    transition:
+      transform 0.42s var(--ease-out),
+      width 0.42s var(--ease-out),
+      height 0.42s var(--ease-out),
+      scale 0.22s var(--ease-out),
+      opacity 0.22s var(--ease-out);
+  }
+  /* On its way to the reject folder (until the server confirms the move). */
+  .tile.leaving {
+    scale: 0.82;
+    opacity: 0;
+    filter: blur(3px) grayscale(1);
+    pointer-events: none;
   }
   .tile img {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transition: opacity 0.15s;
+    opacity: 0;
+    transform: scale(1.04);
+    transition:
+      opacity 0.32s var(--ease-out),
+      transform 0.6s var(--ease-out);
+  }
+  .tile img:global(.ld) {
+    opacity: 1;
+    transform: scale(1);
+  }
+  @media (hover: hover) {
+    .tile:hover img:global(.ld) {
+      transform: scale(1.035);
+    }
+  }
+  /* Loading: a soft sweep of light, until the thumbnail is in. */
+  .sk {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    transition: opacity 0.3s;
+  }
+  .sk::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    width: 60%;
+    background: linear-gradient(100deg, transparent, var(--sheen), transparent);
+    animation: sk 1.6s var(--ease-in-out) infinite;
+  }
+  @keyframes sk {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(260%);
+    }
+  }
+  img:global(.ld) + .sk {
+    opacity: 0;
+  }
+  img:global(.ld) + .sk::before {
+    animation: none;
   }
   .tile::after {
     content: '';
@@ -659,19 +746,26 @@
     inset: 0;
     border-radius: inherit;
     pointer-events: none;
-    transition: box-shadow 0.1s;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+    transition:
+      box-shadow var(--dur) var(--ease-out),
+      background-color var(--dur);
   }
   .tile:hover::after {
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
   }
   .tile.cursor::after {
-    box-shadow: inset 0 0 0 2px var(--accent), inset 0 0 0 3px rgba(0, 0, 0, 0.5);
+    box-shadow:
+      inset 0 0 0 2px var(--accent),
+      inset 0 0 0 3.5px rgba(0, 0, 0, 0.45);
   }
   .tile.sel::after {
-    box-shadow: inset 0 0 0 3px var(--accent-strong);
-    background: rgba(0, 112, 242, 0.14);
+    box-shadow:
+      inset 0 0 0 3px var(--accent-strong),
+      inset 0 0 0 4.5px rgba(0, 0, 0, 0.35);
+    background: rgba(99, 114, 255, 0.16);
   }
-  .tile.rejected img {
+  .tile.rejected img:global(.ld) {
     opacity: 0.45;
     filter: grayscale(0.6);
   }
@@ -688,19 +782,39 @@
     right: 0.375rem;
     color: var(--pick);
     filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+    transform-origin: 20% 90%;
+    animation: flag-in 0.5s var(--ease-spring);
+  }
+  @keyframes flag-in {
+    0% {
+      transform: scale(0.3) rotate(-25deg);
+      opacity: 0;
+    }
+    60% {
+      transform: scale(1.15) rotate(8deg);
+      opacity: 1;
+    }
   }
   .check {
     position: absolute;
     top: 0.375rem;
     left: 0.375rem;
-    width: 1.375rem;
-    height: 1.375rem;
+    width: 1.3125rem;
+    height: 1.3125rem;
     border-radius: 50%;
     background: var(--accent-strong);
     color: #fff;
     display: grid;
     place-items: center;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+    box-shadow:
+      0 0 0 2px rgba(255, 255, 255, 0.9),
+      0 2px 6px rgba(0, 0, 0, 0.45);
+    animation: check-in 0.32s var(--ease-spring);
+  }
+  @keyframes check-in {
+    from {
+      transform: scale(0.2);
+    }
   }
   /* The bottom strip: a rating (or reject mark) always shows; the file name, type and
      the shade behind them only on hover and on the keyboard cursor. */
@@ -748,6 +862,7 @@
     letter-spacing: 0.05em;
     font-size: 0.75rem;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    transform-origin: left bottom;
   }
   .rej-r {
     color: var(--reject);

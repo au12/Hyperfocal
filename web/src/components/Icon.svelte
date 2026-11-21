@@ -89,12 +89,27 @@
     paw: 'M9 4a2 2 0 1 0 4 0 2 2 0 1 0-4 0 M16 8a2 2 0 1 0 4 0 2 2 0 1 0-4 0 M18 16a2 2 0 1 0 4 0 2 2 0 1 0-4 0 M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z',
     'scan-face': 'M3 7V5a2 2 0 0 1 2-2h2 M17 3h2a2 2 0 0 1 2 2v2 M21 17v2a2 2 0 0 1-2 2h-2 M7 21H5a2 2 0 0 1-2-2v-2 M8 14s1.5 2 4 2 4-2 4-2 M9 9h.01 M15 9h.01',
     'eye-off': 'M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49 M14.084 14.158a3 3 0 0 1-4.242-4.242 M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143 M2 2l20 20',
+    sparkles: 'M9.94 14.06a2 2 0 0 0-1.44-1.44L2.36 11.04a.5.5 0 0 1 0-.96L8.5 8.5a2 2 0 0 0 1.44-1.44l1.58-6.14a.5.5 0 0 1 .96 0L14.06 7.06A2 2 0 0 0 15.5 8.5l6.14 1.58a.5.5 0 0 1 0 .96L15.5 12.62a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z M20 3v4 M22 5h-4',
+    album: 'M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z M8 3v8l2.5-1.5L13 11V3',
+    'album-plus': 'M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7 M12 21H6a2 2 0 0 1-2-2V5 M8 3v8l2.5-1.5L13 11V3 M18 15v6 M15 18h6',
+    send: 'M14.54 21.69a.5.5 0 0 0 .94-.03l6.5-19a.5.5 0 0 0-.64-.64l-19 6.5a.5.5 0 0 0-.03.94l7.93 3.18a2 2 0 0 1 1.11 1.11z M21.85 2.15 10.91 13.09',
+    stack: 'M8 4h11a2 2 0 0 1 2 2v11 M5 8h11a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z',
+    'eye-closed': 'M2 10s3.5 5 10 5 10-5 10-5 M4.5 13.5 3 16 M9 15l-.8 3 M15 15l.8 3 M19.5 13.5 21 16',
+    focus: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z M3 7V5a2 2 0 0 1 2-2h2 M17 3h2a2 2 0 0 1 2 2v2 M21 17v2a2 2 0 0 1-2 2h-2 M7 21H5a2 2 0 0 1-2-2v-2',
+    wand: 'M15 4V2 M15 16v-2 M8 9h2 M20 9h2 M17.8 11.8 19 13 M15 9h.01 M17.8 6.2 19 5 M3 21l9-9 M12.2 6.2 11 5',
+    grip: 'M9 12h.01 M9 5h.01 M9 19h.01 M15 12h.01 M15 5h.01 M15 19h.01',
+    'arrow-up-right': 'M7 7h10v10 M7 17 17 7',
+    trash: 'M3 6h18 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2',
+    gauge: 'm12 14 4-4 M3.34 19a10 10 0 1 1 17.32 0',
+    contrast: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z M12 18a6 6 0 0 0 0-12v12z',
+    blur: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z M8 12h.01 M12 12h.01 M16 12h.01 M12 8h.01 M12 16h.01',
+    'external-link': 'M15 3h6v6 M10 14 21 3 M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6',
   };
   export const icons = P;
 </script>
 
 <script lang="ts">
-  let { name, size = 18, fill = false, class: cls = '', title = '' }: { name: string; size?: number; fill?: boolean; class?: string; title?: string } = $props();
+  let { name, size = 18, fill = false, class: cls = '', title = '', stroke = 1.75 }: { name: string; size?: number; fill?: boolean; class?: string; title?: string; stroke?: number } = $props();
 </script>
 
 <svg
@@ -104,7 +119,7 @@
   viewBox="0 0 24 24"
   fill={fill ? 'currentColor' : 'none'}
   stroke="currentColor"
-  stroke-width="2"
+  stroke-width={stroke}
   stroke-linecap="round"
   stroke-linejoin="round"
   aria-hidden={title ? undefined : 'true'}

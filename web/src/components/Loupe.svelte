@@ -12,6 +12,8 @@
   import InfoPanel from './InfoPanel.svelte';
   import FaceOverlay from './FaceOverlay.svelte';
   import { people } from '../lib/people.svelte';
+  import { flip } from 'svelte/animate';
+  import { flyImage, segmented, bump, reduced, type Rect } from '../lib/motion';
 
   let stage: HTMLDivElement | undefined = $state();
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -64,6 +66,9 @@
   let filmW = $state(0);
   const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
   const filmHalf = $derived(Math.max(4, Math.ceil(filmW / (6.25 * remPx) / 2) + 1));
+  /** The photo indexes the filmstrip shows (out-of-range ones are spacers), keyed by
+   * photo so the strip slides as you move. */
+  const filmSlots = $derived(Array.from({ length: filmHalf * 2 + 1 }, (_, k) => i - filmHalf + k));
   const ev = $derived(store.viewer.evOn ? store.viewer.ev : 0);
   const fitScale = $derived(Math.min(cw / dispW, ch / dispH));
   const curScale = $derived(fit ? fitScale : scale);
@@ -355,7 +360,47 @@
     else zoomTo(next);
   }
 
+  /** Where the photo sits on screen at fit (CSS px), for the zoom from and to the grid. */
+  function fittedRect(): Rect | null {
+    if (!stage) return null;
+    const r = stage.getBoundingClientRect();
+    const s = Math.min(r.width / dispW, r.height / dispH);
+    const w = dispW * s;
+    const h = dispH * s;
+    return { x: r.left + (r.width - w) / 2, y: r.top + (r.height - h) / 2, w, h };
+  }
+
+  /** The grid tile of a photo, if it is on screen. */
+  function tileRect(pid: number): Rect | null {
+    const el = document.querySelector<HTMLElement>(`.tile[data-id="${pid}"]`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > innerHeight || r.width < 4) return null;
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+
   onMount(() => {
+    // Opened from the grid: the photo grows out of its tile.
+    const from = id != null ? tileRect(id) : null;
+    if (from) {
+      requestAnimationFrame(() => {
+        const to = fittedRect();
+        if (to && id != null) flyImage(urls.thumb(id, v, store.thumbRev[id]), from, to, { duration: 380, radius: [6, 0], fadeOut: 240 });
+      });
+    }
+    // Closing: the photo shrinks back into its tile once the grid is back.
+    store.beforeCloseLoupe = () => {
+      const pid = id;
+      const fromRect = fittedRect();
+      if (pid == null || !fromRect || !fit) return;
+      const url = urls.thumb(pid, v, store.thumbRev[pid]);
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          const to = tileRect(pid);
+          if (to) flyImage(url, fromRect, to, { duration: 320, radius: [0, 6], fadeOut: 120 });
+        }),
+      );
+    };
     if (canvas) {
       try {
         gl = new GLView(canvas);
@@ -382,6 +427,7 @@
     if (stage) ro.observe(stage);
     canvas?.addEventListener('webglcontextlost', (e) => e.preventDefault());
     return () => {
+      store.beforeCloseLoupe = null;
       ro.disconnect();
       cancelAnimationFrame(raf);
       cache.clear();
@@ -727,7 +773,7 @@
 
     {#if !store.mobile}
       <div class="tools">
-        <div class="seg" title={'Switch RAW / embedded JPEG' + store.keyHint('source')}>
+        <div class="seg" use:segmented title={'Switch RAW / embedded JPEG' + store.keyHint('source')}>
           <button class:on={!useRaw} onclick={() => store.setViewer('source', 'jpeg')}>JPEG</button>
           <button class:on={useRaw} disabled={!isRaw} onclick={() => store.setViewer('source', 'raw')}>RAW</button>
         </div>
@@ -839,17 +885,22 @@
 
   {#if !store.mobile}
     <footer class="bottom">
-      <div class="rate">
-        {#each [1, 2, 3, 4, 5] as r}
-          <button class="star" class:on={cull.r >= r} onclick={() => store.rate(r)} title={`${r} star${r > 1 ? 's' : ''} (${r})`}>★</button>
-        {/each}
-      </div>
-      <div class="labels">
-        {#each LABELS as l}
-          <button class="lbl" class:on={cull.lc === l.color} onclick={() => store.label(l.color)} title={`${l.name}${l.key ? ` (${l.key})` : ''}`}><span class="label-dot label-{l.color}"></span></button>
-        {/each}
-      </div>
-      <button class="btn sm" class:pick={cull.p === 1} onclick={() => store.togglePick(1)} title={'Pick' + store.keyHint('pick')}><Icon name="flag" fill={cull.p === 1} />{cull.p === 1 ? 'Picked' : 'Pick'}</button>
+      <!-- Rebuilt per photo, so moving through photos never sets off the little pops. -->
+      {#key id}
+        <div class="rate">
+          {#each [1, 2, 3, 4, 5] as r}
+            <button class="star" class:on={cull.r >= r} style:--k={r} use:bump={cull.r >= r ? cull.r : null} onclick={() => store.rate(r)} title={`${r} star${r > 1 ? 's' : ''} (${r})`}>★</button>
+          {/each}
+        </div>
+        <div class="labels">
+          {#each LABELS as l}
+            <button class="lbl" class:on={cull.lc === l.color} onclick={() => store.label(l.color)} title={`${l.name}${l.key ? ` (${l.key})` : ''}`}><span class="label-dot label-{l.color}" use:bump={cull.lc === l.color || null}></span></button>
+          {/each}
+        </div>
+        <button class="btn sm pickbtn" class:pick={cull.p === 1} onclick={() => store.togglePick(1)} title={'Pick' + store.keyHint('pick')}>
+          <span class="flagico" data-bump="wave-once" use:bump={cull.p === 1 || null}><Icon name="flag" fill={cull.p === 1} /></span>{cull.p === 1 ? 'Picked' : 'Pick'}
+        </button>
+      {/key}
       <div class="exif ellipsis dim tnum">
         {#if exif}
           {[cameraName(exif.make, exif.model), exif.lens, fmtSettings(exif)].filter(Boolean).join(' · ')}
@@ -861,18 +912,20 @@
     </footer>
     {#if store.panels.filmstrip && !store.panels.hidden}
       <div class="film" bind:clientWidth={filmW}>
-        {#each { length: filmHalf * 2 + 1 } as _, k}
+        {#each filmSlots as j (j >= 0 && j < L.id.length ? L.id[j] : `g${j}`)}
           {@const _r = store.rev}
-          {@const j = i - filmHalf + k}
-          {#if j >= 0 && j < L.id.length}
-            <button class="fthumb" class:cur={j === i} onclick={() => store.goTo(j)} title={L.n[j]}>
-              <img src={urls.thumb(L.id[j], L.v[j], store.thumbRev[L.id[j]])} alt="" loading="lazy" draggable="false" />
-              {#if L.r[j] > 0}<span class="fs">{'★'.repeat(L.r[j])}</span>{/if}
-              {#if L.lc[j]}<span class="flc label-{L.lc[j]}"></span>{/if}
-            </button>
-          {:else}
-            <span class="fthumb ghost" aria-hidden="true"></span>
-          {/if}
+          <div class="fslot" animate:flip={{ duration: reduced() ? 0 : 280 }}>
+            {#if j >= 0 && j < L.id.length}
+              <button class="fthumb" class:cur={j === i} onclick={() => store.goTo(j)} title={L.n[j]}>
+                <img src={urls.thumb(L.id[j], L.v[j], store.thumbRev[L.id[j]])} alt="" loading="lazy" draggable="false" />
+                {#if L.r[j] > 0 && _r >= 0}<span class="fs">{'★'.repeat(L.r[j])}</span>{/if}
+                {#if L.lc[j]}<span class="flc label-{L.lc[j]}"></span>{/if}
+                {#if L.p[j] === 1}<span class="fpick"><Icon name="flag" size={10} fill /></span>{/if}
+              </button>
+            {:else}
+              <span class="fthumb ghost" aria-hidden="true"></span>
+            {/if}
+          </div>
         {/each}
       </div>
     {/if}
@@ -944,10 +997,38 @@
     display: flex;
     flex-direction: column;
     background: var(--viewer-bg);
-    color: #e8edf2;
-    --text: #e8edf2;
-    --text-2: #aab6c2;
-    --text-3: #8396a8;
+    color: var(--text);
+    animation: loupe-in 0.24s var(--ease-out);
+  }
+  @keyframes loupe-in {
+    from {
+      opacity: 0;
+    }
+  }
+  /* The viewer's chrome is graphite whatever the theme, so the photo is the brightest
+     thing on screen. The info panel and the mobile sheets follow the theme. */
+  .top,
+  .bottom,
+  .film,
+  .mbar,
+  .stage {
+    --text: #ececf0;
+    --text-2: #a4a8b1;
+    --text-3: #737781;
+    --surface: #16171c;
+    --surface-2: #1d1f25;
+    --surface-3: #282a32;
+    --border: rgba(255, 255, 255, 0.07);
+    --border-strong: rgba(255, 255, 255, 0.12);
+    --field: rgba(255, 255, 255, 0.04);
+    --field-border: rgba(255, 255, 255, 0.11);
+    --accent: #8e9cff;
+    --accent-strong: #6372ff;
+    --accent-bg: rgba(110, 124, 255, 0.14);
+    --accent-bg-strong: rgba(110, 124, 255, 0.22);
+    --negative: #ff6b6b;
+    --sheen: rgba(255, 255, 255, 0.05);
+    color: var(--text);
   }
   .top {
     height: 3.25rem;
@@ -958,29 +1039,74 @@
     padding: 0 0.625rem;
     padding-top: env(safe-area-inset-top);
     box-sizing: content-box;
-    background: #141a20;
-    border-bottom: 1px solid #222b35;
+    position: relative;
+    z-index: 3;
+    background: linear-gradient(180deg, #141519, #101115);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    animation: bar-down 0.34s var(--ease-out);
+  }
+  @keyframes bar-down {
+    from {
+      transform: translateY(-100%);
+      opacity: 0;
+    }
+  }
+  @keyframes bar-up {
+    from {
+      transform: translateY(100%);
+      opacity: 0;
+    }
   }
   .title {
     min-width: 0;
     flex: 0 1 18rem;
   }
   .fname {
-    font-weight: 700;
+    font-weight: 650;
+    letter-spacing: -0.005em;
   }
   .sub {
     font-size: var(--fs-sm);
+    margin-top: 1px;
   }
   .tools {
     flex: 1;
     display: flex;
     align-items: center;
-    gap: 0.375rem;
+    gap: 0.1875rem;
     justify-content: center;
   }
+  .tools .seg {
+    margin-right: 0.5rem;
+  }
   .tools .seg > button {
-    height: 1.75rem;
+    height: 1.625rem;
+    padding: 0 0.625rem;
     font-size: var(--fs-sm);
+    font-weight: 650;
+    letter-spacing: 0.03em;
+  }
+  /* Tool buttons stay quiet until they are switched on. */
+  .tools .btn.sm,
+  .right .btn.sm:not(.danger) {
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-2);
+  }
+  .tools .btn.sm:hover,
+  .right .btn.sm:not(.danger):hover {
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--text);
+  }
+  .tools .btn.sm.on,
+  .right .btn.sm.on {
+    background: var(--accent-bg-strong);
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px rgba(142, 156, 255, 0.28);
+  }
+  .right .btn.danger {
+    background: rgba(255, 99, 99, 0.08);
+    border-color: rgba(255, 99, 99, 0.24);
   }
   /* A tool with levels (sharpening 1 / 2): the icon stays centred in the square button,
      the level sits in its top-right corner. */
@@ -994,15 +1120,21 @@
     font-size: 0.5625rem;
     font-weight: 700;
     line-height: 1;
+    animation: chip-in var(--dur) var(--ease-spring);
   }
   .evctl {
     display: flex;
     align-items: center;
-    gap: 0.125rem;
+    margin-left: 0.375rem;
+    padding: 1px;
+    border-radius: var(--r);
+    background: rgba(255, 255, 255, 0.035);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
   }
   .evctl .evval {
-    min-width: 4.25rem;
+    min-width: 4.5rem;
     justify-content: center;
+    font-weight: 600;
   }
   .evval.off {
     text-decoration: line-through;
@@ -1010,20 +1142,18 @@
   }
   .vsep {
     width: 1px;
-    height: 1.25rem;
-    background: #2e3742;
-    margin: 0 0.25rem;
+    height: 1.125rem;
+    background: rgba(255, 255, 255, 0.09);
+    margin: 0 0.375rem;
   }
   .right {
     display: flex;
     align-items: center;
-    gap: 0.375rem;
+    gap: 0.1875rem;
     margin-left: auto;
   }
-  .loupe :global(.btn) {
-    --surface: #1c242c;
-    --surface-2: #26303a;
-    --border-strong: #3a4a5a;
+  .right .btn.danger {
+    margin: 0 0.25rem;
   }
   .body {
     flex: 1;
@@ -1065,6 +1195,8 @@
     top: 0.75rem;
     right: 0.75rem;
     z-index: 2;
+    animation: pop-in var(--dur) var(--ease-out);
+    transform-origin: top right;
   }
   .chips {
     position: absolute;
@@ -1077,10 +1209,13 @@
     pointer-events: none;
   }
   .chips .chip {
-    background: rgba(14, 18, 22, 0.75);
-    backdrop-filter: blur(6px);
-    color: #e8edf2;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(12, 13, 17, 0.62);
+    backdrop-filter: blur(12px) saturate(1.4);
+    -webkit-backdrop-filter: blur(12px) saturate(1.4);
+    color: #ececf0;
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+      0 2px 10px rgba(0, 0, 0, 0.25);
     font-weight: 600;
   }
   .chip.src.raw {
@@ -1094,12 +1229,22 @@
     left: 50%;
     top: 0.75rem;
     transform: translateX(-50%);
-    background: rgba(250, 97, 97, 0.9);
+    background: rgba(240, 72, 72, 0.88);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     color: #fff;
-    font-weight: 700;
-    padding: 0.25rem 0.75rem;
+    font-weight: 650;
+    padding: 0.3125rem 0.875rem;
     border-radius: 1rem;
     font-size: var(--fs-sm);
+    box-shadow: 0 10px 28px -8px rgba(255, 60, 60, 0.55);
+    animation: banner-in 0.36s var(--ease-spring);
+  }
+  @keyframes banner-in {
+    from {
+      transform: translate(-50%, -160%);
+      opacity: 0;
+    }
   }
   .nav {
     position: absolute;
@@ -1108,26 +1253,41 @@
     width: 2.75rem;
     height: 4.5rem;
     border: 0;
-    border-radius: var(--r);
-    background: rgba(0, 0, 0, 0.25);
+    border-radius: var(--r-lg);
+    background: rgba(12, 13, 17, 0.32);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
     color: #fff;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.15s;
+    transition:
+      opacity var(--dur),
+      background-color var(--dur-fast),
+      transform var(--dur) var(--ease-out);
     display: grid;
     place-items: center;
   }
   .stage:hover .nav:not(:disabled) {
-    opacity: 0.8;
+    opacity: 0.85;
   }
   .nav:hover {
-    background: rgba(0, 0, 0, 0.45);
+    background: rgba(12, 13, 17, 0.58);
   }
   .nav.prev {
-    left: 0.5rem;
+    left: 0.75rem;
   }
   .nav.next {
-    right: 0.5rem;
+    right: 0.75rem;
+  }
+  .nav.prev:hover {
+    transform: translate(-2px, -50%);
+  }
+  .nav.next:hover {
+    transform: translate(2px, -50%);
+  }
+  .nav:active {
+    transform: translateY(-50%) scale(0.92);
   }
   .side {
     width: var(--panel-w);
@@ -1136,41 +1296,61 @@
     background: var(--surface);
     border-left: 1px solid var(--border);
     color: var(--text);
+    animation: side-in 0.3s var(--ease-out);
   }
-  :global([data-theme='light']) .side {
-    --text: #131e29;
-    --text-2: #475e75;
-    --text-3: #556b82;
+  @keyframes side-in {
+    from {
+      transform: translateX(1.5rem);
+      opacity: 0;
+    }
   }
   .bottom {
-    height: 2.75rem;
+    height: 2.875rem;
     flex: none;
     display: flex;
     align-items: center;
     gap: 1rem;
     padding: 0 0.75rem;
-    background: #141a20;
-    border-top: 1px solid #222b35;
+    position: relative;
+    z-index: 2;
+    background: linear-gradient(0deg, #141519, #101115);
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    animation: bar-up 0.34s var(--ease-out);
   }
   .rate {
     display: flex;
+    gap: 1px;
   }
   .star {
     border: 0;
     background: none;
-    color: #4a5866;
-    font-size: 1.125rem;
+    color: color-mix(in srgb, var(--text) 17%, transparent);
+    font-size: 1.1875rem;
     cursor: pointer;
     padding: 0 0.125rem;
     line-height: 1;
+    transition:
+      color var(--dur-fast),
+      text-shadow var(--dur),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .star:active {
+    transform: scale(0.82);
   }
   .star.on {
     color: var(--star);
+    text-shadow: 0 0 14px rgba(255, 201, 77, 0.38);
+  }
+  /* Setting a rating sends a little wave along the stars. */
+  .star:global(.pop-once) {
+    animation-delay: calc((var(--k, 1) - 1) * 38ms);
+    animation-fill-mode: both;
   }
   /* Hover previews the rating: fill up to the hovered star, overriding the set rating. */
   @media (hover: hover) {
     .rate:has(.star:hover) .star {
-      color: #4a5866;
+      color: color-mix(in srgb, var(--text) 17%, transparent);
+      text-shadow: none;
     }
     .rate:has(.star:hover) .star:hover,
     .rate:has(.star:hover) .star:has(~ .star:hover) {
@@ -1185,22 +1365,36 @@
     width: 1.5rem;
     height: 1.5rem;
     border-radius: 50%;
-    border: 1px solid transparent;
+    border: 0;
     background: none;
     display: grid;
     place-items: center;
     cursor: pointer;
+    box-shadow: inset 0 0 0 1.5px transparent;
+    transition:
+      box-shadow var(--dur),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .lbl:hover {
+    transform: scale(1.1);
   }
   .lbl.on {
-    border-color: #fff;
+    box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.85);
   }
   .lbl .label-dot {
     width: 0.875rem;
     height: 0.875rem;
   }
+  .pickbtn {
+    min-width: 5.25rem;
+  }
   .btn.pick {
     color: var(--pick);
-    border-color: var(--pick);
+    border-color: color-mix(in srgb, var(--pick) 55%, transparent);
+    background: color-mix(in srgb, var(--pick) 12%, transparent);
+  }
+  .flagico {
+    display: inline-flex;
   }
   .exif {
     flex: 1;
@@ -1209,51 +1403,71 @@
     text-align: right;
   }
   .film {
-    height: 4.75rem;
+    height: 5rem;
     flex: none;
     display: flex;
-    gap: 0.25rem;
-    padding: 0.375rem 0.5rem;
-    background: #10151a;
-    border-top: 1px solid #1d242b;
+    gap: 0.3125rem;
+    padding: 0.4375rem 0.5rem 0.5rem;
+    background: #0b0c0f;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
     overflow: hidden;
     justify-content: center;
+    -webkit-mask: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+    mask: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+    animation: bar-up 0.4s var(--ease-out);
+  }
+  .fslot {
+    height: 100%;
+    flex: none;
   }
   .fthumb {
+    display: block;
     height: 100%;
     aspect-ratio: 3 / 2;
-    border: 2px solid transparent;
-    border-radius: 0.25rem;
+    border: 0;
+    border-radius: 0.375rem;
     padding: 0;
-    background: #1d232a;
+    background: #17181d;
     cursor: pointer;
     position: relative;
     overflow: hidden;
-    flex: none;
-    opacity: 0.7;
+    opacity: 0.5;
+    filter: saturate(0.75);
+    transition:
+      opacity var(--dur),
+      filter var(--dur),
+      transform var(--dur) var(--ease-out),
+      box-shadow var(--dur);
+  }
+  .fthumb:hover {
+    opacity: 0.9;
+    filter: none;
+    transform: translateY(-2px);
   }
   .fthumb.cur {
-    border-color: var(--accent);
     opacity: 1;
+    filter: none;
+    box-shadow:
+      0 0 0 2px var(--accent),
+      0 6px 18px -6px rgba(99, 114, 255, 0.65);
   }
   .fthumb.ghost {
     visibility: hidden;
   }
-  .fthumb:hover {
-    opacity: 1;
-  }
   .fthumb img {
+    display: block;
     width: 100%;
     height: 100%;
     object-fit: cover;
   }
   .fs {
     position: absolute;
-    left: 0.125rem;
-    bottom: 0;
+    left: 0.1875rem;
+    bottom: 0.0625rem;
     font-size: 0.5625rem;
+    letter-spacing: -0.5px;
     color: var(--star);
-    text-shadow: 0 1px 2px #000;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
   }
   .flc {
     position: absolute;
@@ -1262,6 +1476,14 @@
     top: 0;
     height: 3px;
   }
+  .fpick {
+    position: absolute;
+    right: 0.1875rem;
+    bottom: 0.1875rem;
+    display: flex;
+    color: var(--pick);
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.8));
+  }
 
   /* ---------- mobile ---------- */
   .mbar {
@@ -1269,22 +1491,31 @@
     display: flex;
     justify-content: space-around;
     padding: 0.25rem 0.25rem calc(0.25rem + env(safe-area-inset-bottom));
-    background: #141a20;
-    border-top: 1px solid #222b35;
+    background: linear-gradient(0deg, #131418, #101115);
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    position: relative;
+    z-index: 2;
+    animation: bar-up 0.34s var(--ease-out);
   }
   .mb {
     flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.125rem;
+    gap: 0.1875rem;
     padding: 0.375rem 0;
     border: 0;
     background: none;
-    color: #c9d3dc;
+    color: var(--text-2);
     font-size: 0.6875rem;
     font-weight: 600;
     border-radius: var(--r);
+    transition:
+      color var(--dur-fast),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .mb:active:not(:disabled) {
+    transform: scale(0.88);
   }
   .mb.danger {
     color: var(--reject);
@@ -1301,12 +1532,13 @@
   .srcbadge {
     height: 1.375rem;
     padding: 0 0.375rem;
-    border-radius: 0.25rem;
+    border-radius: 0.3125rem;
     border: 1.5px solid currentColor;
     display: grid;
     place-items: center;
     font-size: 0.6875rem;
     font-weight: 800;
+    letter-spacing: 0.02em;
   }
   .srcbadge.raw {
     color: #ffb84d;
@@ -1324,12 +1556,13 @@
     background: var(--surface);
     color: var(--text);
     border-top: 1px solid var(--border);
-    animation: up 0.18s var(--ease);
+    animation: tray-up 0.3s var(--ease-out);
   }
-  :global([data-theme='light']) .tray {
-    --text: #131e29;
-    --text-2: #475e75;
-    --text-3: #556b82;
+  @keyframes tray-up {
+    from {
+      transform: translateY(40%);
+      opacity: 0;
+    }
   }
   .chrome-off .top,
   .chrome-off .mbar,
@@ -1340,6 +1573,13 @@
     position: fixed;
     inset: 0;
     z-index: 55;
+    background: rgba(0, 0, 0, 0.38);
+    animation: fade-in 0.22s ease-out;
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
   }
   .sheet {
     position: fixed;
@@ -1349,33 +1589,28 @@
     z-index: 56;
     background: var(--surface);
     color: var(--text);
-    border-radius: 1rem 1rem 0 0;
+    border-radius: 1.125rem 1.125rem 0 0;
     box-shadow: var(--shadow-2);
     padding: 0.5rem 1rem calc(1rem + env(safe-area-inset-bottom));
     max-height: 70vh;
     overflow: auto;
-    animation: up 0.18s var(--ease);
+    animation: sheet-up 0.38s var(--ease-out);
   }
   .sheet.tall {
     max-height: 82vh;
     padding: 0.5rem 0 calc(1rem + env(safe-area-inset-bottom));
   }
-  :global([data-theme='light']) .sheet {
-    --text: #131e29;
-    --text-2: #475e75;
-    --text-3: #556b82;
-  }
-  @keyframes up {
+  @keyframes sheet-up {
     from {
       transform: translateY(100%);
     }
   }
   .grip {
-    width: 2.5rem;
-    height: 0.25rem;
+    width: 2.25rem;
+    height: 0.3125rem;
     border-radius: 0.25rem;
     background: var(--border-strong);
-    margin: 0 auto 0.75rem;
+    margin: 0.125rem auto 0.875rem;
   }
   .mrate,
   .mlabels {
@@ -1391,15 +1626,16 @@
   .lbl.big {
     width: 2.75rem;
     height: 2.75rem;
-    border: 1px solid var(--border-strong);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
   }
   .lbl.big .label-dot {
     width: 1.5rem;
     height: 1.5rem;
   }
   .lbl.big.on {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--accent);
+    box-shadow:
+      inset 0 0 0 1px var(--accent),
+      0 0 0 2px var(--accent);
   }
   .sheet > .btn {
     width: 100%;
@@ -1413,7 +1649,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.3125rem;
     padding: 0.625rem 0.25rem;
     border-radius: var(--r-lg);
     border: 1px solid var(--border);
@@ -1421,6 +1657,14 @@
     color: var(--text);
     font-size: 0.6875rem;
     font-weight: 600;
+    transition:
+      background-color var(--dur-fast),
+      border-color var(--dur-fast),
+      color var(--dur-fast),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .tool:active {
+    transform: scale(0.94);
   }
   .tool.on {
     background: var(--accent-bg-strong);

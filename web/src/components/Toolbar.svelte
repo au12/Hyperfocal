@@ -3,6 +3,8 @@
   import { api, type Facets } from '../lib/api';
   import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
+  import { Tween } from 'svelte/motion';
+  import { segmented, easeOut, reduced } from '../lib/motion';
 
   let facets = $state<Facets | null>(null);
   let filterOpen = $state(false);
@@ -12,6 +14,11 @@
   const crumbs = $derived(store.folderPath(store.folderId));
   const f = $derived(store.filters);
   const count = $derived(store.list.id.length);
+  // The photo count rolls to its new value.
+  const shown = new Tween(0, { duration: 420, easing: easeOut });
+  $effect(() => {
+    shown.set(count, { duration: reduced() ? 0 : 420 });
+  });
   const activeFilters = $derived(activeFilterCount(f));
   const coll = $derived(store.collection);
   const modified = $derived(store.collectionModified());
@@ -115,7 +122,7 @@
     {#each f.subj ?? [] as sid (sid)}
       <span class="chip who" title="Photos with this person or pet"><Icon name="user" size={12} /><span class="ellipsis">{store.subjLabels[sid] ?? 'Person'}</span><button onclick={() => store.setFilter('subj', f.subj.filter((x) => x !== sid))} aria-label="Remove"><Icon name="x" size={12} /></button></span>
     {/each}
-    <span class="count tnum">{count.toLocaleString()} {count === 1 ? 'photo' : 'photos'}</span>
+    <span class="count tnum">{Math.round(shown.current).toLocaleString()} {count === 1 ? 'photo' : 'photos'}</span>
     {#if store.loading}<span class="spinner"></span>{/if}
   </div>
 
@@ -158,13 +165,13 @@
             <button class="btn sm" class:on={f.lc.includes('none')} onclick={() => toggleLabel('none')}>None</button>
           </div>
           <div class="fl">Flag</div>
-          <div class="seg small">
+          <div class="seg small" use:segmented>
             <button class:on={f.pick == null} onclick={() => store.setFilter('pick', null)}>All</button>
             <button class:on={f.pick === 1} onclick={() => store.setFilter('pick', 1)}>Picks</button>
             <button class:on={f.pick === 0} onclick={() => store.setFilter('pick', 0)}>Unflagged</button>
           </div>
           <div class="fl">File type</div>
-          <div class="seg small">
+          <div class="seg small" use:segmented>
             <button class:on={!f.kinds.length} onclick={() => store.setFilter('kinds', [])}>All</button>
             <button class:on={f.kinds.length === 1 && f.kinds[0] === 1} onclick={() => store.setFilter('kinds', [1])}>RAW</button>
             <button class:on={f.kinds.length === 1 && f.kinds[0] === 2} onclick={() => store.setFilter('kinds', [2])}>JPEG</button>
@@ -178,7 +185,7 @@
             <input class="field" type="date" value={f.dateTo} min={f.dateFrom || undefined} onchange={(e) => setDate('dateTo', (e.target as HTMLInputElement).value)} aria-label="To" />
           </div>
           <div class="fl">Location</div>
-          <div class="seg small">
+          <div class="seg small" use:segmented>
             <button class:on={f.gps == null} onclick={() => store.setFilter('gps', null)}>All</button>
             <button class:on={f.gps === 1} onclick={() => store.setFilter('gps', 1)}>With GPS</button>
             <button class:on={f.gps === 0} onclick={() => store.setFilter('gps', 0)}>Without</button>
@@ -197,7 +204,7 @@
             <span class="chip">{f.kw}<button onclick={() => store.setFilter('kw', '')} aria-label="Remove"><Icon name="x" size={12} /></button></span>
           {/if}
           <div class="fl">Rejected photos</div>
-          <div class="seg small">
+          <div class="seg small" use:segmented>
             <button class:on={!f.showRejected && !f.onlyRejected} onclick={() => { store.filters.onlyRejected = false; store.setFilter('showRejected', false); }}>Hide</button>
             <button class:on={f.showRejected && !f.onlyRejected} onclick={() => { store.filters.onlyRejected = false; store.setFilter('showRejected', true); }}>Show</button>
             <button class:on={f.onlyRejected} onclick={() => { store.filters.showRejected = true; store.setFilter('onlyRejected', true); }}>Only</button>
@@ -253,7 +260,7 @@
 
     {#if !store.mobile}
       <input class="size" type="range" min="110" max="420" step="10" value={store.settings.rowHeight} oninput={setRow} title="Thumbnail size" />
-      <div class="seg">
+      <div class="seg" use:segmented>
         <button class:on={store.view === 'grid'} onclick={() => (store.view = 'grid')}><Icon name="grid" />Grid</button>
         <button class:on={store.view === 'map'} onclick={() => (store.view = 'map')}><Icon name="map" />Map</button>
       </div>
@@ -268,7 +275,7 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.375rem 0.75rem;
+    padding: 0.4375rem 0.75rem 0.4375rem 1rem;
     border-bottom: 1px solid var(--border);
     background: var(--bg);
     flex-wrap: wrap;
@@ -304,8 +311,16 @@
   }
   .crumb.current {
     color: var(--text);
-    font-size: 1.0625rem;
-    font-weight: 700;
+    font-size: 1.125rem;
+    font-weight: 680;
+    letter-spacing: -0.025em;
+    animation: crumb-in var(--dur-slow) var(--ease-out);
+  }
+  @keyframes crumb-in {
+    from {
+      opacity: 0;
+      transform: translateY(3px);
+    }
   }
   .chip.who {
     margin-left: 0.25rem;
@@ -314,10 +329,14 @@
     font-weight: 600;
   }
   .count {
-    margin-left: 0.5rem;
+    margin-left: 0.625rem;
     color: var(--text-3);
     font-size: var(--fs-sm);
+    font-weight: 500;
     white-space: nowrap;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    background: var(--surface-2);
   }
   .crumbs .spinner {
     width: 0.875rem;
@@ -329,9 +348,50 @@
     align-items: center;
     gap: 0.5rem;
   }
+  /* Thumbnail size: a slim track with a round handle. */
   .size {
     width: 6.5rem;
-    accent-color: var(--accent-strong);
+    height: 1.25rem;
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    cursor: pointer;
+  }
+  .size::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 3px;
+    background: var(--surface-3);
+  }
+  .size::-moz-range-track {
+    height: 3px;
+    border-radius: 3px;
+    background: var(--surface-3);
+  }
+  .size::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 0.875rem;
+    height: 0.875rem;
+    margin-top: -0.3125rem;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.2),
+      0 1px 4px rgba(0, 0, 0, 0.4);
+    transition: transform var(--dur-fast) var(--ease-spring);
+  }
+  .size::-moz-range-thumb {
+    width: 0.875rem;
+    height: 0.875rem;
+    border: 0;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.2),
+      0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+  .size:hover::-webkit-slider-thumb,
+  .size:active::-webkit-slider-thumb {
+    transform: scale(1.2);
   }
   .filters {
     display: flex;
@@ -340,10 +400,12 @@
     padding: 0.375rem 0.5rem 0.25rem;
   }
   .fl {
-    font-size: var(--fs-sm);
+    font-size: var(--fs-xs);
     color: var(--text-3);
-    font-weight: 600;
-    margin-top: 0.375rem;
+    font-weight: 650;
+    margin-top: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
   }
   .stars,
   .wrap {
@@ -360,6 +422,12 @@
     border-radius: 50%;
     background: var(--surface);
     cursor: pointer;
+    transition:
+      transform var(--dur-fast) var(--ease-spring),
+      box-shadow var(--dur);
+  }
+  .lbl:hover {
+    transform: scale(1.08);
   }
   .lbl.on {
     border-color: var(--accent);

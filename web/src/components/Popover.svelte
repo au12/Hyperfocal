@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { pop } from '../lib/motion';
 
   let {
     trigger,
@@ -41,7 +42,7 @@
 <div class="popwrap" bind:this={root}>
   {@render trigger(toggle, open)}
   {#if open}
-    <div class="pop" class:right={align === 'right'} style:width>
+    <div class="pop" class:right={align === 'right'} style:width style:animation="none" transition:pop={{ duration: 170, origin: align === 'right' ? 'top right' : 'top left' }}>
       {@render children(close)}
     </div>
   {/if}

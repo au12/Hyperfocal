@@ -8,6 +8,7 @@
   import KeywordEditor from './KeywordEditor.svelte';
   import PhotoPeople from './PhotoPeople.svelte';
   import { people } from '../lib/people.svelte';
+  import { bump } from '../lib/motion';
 
   let { compact = false }: { compact?: boolean } = $props();
 
@@ -85,14 +86,18 @@
     </div>
 
     <section>
-      <div class="rate-row">
-        <div class="stars">
-          {#each [1, 2, 3, 4, 5] as r}
-            <button class="star" class:on={d.rating >= r} onclick={() => store.rate(r)} title={`${r}`} disabled={ro}>★</button>
-          {/each}
+      {#key d.id}
+        <div class="rate-row">
+          <div class="stars">
+            {#each [1, 2, 3, 4, 5] as r}
+              <button class="star" class:on={d.rating >= r} style:--k={r} use:bump={d.rating >= r ? d.rating : null} onclick={() => store.rate(r)} title={`${r}`} disabled={ro}>★</button>
+            {/each}
+          </div>
+          <button class="flagbtn" class:on={d.pick === 1} onclick={() => store.togglePick(1)} title="Pick" disabled={ro}>
+            <span class="flagico" data-bump="wave-once" use:bump={d.pick === 1 || null}><Icon name="flag" fill={d.pick === 1} /></span>
+          </button>
         </div>
-        <button class="flagbtn" class:on={d.pick === 1} onclick={() => store.togglePick(1)} title="Pick" disabled={ro}><Icon name="flag" fill={d.pick === 1} /></button>
-      </div>
+      {/key}
       <div class="row labels">
         {#each LABELS as l}
           <button class="lbl" class:on={d.lcolor === l.color} onclick={() => store.label(l.color)} title={l.name} disabled={ro}><span class="label-dot label-{l.color}"></span></button>
@@ -229,9 +234,14 @@
     padding-top: 0.875rem;
   }
   .lab {
-    font-size: var(--fs-sm);
+    font-size: var(--fs-xs);
     color: var(--text-3);
-    font-weight: 600;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .lab.row {
+    min-height: 1.75rem;
   }
   .rate-row {
     display: flex;
@@ -245,19 +255,32 @@
   .star {
     border: 0;
     background: none;
-    color: var(--border-strong);
+    color: color-mix(in srgb, var(--text) 16%, transparent);
     font-size: 1.5rem;
     line-height: 1;
     cursor: pointer;
     padding: 0 0.125rem;
+    transition:
+      color var(--dur-fast),
+      transform var(--dur-fast) var(--ease-out),
+      text-shadow var(--dur);
+  }
+  .star:active:not(:disabled) {
+    transform: scale(0.84);
   }
   .star.on {
     color: var(--star);
+    text-shadow: 0 0 16px rgba(255, 201, 77, 0.3);
+  }
+  .star:global(.pop-once) {
+    animation-delay: calc((var(--k, 1) - 1) * 38ms);
+    animation-fill-mode: both;
   }
   /* Hover previews the rating: fill up to the hovered star, overriding the set rating. */
   @media (hover: hover) {
     .stars:has(.star:hover:not(:disabled)) .star {
-      color: var(--border-strong);
+      color: color-mix(in srgb, var(--text) 16%, transparent);
+      text-shadow: none;
     }
     .stars:has(.star:hover:not(:disabled)) .star:hover,
     .stars:has(.star:hover:not(:disabled)) .star:has(~ .star:hover) {
@@ -274,10 +297,26 @@
     display: grid;
     place-items: center;
     cursor: pointer;
+    transition:
+      color var(--dur-fast),
+      background-color var(--dur-fast),
+      border-color var(--dur-fast),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .flagbtn:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--surface-2);
+  }
+  .flagbtn:active:not(:disabled) {
+    transform: scale(0.92);
   }
   .flagbtn.on {
     color: var(--pick);
-    border-color: var(--pick);
+    border-color: color-mix(in srgb, var(--pick) 55%, transparent);
+    background: color-mix(in srgb, var(--pick) 12%, transparent);
+  }
+  .flagico {
+    display: inline-flex;
   }
   .labels {
     gap: 0.375rem;
@@ -286,15 +325,23 @@
     width: 1.75rem;
     height: 1.75rem;
     border-radius: 50%;
-    border: 1px solid var(--border-strong);
+    border: 0;
+    box-shadow: inset 0 0 0 1px var(--border-strong);
     background: none;
     display: grid;
     place-items: center;
     cursor: pointer;
+    transition:
+      box-shadow var(--dur),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .lbl:hover:not(:disabled) {
+    transform: scale(1.08);
   }
   .lbl.on {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--accent);
+    box-shadow:
+      inset 0 0 0 1px var(--accent),
+      0 0 0 2px var(--accent);
   }
   .fields {
     gap: 0.625rem;

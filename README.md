@@ -104,7 +104,7 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 
 ### Interface
 
-- Dark and light themes. The design uses SAP's Horizon colours and the 72 typeface, with layout ideas from [Augenblick](https://github.com/orohde/Augenblick).
+- Dark and light themes in a graphite-and-glass design set in Inter, with small animations for actions: the photo zooms out of its tile into the single view and back, the filmstrip slides, ratings and flags pop, filters and toggles glide, rejected photos fold out of the grid. Everything falls back to instant changes when the system asks for reduced motion. Layout ideas from [Augenblick](https://github.com/orohde/Augenblick).
 - A mobile layout built for one-handed culling:
   - bottom navigation
   - a reject / rate / pick / RAW-JPEG action bar
@@ -505,7 +505,7 @@ The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a 
 - [ExifTool](https://exiftool.org/) by Phil Harvey: sidecar writing
 - [Leaflet](https://leafletjs.com/) and [OpenStreetMap](https://www.openstreetmap.org/copyright): maps
 - [Nominatim](https://nominatim.org/): place search
-- [SAP 72 font](https://github.com/SAP/theming-base-content) (Apache-2.0) and Horizon design tokens
+- [Inter](https://rsms.me/inter/) typeface by Rasmus Andersson (SIL Open Font License 1.1)
 - [Augenblick](https://github.com/orohde/Augenblick): design inspiration
 - [FastRawViewer](https://www.fastrawviewer.com/) and [Excire Foto](https://excire.com/): the workflows this follows
 - People & pets models: [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT), [AuraFace](https://huggingface.co/fal/AuraFace-v1) (Apache-2.0), [RF-DETR](https://github.com/roboflow/rf-detr) (Apache-2.0), [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) (Apache-2.0), run with [ONNX Runtime](https://onnxruntime.ai/) (MIT) and [OpenCV](https://opencv.org/) (Apache-2.0)

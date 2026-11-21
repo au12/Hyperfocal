@@ -1,14 +1,15 @@
 <script lang="ts">
   import { store, LABELS } from '../lib/store.svelte';
-  import Icon from './Icon.svelte';
+  import { rise } from '../lib/motion';
+    import Icon from './Icon.svelte';
 
   const n = $derived(store.selected.size);
   const anyRejected = $derived([...store.selected].some((id) => store.folders.get(store.list.f[store.index.get(id) ?? -1])?.isReject));
 </script>
 
 {#if n > 0 && !store.loupe && !store.compare}
-  <div class="bulk" role="toolbar" aria-label="Selection actions">
-    <span class="count tnum"><b>{n}</b> selected</span>
+  <div class="bulk glass" role="toolbar" aria-label="Selection actions" transition:rise={{ y: 24, scale: 0.94, duration: 320 }}>
+    <span class="count tnum">{#key n}<b class="num">{n}</b>{/key} selected</span>
     <div class="stars">
       {#each [1, 2, 3, 4, 5] as r}<button onclick={() => store.rate(r)} title={`${r}★`}>★</button>{/each}
     </div>
@@ -32,18 +33,20 @@
     position: absolute;
     left: 50%;
     bottom: 1rem;
-    transform: translateX(-50%);
+    translate: -50% 0;
     z-index: 30;
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.375rem 0.5rem 0.375rem 0.875rem;
-    background: var(--raised);
-    border-radius: 1.5rem;
+    padding: 0.3125rem 0.375rem 0.3125rem 0.9375rem;
+    border-radius: 999px;
     box-shadow: var(--shadow-2);
-    animation: pop-in 0.15s var(--ease);
     max-width: calc(100% - 1rem);
     white-space: nowrap;
+  }
+  .num {
+    display: inline-block;
+    animation: pop-once 0.36s var(--ease-spring);
   }
   .count {
     margin-right: 0.25rem;
