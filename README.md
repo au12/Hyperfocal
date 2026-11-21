@@ -11,7 +11,7 @@
 
 ![Hyperfocal library view](docs/screenshots/desktop-library.jpg)
 
-Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, DNG, NEF, ARW, RAF, RW2, PEF and more), JPEG and HEIC/HEIF, and lets you browse, check and cull it from any browser on your LAN, including your phone. It never modifies or deletes an original image file. Ratings, labels, picks, keywords, captions and locations go into standard XMP sidecars, and rejected photos are moved into a `_Rejected` sub-folder. With an optional companion container it also finds the people, dogs and cats in your photos, groups them by who they are, and writes the names you give them to the sidecars.
+Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, DNG, NEF, ARW, RAF, RW2, PEF and more), JPEG and HEIC/HEIF, and lets you browse, check and cull it from any browser on your LAN, including your phone. It never modifies or deletes an original image file. Ratings, labels, picks, keywords, captions and locations go into standard XMP sidecars, and rejected photos are moved into a `_Rejected` sub-folder. Culling help shows each burst as one stack topped by its best frame, and flags blurry frames and clipping, measured on the RAW. With an optional companion container it also spots closed eyes, finds photos by what they show, and finds the people, dogs and cats in your photos, groups them by who they are and writes the names you give them to the sidecars.
 
 ## Contents
 
@@ -70,6 +70,19 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 - **Selection like a file manager.** Click selects one photo, `Ctrl`/`⌘`-click adds or removes one, `Shift`-click selects a range (repeat it to grow or shrink the range), and dragging draws a selection rectangle (with `Shift` to add, `Ctrl`/`⌘` to toggle; the grid scrolls at the edges). `Shift` with the arrows, `Home`/`End` or `PgUp`/`PgDn` extends from the keyboard. A plain arrow key moves on to a single photo, as in Finder, Explorer and Lightroom.
 - **Keyboard first.** You can pick FastRawViewer's default shortcuts or a Lightroom / Excire preset. Plain `0–5` and `6–9` work in both. Any shortcut can be changed in the shortcuts dialog (`F1`), and reset to the defaults.
 
+### Culling help (Excire-style)
+
+Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever rejected for you: what Hyperfocal finds is shown and filtered, and every reject is still yours, undoable as always.
+
+- **Series as stacks.** Each burst or run of attempts at one moment (one camera, one folder, frames at most 2 seconds apart, cut where the scene changes) becomes one tile showing its best frame and how many frames it holds. Click the count or press `Shift+G` to unfold it in place; *Unfold N series* opens them all. The best frame is the one you rated or picked, else the one with the fewest closed eyes, then the sharpest. **Keep best** (`Ctrl+Shift+K`) keeps it and moves the rest of the series to `_Rejected` as one undoable move.
+- **Possible rejects.** Every photo is measured once in the background (the ones on screen first), and the grid marks what may be wrong with it: *Blurry*, *Eyes closed*, *Clipped* or *Too dark*. The culling bar filters by them, alone or together with *Weaker frames* (every frame of a series but its best), so a shoot's likely rejects can be checked in one pass.
+- **Sharpness of the subject, from the RAW.** Sharpness is measured where it matters: on the faces, else on the sharpest part of the frame, on the RAW's half-size development (one pixel per 2×2 sensor quad, so no demosaicing detail is invented). It compares how much each edge's energy drops when it is blurred a little more (a sharp edge loses a lot, a soft one hardly anything), along the strongest edges in four directions, with the sensor noise measured and taken out first so high ISO does not pass for detail. Scores are scaled to the same print size, so a 45 MP and a 20 MP frame compare fairly. Sort by *Sharpness* for the sharpest frames first, or reverse it for the softest.
+- **Closed eyes.** With the ML container, every face large enough gets MediaPipe's face landmarks and blink scores; a photo where someone blinked or looked down is marked. Faces turned away are judged from the eye that is visible.
+- **Faces side by side.** `V` in the single view lines up a close-up of every face across all frames of the series, each with its sharpness and eyes, the frame on screen outlined. The best frame for every person shows at a glance; click a face to go to its frame.
+- **Clipping from the RAW data**, per channel, the same measurement as the over- and underexposure overlays.
+- **People filters.** How many people are in the photo (none, 1, 2, 3–5, 6+), portraits (one person, close) or groups (three or more), eyes open or closed. Faces too small to matter (under 2.5% of the frame's height) and doubtful detections, such as statues, are not counted.
+- **Measurements in the info panel:** sharpness in words and as a score, which faces were measured, clipping, and the series a photo belongs to with its frames.
+
 ### Library management (Excire-style)
 
 - **Your folders, as they are.** The Year/Event (or Year/Month) tree is shown exactly as it is on disk. Any folder can be viewed with or without its sub-folders.
@@ -77,8 +90,8 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 - **Albums.** Hand-picked photos from anywhere in the library, in an order of their own. `B` adds the photos you are on (or the selection) to the album you used last, `Shift+B` picks or creates one by typing, `Alt+B` takes photos out of the album shown. In an album, drag photos (or a selection) into place; a cover, a note and the albums' own order in the sidebar are yours to set. Albums only point at photos: deleting one, or taking a photo out, never moves or deletes a file, and every change can be undone from History. A photo moved or renamed by another app keeps its place, and is found again when a file with the same name and size turns up. Albums live in the index (back up `/config`), not in the sidecars.
 - **Search and filters.**
   - Full-text search covers file name, folder, title, caption, keywords, place, camera and lens.
-  - Filters cover rating, label, pick state, file type, camera, lens, keyword, date range and GPS.
-  - Sort by capture time, name, rating, modification date or size.
+  - Filters cover rating, label, pick state, file type, camera, lens, keyword, date range, GPS, people (how many, portraits or groups, eyes) and possible rejects.
+  - Sort by capture time, name, rating, modification date, size or sharpness.
 - **XMP and IPTC editing.**
   - Fields: title, caption, creator, copyright, keywords (including `Places|Portugal|Lisbon` hierarchies), sub-location, city, state and country.
   - Edit one photo, or select many and edit them all at once.
@@ -95,7 +108,7 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - *Near-duplicates* are resized, recompressed or re-exported copies and light edits, found by a 64-bit perceptual hash of each photo's thumbnail, made in the background, and turned or mirrored copies, found through the hashes of each photo's seven turned and mirrored versions. Strict, normal and loose levels.
   - *Look-alikes* (with the ML container) are found by what the photos show: crops, edits, other renderings and mirror images that pixel fingerprints miss, each with how alike it is. Over the whole library this uses an inverted-file index, a few seconds for 300,000 photos.
   - *Series* are bursts and brackets: one camera, one folder, a few seconds apart, cut where the scene changes.
-  - Each group suggests a keeper (RAW over JPEG, then the most pixels, then the most metadata; in a series the frame you rated or picked, else the sharpest) and says why. Click another photo to keep it instead, open the group in the compare view, mark it "not duplicates", or move the others to `_Rejected` with one click, journaled and undoable like any reject. A RAW and its JPEG twin count as one photo.
+  - Each group suggests a keeper (RAW over JPEG, then the most pixels, then the most metadata; in a series the frame you rated or picked, else the sharpest) and says why. Click another photo to keep it instead, open the group in the compare view, mark it "not duplicates", or move the others to `_Rejected` with one click, journaled and undoable like any reject. Only exact copies can be rejected all at once (*Reject all but the keepers*): near-duplicates, look-alikes and series are different files, so each group is rejected on its own, after a look. A RAW and its JPEG twin count as one photo.
 - **Send to Immich.** Select photos (or an album) and send them to your Immich server, into a new or existing Immich album. Photos Immich already has are used as they are, never uploaded twice: found by path when Immich reads this library as an external library, or by content when the same file was uploaded before. RAW files go as a full-size JPEG by default (the camera's own JPEG of a RAW+JPEG pair, or the JPEG inside the RAW, carrying capture time, camera, lens, GPS, rating and keywords), or as the original with its sidecar. Progress shows in the header; nothing in the library changes, and nothing in Immich is changed or deleted besides adding to the album. See [Send to Immich](#send-to-immich).
 - **History.** Every change is journaled with what it changed from and to, and can be undone from the History dialog.
 - **Live updates.** Changes made in another tab, or picked up from disk, appear immediately.
@@ -128,6 +141,7 @@ Hyperfocal finds the faces, dogs and cats in your photos, groups them by who the
 - **The models run in a companion container, `hyperfocal-ml`** (Python and ONNX Runtime, on the CPU or an NVIDIA GPU). Hyperfocal sends it a 2048-pixel upright JPEG of each photo and gets back boxes and embeddings. The container doesn't mount your library, keeps nothing and needs no internet: the models are inside the image.
 - **Faces:** YuNet at three scales (faces from about 0.6% to the whole of the frame), aligned on five landmarks, then AuraFace embeddings. Each face gets a quality from how recognisable it is: masked, blurred, tiny and turned-away faces must match much more closely to count.
 - **Dogs and cats:** RF-DETR Small finds them, and a pet re-identification model (DINOv2-based) tells individual animals apart. A cat the detector took for a dog still finds its look-alikes.
+- **Eyes, for culling:** each face of at least 64 pixels is cropped from the photo as culling measures it (a RAW's half-size development) and sent for MediaPipe's face landmarks and blendshapes, which give a blink score per eye, about 25 ms a face on the CPU.
 - **Who is who is decided in Hyperfocal.** Every face is compared with every known face (int8 vectors in memory, AVX2, with a sign-code prefilter: 340 MB for 600,000 faces). Its closest look-alikes vote, confirmed faces count more, and a clear winner is needed: a near tie between two people is left for you. A person is in a photo at most once, and "not this person" is never overruled. Faces that match nobody form unnamed groups with their look-alikes. After the first analysis the groups are formed again, best faces first, which gives cleaner groups than the order the photos happened to be analysed in.
 - **Photos on screen come first,** then the rest of the library. The analysis pauses while you view photos, can be paused from the People view, and resumes after a restart. A photo is analysed again only when the file, its orientation or the models change; names carry over.
 
@@ -181,6 +195,7 @@ Going the other way, named face regions that Lightroom, digiKam or another app w
 | `HFML_FACE_SCALES` | `1600,640,320` | Sizes faces are looked for at (long side, px) |
 | `HFML_GPU_MEM_MB` | – | Cap on the GPU memory ONNX Runtime takes |
 | `HFML_SEARCH` | `1` | `0` turns search by content off (the SigLIP 2 models are not loaded: about 1 GB less memory) |
+| `HFML_EYES` | `1` | `0` turns the closed-eyes check off |
 | `HFML_LOG` | `info` | `debug` for a line per photo |
 
 ### Speed
@@ -191,7 +206,7 @@ Matching a new face against 600,000 known faces takes 3 ms there. Each face also
 
 ### Models and licences
 
-Every model is licensed for commercial use, downloaded when the image is built and checked against its sha256 (`ml/models.json`):
+Every model is licensed for commercial use and checked against its sha256 (`ml/models.json`) when the image is built: most are downloaded from their publishers, and the two face-landmark models, which have no ONNX release, are converted once and kept in the repository (`ml/models`, with how they were made):
 
 | Model | Does | Licence |
 | --- | --- | --- |
@@ -200,6 +215,7 @@ Every model is licensed for commercial use, downloaded when the image is built a
 | [RF-DETR](https://github.com/roboflow/rf-detr) Small / Nano (COCO) | finds dogs and cats | Apache-2.0 |
 | [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) | tells pets apart | Apache-2.0 |
 | [SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-224) base (Google; ONNX by onnx-community) | search by content, Find similar and look-alikes: image and text embeddings in one space | Apache-2.0 |
+| [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) v1: Face Mesh V2 and Blendshape V2 (Google; converted to ONNX) | closed eyes, for culling: face landmarks, then blink scores per eye | Apache-2.0 |
 
 The face models most self-hosted apps use (InsightFace's `buffalo_l` and friends) are for non-commercial research only, so they are not used. AuraFace was trained on commercially licensed data and is a little less accurate than those on the hardest benchmarks; the matching thresholds were tuned on two weddings' worth of photos (crowds, veils, masks, profiles) to make few wrong suggestions rather than many groups.
 
@@ -254,29 +270,43 @@ An end-to-end test runs every write path against a scratch library and compares 
 
 ## Screenshots
 
+**Culling.** A portrait session with culling on: each series is one tile until it is unfolded, its best frame is marked, and blurry frames, closed eyes and clipping are flagged. In the single view, `V` lines up the faces of the whole series:
+
+![Culling: series as stacks, the best frame and the possible rejects](docs/screenshots/desktop-culling.jpg)
+
+![Faces side by side across a series, with the culling measurements](docs/screenshots/desktop-faces.jpg)
+
 | RAW view with over/underexposure and the RAW histogram | Map |
 | --- | --- |
 | ![RAW view](docs/screenshots/desktop-raw.jpg) | ![Map view](docs/screenshots/desktop-map.jpg) |
+
+| Search by content: “a cat sleeping on a bed” | An album, on its way to Immich |
+| --- | --- |
+| ![Search by content](docs/screenshots/desktop-search.jpg) | ![An album and Send to Immich](docs/screenshots/desktop-albums.jpg) |
 
 Mobile: grid, single view with the culling bar, view tools:
 
 ![Mobile layout](docs/screenshots/mobile.jpg)
 
-People & pets: the people and groups found, and a pet named in the single view (`Shift+F` shows the boxes):
+Culling on a phone: an unfolded series, the frame where she blinked, and its measurements:
+
+![Culling on a phone](docs/screenshots/mobile-culling.jpg)
+
+People & pets: the people found and named, and a dog named in the single view (`Shift+F` shows the boxes):
 
 | People | Pets |
 | --- | --- |
-| ![People & pets view](docs/screenshots/desktop-people.jpg) | ![A cat named in the single view](docs/screenshots/desktop-pets.jpg) |
+| ![People & pets view](docs/screenshots/desktop-people.jpg) | ![A dog named in the single view](docs/screenshots/desktop-pets.jpg) |
 
 ![People & pets on a phone](docs/screenshots/mobile-people.jpg)
 
-Duplicates: near-duplicates across the library, and on a phone exact copies, a series and a group in the compare view:
+Duplicates: a folder of exports checked against the rest of the library (a mirrored and a turned copy, each with its RAW), and on a phone exact copies, near-duplicates and a pair in the compare view:
 
 ![Duplicates report](docs/screenshots/desktop-duplicates.jpg)
 
 ![Duplicates on a phone](docs/screenshots/mobile-duplicates.jpg)
 
-<sub>The demo library is made of CC0 sample files from [raw.pixls.us](https://raw.pixls.us/). The People & pets screenshots use CC0 and public-domain photos from [Openverse](https://openverse.org/); faces are blurred and people are given generic names. The Duplicates screenshots use the CC0 and public-domain sample photos that ship with [scikit-image](https://scikit-image.org/).</sub>
+<sub>The demo library is made of CC0 sample RAW files from [raw.pixls.us](https://raw.pixls.us/); CC0 photos of pets by D Coetzee, iezalel williams and Artem Beliaikin (Flickr, found with [Openverse](https://openverse.org/)); and AI-generated portraits of no real person from the [Open and Closed Eyes Dataset](https://huggingface.co/datasets/MichalMlodawski/closed-open-eyes) by Michał Młodawski (ODC-By 1.0), with blinks and blur added for the culling screenshots. Names are invented.</sub>
 
 ## Install on Unraid
 
@@ -401,6 +431,11 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | Map | `M` | `M` |
 | People & pets | `Shift+P` | `Shift+Y` |
 | Faces and pets on the photo | `Shift+F` | `Shift+F` |
+| Culling on / off | `Shift+C` | `Shift+C` |
+| Unfold / fold the series | `Shift+G` | `Shift+G` |
+| Faces side by side, across the series | `V` | `V` |
+| Keep the best of the series, reject the others | `Ctrl+Shift+K` | `Ctrl+Shift+K` |
+| Add to the last album / to an album… / take out of the album | `B` / `Shift+B` / `Alt+B` | same |
 | Search | `/` | `/` |
 
 ## Configuration
@@ -429,6 +464,7 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | `HYPERFOCAL_VERIFY_HOUR` | `4` | Start of the nightly verification window (local hour; set `TZ`) |
 | `HYPERFOCAL_VERIFY_MINUTES` | `120` | Length of the nightly window. Outside it, new and changed files are still hashed, at most 4 GB an hour. |
 | `HYPERFOCAL_HASH_MBPS` | `60` | Read rate while hashing, MB/s (`0` = unlimited). Reading pauses while you are viewing photos. |
+| `HYPERFOCAL_CULL` | `true` | Culling help: measure every photo once in the background (sharpness of the subject from the RAW, clipping, and closed eyes with the ML container) for stacks, possible rejects and the best frame of a series |
 | `HYPERFOCAL_DUPES` | `true` | Duplicates report: fingerprint every photo's thumbnail in the background, for near-duplicates and series (exact copies need only the integrity monitor) |
 | `HYPERFOCAL_ALERT_URL` | – | Where integrity alerts go: an ntfy topic URL, a Gotify `…/message` URL, or any webhook |
 | `HYPERFOCAL_ALERT_FORMAT` | `auto` | `ntfy`, `gotify` or `json` (`auto` decides from the URL) |
@@ -461,12 +497,16 @@ These numbers are from a 2-vCPU test VM; an Unraid server will be faster.
 | Switching between view tools | 30–70 ms |
 | Clipping mask | 4 ms |
 | Full-resolution RAW tile (512×512, RCD), on the server | 10 ms |
+| Culling measurements of a RAW file (development, sharpness, clipping), in the background | 0.3–0.4 s |
+| A closed-eyes check, per face (ML container, CPU) | about 25 ms |
 
 Thumbnails and previews made in the background are encoded with mozjpeg's trellis quantization (pure Rust): at the same SSIMULACRA2 score as libjpeg-turbo, thumbnails are about 12% smaller and 2048-pixel previews about 7% smaller (up to 26%), measured on real photos. Images made while you wait (a preview opened before it was made, tiles, RAW renders) still use libjpeg-turbo, which encodes about 15 times faster. WebP was measured too and rejected: 4% smaller at best, inconsistent, and 25 times slower to encode.
 
 Thumbnails live in append-only pack files with a checksum per record: a request is one positioned read, start-up reads a small hint file per pack instead of 300,000 directory entries, and thumbnails of photos that changed or left the library are cleared out in the background (a pack that is mostly garbage is rewritten). Thumbnails from before are moved into packs on the first start.
 
 The server is a single Rust binary (axum, SQLite in WAL mode, FlashRaw, libjpeg-turbo with SIMD). The RAW development pass is written as plain loops the compiler vectorises (SSE2, or NEON on ARM), with an AVX2 copy picked at run time on CPUs that have it; the log says which one runs. The UI is about 70 KB of compressed Svelte 5; the map loads only when you use it. The image is Debian slim plus ExifTool, which is used only to write sidecars, and libheif and LibRaw for the helper process.
+
+Culling's first pass measures about 200 RAW files a minute on that VM, so 300,000 photos take about a day; it works newest first, photos on screen jump the queue, and it pauses while you view photos. New imports are measured within minutes.
 
 On the same VM, the LibRaw helper starts in a few milliseconds, and a LibRaw development takes 0.1–2 s depending on sensor size. A HEIC thumbnail or preview costs one HEVC decode, about 0.5 s for a 12-megapixel photo; after that it is cached like everything else.
 
@@ -477,8 +517,9 @@ On the same VM, the LibRaw helper starts in a few milliseconds, and a LibRaw dev
 - HEIC/HEIF files get the image view, metadata and every culling feature, but none of the RAW tools: they hold no sensor data.
 - LibRaw 0.21, the version in the Docker image, has no colour data for some cameras released after 2022. FlashRaw handles those, but if LibRaw has to take over for one, its RAW view can look flat in colour.
 - People & pets needs the companion container, and a first analysis takes a while on a CPU (see [Speed](#speed)). Telling apart two pets of the same breed and colour is harder than telling people apart: expect more suggestions to review.
-- Hyperfocal does no AI keywording or similarity search yet. Keep Excire for those for now.
-- Near-duplicates compare a perceptual hash of each thumbnail (and of it turned and mirrored): resized, recompressed, re-exported, lightly edited, turned and mirrored copies are found; crops are found by look-alikes, which need the ML container. The series keeper's "sharpest" is an estimate from the thumbnail: it catches shake and a missed focus, not critical focus.
+- Hyperfocal does no AI keywording: search by content and *Find similar* find photos by what they show without writing keywords. Keep Excire for keywords for now.
+- Culling measures sharpness on the half-size development (and a JPEG at about 3000 pixels): it catches a missed focus, shake and motion blur, but to choose between two sharp frames, look at 100%. Faces smaller than 64 pixels there are not measured, and eyes looking down can count as closed.
+- Near-duplicates compare a perceptual hash of each thumbnail (and of it turned and mirrored): resized, recompressed, re-exported, lightly edited, turned and mirrored copies are found; crops are found by look-alikes, which need the ML container. The Duplicates report's series keeper is the sharpest frame by an estimate from the thumbnail; culling's stacks use the measurements above.
 
 ## Troubleshooting a file
 
@@ -538,7 +579,8 @@ The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a 
 - [Augenblick](https://github.com/orohde/Augenblick): design inspiration
 - [FastRawViewer](https://www.fastrawviewer.com/) and [Excire Foto](https://excire.com/): the workflows this follows
 - People & pets models: [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT), [AuraFace](https://huggingface.co/fal/AuraFace-v1) (Apache-2.0), [RF-DETR](https://github.com/roboflow/rf-detr) (Apache-2.0), [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) (Apache-2.0), run with [ONNX Runtime](https://onnxruntime.ai/) (MIT) and [OpenCV](https://opencv.org/) (Apache-2.0)
-- Sample photos in the screenshots: [raw.pixls.us](https://raw.pixls.us/) (CC0)
+- Eye checks: [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) (Apache-2.0); search by content: [SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-224) (Apache-2.0)
+- Photos in the screenshots: [raw.pixls.us](https://raw.pixls.us/) (CC0), CC0 pet photos from Flickr via [Openverse](https://openverse.org/), and AI-generated portraits from the [Open and Closed Eyes Dataset](https://huggingface.co/datasets/MichalMlodawski/closed-open-eyes) (ODC-By 1.0)
 
 ## License
 

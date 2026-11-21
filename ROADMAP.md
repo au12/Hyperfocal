@@ -12,9 +12,9 @@ Heavy features are optional add-ons.
 
 **If only three things get built next:**
 
-1. One embedding pipeline. It powers text search and "similar photos", and lets the Duplicates report catch crops and rotations.
-2. Instant change detection, so edits made in Excire show up in seconds.
-3. Best-of-burst: the Duplicates report already finds series; rank their frames by focus on the subject and open eyes.
+1. Instant change detection, so edits made in Excire show up in seconds.
+2. Auto keywords from the search embeddings that already exist, matched against your own keyword tree.
+3. Excire round-trip helpers: a "changed outside Hyperfocal" view, and sidecars re-read when a photo is opened.
 
 ## AI features
 
@@ -32,12 +32,10 @@ Anything worth keeping beyond the app (keywords, person names, face regions) goe
 
 | # | Feature | Value | Effort | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | **Text search** ("kids on a beach at sunset", "red car at night") | Very high | M | SigLIP 2 or CLIP image and text embeddings, ranked by cosine similarity and combined with the existing filters and full-text search. Brute force over 300,000 vectors takes tens of milliseconds on a NAS CPU; an HNSW index (usearch) brings that to a few milliseconds if needed. |
-| 2 | **Similar photos** ("more like this") | High | S | Free once #1 exists: the nearest neighbours of a photo's embedding, across the whole library or within a date range. The same embeddings confirm the Duplicates report's near-duplicates by cosine similarity and find the crops, rotations and heavier edits a perceptual hash misses. |
-| 3 | **Best-of-burst** | High | M | The Duplicates report's series (one camera, one folder, seconds apart, cut at scene changes) are the stacks. Next: show them as stacks in the grid, and rank frames by sharpness on the subject (from the RAW, not the thumbnail estimate used now), open eyes and exposure. Nothing is rejected automatically. |
-| 4 | **Cull assist** | Medium–high | M | Per-photo scores: sharpness on the subject or face (from the RAW, not the JPEG), motion blur, closed eyes, and clipping (measured on the RAW data, as the view tools already do). Optionally an aesthetic score from the CLIP embedding. Shown as "possible rejects" filters, never as automatic rejects. The face boxes and qualities People & pets stores are the starting point: sharpness and open eyes per face. |
-| 5 | **Auto keywords and captions** | Medium | M | Zero-shot tags matched against your own keyword tree first; optionally captions from a small vision-language model. Bulk accept/reject UI, then written to sidecars. |
-| 6 | **More from People & pets** | Medium | S–M | Birthdays and "who was there" for a period; a person's photos by year; manual face boxes for faces the detector misses; more animals (horses, birds) when someone asks. |
+| 1 | **Auto keywords and captions** | Medium–high | S–M | The SigLIP 2 embeddings every photo already has make zero-shot tags cheap: score your own keyword tree's terms against each photo (text embeddings, computed once), suggest the clear winners, accept or reject in bulk, then write them to the sidecars. Captions would need a small vision-language model in the companion container. |
+| 2 | **Aesthetic ranking** | Medium | M | A learned "would you keep this" score as one more tie-breaker for the best frame of a series and a sort. No head with a commercial licence exists for SigLIP 2 yet; training one on your own picks and rejects is the honest version. |
+| 3 | **More from People & pets** | Medium | S–M | Birthdays and "who was there" for a period; a person's photos by year; manual face boxes for faces the detector misses; more animals (horses, birds) when someone asks. |
+| 4 | **Group shots** | Medium | M | For a series of a group: who has their eyes closed in which frame, and the frame where the most people look best (the face strip already lines them up; this would rank them). |
 
 ## Functionality
 
@@ -48,18 +46,15 @@ Anything worth keeping beyond the app (keywords, person names, face regions) goe
 | 3 | **Excire round-trip helpers** | Medium | S | Writes already re-read the sidecar and change only the fields you edited. Add a "changed outside Hyperfocal" view (what Excire or another app changed since the last scan), and re-check a photo's sidecar when you open it, so the panel is never up to 15 minutes out of date. |
 | 4 | **Offline place names** | Medium | S | Bundle GeoNames cities for place search and reverse geocoding, so they work without OpenStreetMap's Nominatim service. Map tiles would still come from OpenStreetMap unless a local tile server is added. |
 | 5 | **Export** | Medium | S–M | Resized JPEGs of a selection, with metadata and an optional watermark, as a download or into an export folder outside the library. |
-| 6 | **Immich hand-off** | Medium | S | Send picks or a selection to an Immich album through Immich's API, for libraries Immich already reads as an external library. |
-| 7 | **Users and single sign-on** | Low–medium | M | OIDC through Authelia or Authentik, or trusted headers from the reverse proxy, plus read-only accounts for family. |
-| 8 | **Slideshow** | Low | S | Full-screen slideshow of a selection or a collection. |
+| 6 | **Users and single sign-on** | Low–medium | M | OIDC through Authelia or Authentik, or trusted headers from the reverse proxy, plus read-only accounts for family. |
+| 7 | **Slideshow** | Low | S | Full-screen slideshow of a selection, a collection or an album. |
 
 ## Performance
 
 | # | Item | Gain | Effort | Notes |
 | --- | --- | --- | --- | --- |
 | 1 | **Instant change detection** | Edits made in Excire appear in seconds instead of up to 15 minutes | S–M | inotify watches on the library, with the periodic rescan kept as a safety net: changes made outside the share path (for example straight to a disk or pool path) raise no events. |
-| 2 | **Packed thumbnail store** | Faster cold starts and much faster appdata backups | S–M | 300,000 thumbnails as 300,000 files make every appdata backup crawl. Pack them into a few large append-only files with an index in SQLite. Until then, `cache` inside AppData can be left out of backups: it is rebuilt automatically, and the database and sidecar backups live outside it. |
-| 3 | **Tiled pyramid for zoomed views** | Smooth 1:1 panning of 45–100 MP images | M | RAW files already zoom in through full-resolution tiles. JPEG and HEIC files still load one large image: serve them as tiles at each zoom level too. |
-| 4 | **Smaller previews** | Less data on phones and slow Wi-Fi | S | Encode cached previews with jpegli (still ordinary JPEGs, so browsers are unaffected) or serve WebP. Measure size, quality and encode time on real photos first. |
+| 2 | **Search index** | Search by content stays in tens of milliseconds past a million photos | S | A search compares the query with every photo's int8 embedding (AVX2), about 50 ms for 300,000 photos; an HNSW index (usearch) is the next step if libraries grow far past that. |
 
 ## Platform and quality
 
@@ -71,6 +66,18 @@ Anything worth keeping beyond the app (keywords, person names, face regions) goe
 
 ## Done
 
+- **Culling help.** Series as stacks in the grid, topped by their best frame (your rating or pick, then open eyes, then sharpness), unfolded in place; *Keep best* rejects the rest in one undoable move. Every photo is measured once in the background: sharpness of the subject (faces, else the sharpest part) on the RAW's half-size development, with the sensor noise taken out first; clipping from the RAW data; closed eyes from MediaPipe's face landmarks and blendshapes, run in the companion container. "Possible rejects" filters (blurry, eyes closed, clipped, too dark, weaker frames of a series), a sharpness sort, and a strip of every face across the series in the single view. Nothing is rejected automatically.
+- **People filters.** How many people are in a photo, portraits or groups, eyes open or closed, from the faces People & pets found (doubtful detections and passers-by left out).
+- **Search by content and Find similar.** SigLIP 2 image and text embeddings from the companion container, kept as int8 in the index; any description, in many languages, ranked and combined with the filters; the photos most like one; and look-alikes (crops, edits, mirror images) in the Duplicates report through an inverted-file index. Near-duplicates also catch turned and mirrored copies.
+- **Albums.** Hand-picked photos in an order of their own, with a cover, a note and drag-to-arrange; a photo that moved is found again.
+- **Send to Immich.** A selection or an album into a new or existing Immich album; photos Immich already has, by path or by content, are never uploaded twice; RAW files go as full-size JPEGs with their metadata, or as originals.
+- **Packed thumbnail store.** Append-only pack files with checksums and a hint file per pack: a thumbnail is one positioned read, start-up skips 300,000 directory entries, and appdata backups copy a few large files.
+- **Tiled zoom for every image.** JPEG, HEIC, TIFF, PNG and embedded JPEGs zoom through a pyramid of tiles, like RAW files.
+- **Smaller previews.** Thumbnails and previews made in the background are encoded with mozjpeg's trellis quantisation: 7–12% smaller at the same SSIMULACRA2 score. WebP and jpegli were measured too: WebP saved less and is slow to encode, and jpegli only pays off as a C++ build.
+- **Faster regrouping.** 64-byte sign codes are compared before the int8 vectors: the same matches, a 600,000-face regroup in 11 minutes instead of 70.
+- **Overexposure overlay follows the exposure correction**, as FastRawViewer's does.
+- **Duplicates: Reject all only for exact copies;** other kinds of group are rejected one at a time, after a look.
+- **UI refresh.** A graphite-and-glass design set in Inter, with small animations for actions and a reduced-motion fallback.
 - **Duplicates report.** Exact copies from the integrity hashes (image data only, so copies with other metadata still match), near-duplicates from a 64-bit DCT perceptual hash of each thumbnail matched by multi-index hashing (every pair within the distance: the whole report for 300,000 photos takes under half a second on a 2-vCPU VM, about a second at the loose level), and series; for the library, a folder, or a folder against the library. Each group suggests a keeper and why, opens in the compare view, can be dismissed as "not duplicates", and rejects the others in one journaled move.
 - **People & pets.** The companion container `hyperfocal-ml` (CPU or NVIDIA) finds faces (YuNet at three scales), dogs and cats (RF-DETR Small) and embeds them (AuraFace, pet re-identification), all models licensed for commercial use. Hyperfocal matches them in memory (int8, AVX2), forms unnamed groups, and lets you name, merge, review suggestions, reject, hide and ignore; confirmed names go to the sidecars as `People|`/`Pets|` keywords, MWG regions and IPTC person shown, and names other apps wrote come in. Undo is read back from the sidecars.
 - **Compare view.** Two to four photos side by side, zoom and pan synced (1:1) or separate, rating and rejecting from the panes, and stepping one pane through the folder against the others.
