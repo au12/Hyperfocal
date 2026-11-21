@@ -1,0 +1,215 @@
+{
+  "comment": "What the AI features download into /config/ml when they are first needed, each file checked against its sha256 before it is used. Every model is licensed for commercial use. A model marked \"bundled\" ships in the image (ml/models in the repository: converted from its source, which is given with its own sha256). Runtimes are ONNX Runtime's shared library, from the official Python wheels: the CPU one is in the image (and downloaded only when it is not, as in a development build); the CUDA one, with NVIDIA's CUDA 13 and cuDNN 9 libraries, only when an NVIDIA GPU is used.",
+  "models": [
+    {
+      "file": "yunet.onnx",
+      "feature": "faces",
+      "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx",
+      "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0",
+      "size": 229738,
+      "what": "Face detector: YuNet 2026may (dynamic input), OpenCV Zoo",
+      "license": "MIT",
+      "home": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet"
+    },
+    {
+      "file": "auraface.onnx",
+      "feature": "faces",
+      "url": "https://huggingface.co/fal/AuraFace-v1/resolve/af6d057c9b0ec4071d4c49c80e3539258798b609/glintr100.onnx",
+      "sha256": "a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60",
+      "size": 260694151,
+      "what": "Face recognition: AuraFace v1 (ResNet100, ArcFace loss), trained on commercially licensed data",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/fal/AuraFace-v1"
+    },
+    {
+      "file": "rfdetr-small.onnx",
+      "feature": "faces",
+      "variant": "small",
+      "url": "https://huggingface.co/open-noodle/rfdetr-small/resolve/2273529e3faaf306659186df6da4333bc2a763dc/detection/model.onnx",
+      "sha256": "31fe724f8d5dbff5d09eb4c2c44d2d4083c086c167aec54e11e694e652307f9b",
+      "size": 114448791,
+      "what": "Dog and cat detector: RF-DETR Small (COCO), 512 px",
+      "license": "Apache-2.0",
+      "home": "https://github.com/roboflow/rf-detr"
+    },
+    {
+      "file": "rfdetr-nano.onnx",
+      "feature": "faces",
+      "variant": "nano",
+      "url": "https://huggingface.co/open-noodle/rfdetr-nano/resolve/1618db5f22919339f4347d436da8c43afaf91926/detection/model.onnx",
+      "sha256": "21045851f3906c7d424874363fe933477fda7210bad0d7a69659fb98f8845890",
+      "size": 107835234,
+      "what": "Dog and cat detector: RF-DETR Nano (COCO), 384 px",
+      "license": "Apache-2.0",
+      "home": "https://github.com/roboflow/rf-detr"
+    },
+    {
+      "file": "pet-recognition.onnx",
+      "feature": "faces",
+      "url": "https://huggingface.co/open-noodle/pet-recognition-base/resolve/fa30eb7785ceb764d5c2840c4585fb89821be385/recognition/model.onnx",
+      "sha256": "8691f5f6d0cebbd1602d21def63a34f7a58f78e08b3d4914cb81adcc2efd83f8",
+      "size": 348108213,
+      "what": "Which dog or cat: pet re-identification, DINOv2-base plus a projection trained on CC0 and CC BY data",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/open-noodle/pet-recognition-base"
+    },
+    {
+      "file": "siglip2-vision.onnx",
+      "feature": "search",
+      "url": "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/vision_model.onnx",
+      "sha256": "c0573e3f4140c3a7c4e9cc5912bd6b26a033b46a6a8e8af26cbea262b163bcad",
+      "size": 371807752,
+      "what": "Search by content: SigLIP 2 base (patch 16, 224 px), image tower",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/google/siglip2-base-patch16-224"
+    },
+    {
+      "file": "siglip2-text.onnx",
+      "feature": "search",
+      "url": "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/text_model_fp16.onnx",
+      "sha256": "711da56ada0a4aa11c7dd3320df741081a3cae4f0ae1b5e5c6d5b294738d0eb0",
+      "size": 564862230,
+      "what": "Search by content: SigLIP 2 base, text tower (float16)",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/google/siglip2-base-patch16-224"
+    },
+    {
+      "file": "siglip2-tokenizer.json",
+      "feature": "search",
+      "url": "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/tokenizer.json",
+      "sha256": "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322",
+      "size": 34363039,
+      "what": "Search by content: SigLIP 2 tokenizer (Gemma, 256,000 words)",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/google/siglip2-base-patch16-224"
+    },
+    {
+      "file": "face-landmarks.onnx",
+      "feature": "eyes",
+      "bundled": true,
+      "sha256": "c176583286a919868f7f8657efc5ec03d280440edddf76d315426ebb43a142f2",
+      "size": 4920995,
+      "from": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      "from_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+      "what": "Eyes: MediaPipe Face Mesh V2 (478 landmarks), face_landmarks_detector.tflite of the Face Landmarker bundle v1, as ONNX",
+      "license": "Apache-2.0",
+      "home": "https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker"
+    },
+    {
+      "file": "face-blendshapes.onnx",
+      "feature": "eyes",
+      "bundled": true,
+      "sha256": "8a0108ec99e2282cc59a42974ffa95f1813b7a466c16cd03f54c2daace53f1d4",
+      "size": 1883710,
+      "from": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      "from_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+      "what": "Eyes: MediaPipe Blendshape V2 (52 expression coefficients, among them eyeBlinkLeft/Right), face_blendshapes.tflite of the same bundle, as ONNX",
+      "license": "Apache-2.0",
+      "home": "https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker"
+    }
+  ],
+  "runtimes": [
+    {
+      "name": "cpu",
+      "arch": "x86_64",
+      "dir": "ort-1.29.0-cpu",
+      "lib": "libonnxruntime.so.1.29.0",
+      "wheels": [
+        {
+          "url": "https://files.pythonhosted.org/packages/83/2c/d8eb945d2a372149df9705a8d5c8d7c6c46c987c5446dbcea9e1ea7f6556/onnxruntime-1.29.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+          "sha256": "e2128f31f449e922c62dbe5d8b6b7b079f0bcaf2d56a102fa203cb6e5bb5ab19",
+          "size": 23136817,
+          "files": [
+            "onnxruntime/capi/libonnxruntime.so.1.29.0"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "cpu",
+      "arch": "aarch64",
+      "dir": "ort-1.29.0-cpu",
+      "lib": "libonnxruntime.so.1.29.0",
+      "wheels": [
+        {
+          "url": "https://files.pythonhosted.org/packages/c9/17/b9ad04051a8c4f504852ce0e8e10f9a6b2f1a331eedcdcc503df776dd0ea/onnxruntime-1.29.0-cp313-cp313-manylinux_2_28_aarch64.whl",
+          "sha256": "d67673c5367727860922c5262d724472f1b5539fb7ccf4c81a638f9b71719803",
+          "size": 20816263,
+          "files": [
+            "onnxruntime/capi/libonnxruntime.so.1.29.0"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "cuda",
+      "arch": "x86_64",
+      "dir": "ort-1.29.0-cuda13",
+      "lib": "libonnxruntime.so.1.29.0",
+      "min_driver": 13000,
+      "wheels": [
+        {
+          "url": "https://files.pythonhosted.org/packages/b9/57/6905efecad247941a1344ccfa78117a7a7102df5cb1ee4308a65d97654a0/onnxruntime_gpu-1.29.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+          "sha256": "264f14cac514238bd548b5960b487383768c05967dc1291ccf46e7a9e7699af5",
+          "size": 202185960,
+          "files": [
+            "onnxruntime/capi/libonnxruntime.so.1.29.0",
+            "onnxruntime/capi/libonnxruntime_providers_shared.so",
+            "onnxruntime/capi/libonnxruntime_providers_cuda.so"
+          ]
+        },
+        {
+          "url": "https://files.pythonhosted.org/packages/0b/7c/14b8f5518f8951e9dca57ea80f44f8ea8bcc8671812e6cc38009f3205e57/nvidia_cuda_runtime-13.5.37-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+          "sha256": "df2b79a8852f10d1fef8c848489c49eebb5754051bf870202a862831412b179d",
+          "size": 2504024,
+          "files": [
+            "nvidia/cu13/lib/libcudart.so.13"
+          ]
+        },
+        {
+          "url": "https://files.pythonhosted.org/packages/27/11/db2c1a4321c2145928f87e0f647104d3a908f78d4d582908759ce81a0c17/nvidia_cublas-13.10.1.6-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl",
+          "sha256": "0f26cf49a81377fd96f519e28fd56c5f638a2581f303d531f60e633fb222e1ea",
+          "size": 444290004,
+          "files": [
+            "nvidia/cu13/lib/libcublas.so.13",
+            "nvidia/cu13/lib/libcublasLt.so.13"
+          ]
+        },
+        {
+          "url": "https://files.pythonhosted.org/packages/12/63/636e5dc9afb2959bfc0042a357d5567358df829b66c96d9fc36d77dc0596/nvidia_curand-10.4.5.25-py3-none-manylinux_2_27_x86_64.whl",
+          "sha256": "22bb226a857e5888fe6b54ae465fc4371296bcff13a35f79e19691bcf454f529",
+          "size": 77113015,
+          "files": [
+            "nvidia/cu13/lib/libcurand.so.10"
+          ]
+        },
+        {
+          "url": "https://files.pythonhosted.org/packages/a9/54/db4e7f650746265f61c05cf1f8f556dd8c6739b58c823fbc9a7d6fda3247/nvidia_cuda_nvrtc-13.5.37-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl",
+          "sha256": "86b4d68058807988b7d9af5b44917a0601e9c337f35ccd657bfb3c759ff8d8bc",
+          "size": 58185930,
+          "files": [
+            "nvidia/cu13/lib/libnvrtc.so.13",
+            "nvidia/cu13/lib/libnvrtc-builtins.so.13.5"
+          ]
+        },
+        {
+          "url": "https://files.pythonhosted.org/packages/ef/6f/94535c450d44a68ef0b43d7a5e54c0e5ecda2ca3db7daec5d54c8d94e0d8/nvidia_cudnn_cu13-9.28.1.4-py3-none-manylinux_2_27_x86_64.whl",
+          "sha256": "a54f205b1db1f2895d99f398754db1369816f0569dd459731f925635cf7b65ec",
+          "size": 516817937,
+          "files": [
+            "nvidia/cudnn/lib/libcudnn.so.9",
+            "nvidia/cudnn/lib/libcudnn_adv.so.9",
+            "nvidia/cudnn/lib/libcudnn_cnn.so.9",
+            "nvidia/cudnn/lib/libcudnn_engines_precompiled.so.9",
+            "nvidia/cudnn/lib/libcudnn_engines_runtime_compiled.so.9",
+            "nvidia/cudnn/lib/libcudnn_engines_tensor_ir.so.9",
+            "nvidia/cudnn/lib/libcudnn_ext.so.9",
+            "nvidia/cudnn/lib/libcudnn_graph.so.9",
+            "nvidia/cudnn/lib/libcudnn_heuristic.so.9",
+            "nvidia/cudnn/lib/libcudnn_ops.so.9"
+          ]
+        }
+      ]
+    }
+  ]
+}

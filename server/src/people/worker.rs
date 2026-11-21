@@ -1,4 +1,4 @@
-//! The analysis worker: sends photos to the ML service and keeps the detections, the
+//! The analysis worker: sends photos to the AI engine and keeps the detections, the
 //! groups and the crops up to date.
 //!
 //! Order: photos on screen first (the viewer asks), then new imports, then the rest of
@@ -9,7 +9,7 @@
 
 use super::engine::{Engine, pet_quality};
 use super::index::{cosine, quantize, to_blob};
-use super::ml::{Analysis, Client, MlError, decode_embedding, embedders, models_key};
+use crate::ml::client::{Analysis, Client, MlError, decode_embedding, embedders, models_key};
 use super::regions::{Rect, iou};
 use super::{AUTO, CAT, DOG, FACE, SRC_DETECTED, SRC_XMP};
 use crate::images::jpeg::{self, Rgb};
@@ -163,22 +163,39 @@ fn run(state: &Arc<AppState>) {
     if let Err(e) = load_engine(state) {
         tracing::error!("people: loading the index failed: {e:#}");
     }
-    let Some(url) = state.cfg.ml_url.clone() else {
-        // No ML service: names from other apps' regions are still read (resync), and
-        // every edit works on what was analysed before.
+    if !state.cfg.ml.faces_on() {
+        // Face and pet recognition is off: names from other apps' regions are still read
+        // (resync), and every edit works on what was analysed before.
         loop {
             set_phase(state, "off", None);
             resyncs(state);
             wait(state, Duration::from_secs(60));
         }
-    };
-    let client = Client::new(&url, state.cfg.ml_token.clone());
+    }
     let mut backoff = Duration::from_secs(5);
     let mut cursor = 0i64;
     let mut last_count = Instant::now() - Duration::from_secs(3600);
     let mut rate: VecDeque<Instant> = VecDeque::new();
     loop {
         resyncs(state);
+        let client = match state.ml.client() {
+            Ok(c) => c,
+            Err(MlError::Preparing(msg)) => {
+                // The models are downloading or loading: the supervisor wakes us when the
+                // engine is up.
+                set_phase(state, "preparing", Some(msg));
+                state.people.status.write().service = None;
+                wait(state, Duration::from_secs(15));
+                continue;
+            }
+            Err(e) => {
+                set_phase(state, "offline", Some(e.to_string()));
+                state.people.status.write().service = None;
+                wait(state, backoff);
+                backoff = (backoff * 2).min(Duration::from_secs(120));
+                continue;
+            }
+        };
         let info = match client.info() {
             Ok(i) => i,
             Err(e) => {
@@ -195,7 +212,7 @@ fn run(state: &Arc<AppState>) {
         }
         let key = models_key(&info);
         state.people.status.write().service = Some(info);
-        // Work until the service goes away.
+        // Work until the engine goes away.
         loop {
             resyncs(state);
             let (paused, regroup) = {
@@ -223,7 +240,7 @@ fn run(state: &Arc<AppState>) {
                 state.people.status.write().current = None;
                 emit_status(state);
                 wait(state, Duration::from_secs(120));
-                // The service may have changed (new models): check again.
+                // The engine may have restarted: check again.
                 break;
             }
             set_phase(state, "analysing", None);
@@ -248,7 +265,7 @@ fn run(state: &Arc<AppState>) {
     }
 }
 
-/// When the ML service brings different embedding models, the stored embeddings mean
+/// When the engine brings different embedding models, the stored embeddings mean
 /// nothing to the new ones: drop them (boxes and names stay, and carry over when each
 /// photo is analysed again).
 fn check_models(state: &AppState, info: &serde_json::Value) -> Result<()> {
@@ -374,7 +391,7 @@ fn prepare(state: &AppState, id: i64) -> Result<Option<Prepared>, String> {
 }
 
 /// Analyse a batch with a few photos in flight at once (decoding here and inference in
-/// the service overlap). An unreachable service ends the batch with an error.
+/// the engine overlap). An unreachable engine ends the batch with an error.
 fn process(state: &Arc<AppState>, client: &Client, key: &str, batch: Vec<i64>, priority: bool, rate: &mut VecDeque<Instant>) -> Result<()> {
     let queue = parking_lot::Mutex::new(VecDeque::from(batch));
     let down: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
@@ -421,7 +438,7 @@ fn process(state: &Arc<AppState>, client: &Client, key: &str, batch: Vec<i64>, p
 }
 
 /// Analyse one photo. Ok(true): analysed; Ok(false): skipped or failed on its own (an
-/// unreadable file); Err: the service is unreachable.
+/// unreadable file); Err: the engine is unreachable.
 fn one(state: &Arc<AppState>, client: &Client, key: &str, id: i64) -> Result<bool, String> {
     let prep = match prepare(state, id) {
         Ok(Some(p)) => p,
@@ -434,7 +451,7 @@ fn one(state: &Arc<AppState>, client: &Client, key: &str, id: i64) -> Result<boo
     state.people.status.write().current = Some(format!("{}/{}", prep.loc.folder_path, prep.loc.rec.name));
     let a = match client.analyze(&prep.jpeg) {
         Ok(a) => a,
-        Err(MlError::Unreachable(e)) => return Err(e),
+        Err(MlError::Unreachable(e) | MlError::Preparing(e)) => return Err(e),
         Err(MlError::Rejected(e)) => {
             record_error(state, id, key, &e);
             return Ok(false);
@@ -713,8 +730,8 @@ fn unnames(state: &Arc<AppState>) {
     }
 }
 
-/// Names from sidecars that changed (or were restored by an undo), without the ML
-/// service; names taken off by hand; and detections deleted elsewhere.
+/// Names from sidecars that changed (or were restored by an undo), without the AI
+/// engine; names taken off by hand; and detections deleted elsewhere.
 fn resyncs(state: &Arc<AppState>) {
     drain_gone(state);
     unnames(state);

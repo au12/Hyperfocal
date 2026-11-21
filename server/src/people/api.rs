@@ -347,7 +347,7 @@ async fn photo_people(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<V
     })
     .await?;
     // Not analysed yet: next in line.
-    if !v["analyzed"].as_bool().unwrap_or(false) && v["error"].is_null() && state.cfg.ml_url.is_some() {
+    if !v["analyzed"].as_bool().unwrap_or(false) && v["error"].is_null() && state.cfg.ml.faces_on() {
         state.people.prioritize(&[id]);
     }
     Ok(Json(v))

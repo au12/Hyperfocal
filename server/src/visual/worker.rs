@@ -1,11 +1,12 @@
 //! The background worker: an image embedding of every photo shown in lists, made by the
-//! ML service from the photo's thumbnail, newest photos first; the photos on screen go
+//! AI engine from the photo's thumbnail, newest photos first; the photos on screen go
 //! ahead of everything. It steps aside whenever someone is waiting on an image and
-//! while the library is being scanned, and waits for the ML service when it is away.
+//! while the library is being scanned, and waits for the engine when it is away (or its
+//! models are still downloading).
 
 use super::{Index, store};
 use crate::model::PhotoRec;
-use crate::people::ml::{Client, MlError};
+use crate::ml::{Client, MlError};
 use crate::repo;
 use crate::state::{AppState, Event};
 use anyhow::Result;
@@ -14,7 +15,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Photos sent to the ML service at once.
+/// Photos sent to the AI engine at once.
 const BATCH: i64 = 16;
 /// A photo that could not be read is tried again after this long (or once its file changes).
 const RETRY_MS: i64 = 7 * 86_400_000;
@@ -26,10 +27,10 @@ const NEEDS: &str = "p.pair_of IS NULL AND f.is_reject = 0
           OR (c.emb IS NULL AND c.at < ?1))";
 
 pub fn spawn(state: Arc<AppState>) {
-    if state.cfg.ml_url.is_none() {
+    if !state.cfg.ml.search_on() {
         return;
     }
-    set_phase(&state, "connecting", None);
+    set_phase(&state, "preparing", None);
     std::thread::Builder::new()
         .name("visual".into())
         .spawn(move || {
@@ -141,8 +142,8 @@ fn wait(state: &AppState, d: Duration) {
     c.wake = false;
 }
 
-/// When the ML service brings another image model, the stored embeddings mean nothing
-/// to it: they are dropped and made again.
+/// When the engine brings another image model, the stored embeddings mean nothing to
+/// it: they are dropped and made again.
 fn check_model(state: &AppState, id: &str) -> Result<()> {
     let c = state.db.get()?;
     let old = crate::db::get_meta(&c, "visual_model");
@@ -159,12 +160,24 @@ fn check_model(state: &AppState, id: &str) -> Result<()> {
 }
 
 fn worker(state: &Arc<AppState>) {
-    let url = state.cfg.ml_url.clone().unwrap_or_default();
-    let client = Client::new(&url, state.cfg.ml_token.clone());
     let mut backoff = Duration::from_secs(5);
     let mut rate: VecDeque<Instant> = VecDeque::new();
     let mut rx = state.events.subscribe();
     loop {
+        let client = match state.ml.client() {
+            Ok(c) => c,
+            Err(MlError::Preparing(msg)) => {
+                set_phase(state, "preparing", Some(msg));
+                wait(state, Duration::from_secs(15));
+                continue;
+            }
+            Err(e) => {
+                set_phase(state, "offline", Some(e.to_string()));
+                wait(state, backoff);
+                backoff = (backoff * 2).min(Duration::from_secs(120));
+                continue;
+            }
+        };
         let info = match client.info() {
             Ok(i) => i,
             Err(e) => {
@@ -176,8 +189,8 @@ fn worker(state: &Arc<AppState>) {
         };
         backoff = Duration::from_secs(5);
         let Some(model) = info["models"]["image_embedder"]["id"].as_str().map(str::to_string) else {
-            // An ML service without the search models (an older image, or HFML_SEARCH=0).
-            set_phase(state, "unsupported", Some("the ML service has no search models (update hyperfocal-ml, or HFML_SEARCH=0 is set)".into()));
+            // An engine without the search models.
+            set_phase(state, "unsupported", Some("the AI engine has no search models".into()));
             wait(state, Duration::from_secs(600));
             continue;
         };
@@ -185,7 +198,7 @@ fn worker(state: &Arc<AppState>) {
             tracing::warn!("search: {e:#}");
         }
         update_counts(state);
-        // Work until the service goes away.
+        // Work until the engine goes away.
         let mut queue: Option<VecDeque<i64>> = None;
         let mut counted = Instant::now();
         loop {
@@ -238,7 +251,7 @@ fn worker(state: &Arc<AppState>) {
                     }
                     wait(state, Duration::from_secs(30));
                 }
-                // The service may have changed (another model): check again.
+                // The engine may have restarted (another model): check again.
                 break;
             }
             set_phase(state, "indexing", None);
@@ -268,8 +281,8 @@ fn worker(state: &Arc<AppState>) {
     }
 }
 
-/// Embeds a batch: thumbnails to the ML service, embeddings to the index. Returns how
-/// many were stored; an error when the service failed (try again later).
+/// Embeds a batch: thumbnails to the AI engine, embeddings to the index. Returns how
+/// many were stored; an error when the engine failed (try again later).
 fn embed_batch(state: &AppState, client: &Client, batch: &[PhotoRec]) -> Result<usize> {
     let mut recs = Vec::with_capacity(batch.len());
     let mut images = Vec::with_capacity(batch.len());
@@ -306,7 +319,7 @@ fn embed_batch(state: &AppState, client: &Client, batch: &[PhotoRec]) -> Result<
             }
             return Ok(0);
         }
-        Err(MlError::Unreachable(msg)) => return Err(anyhow::anyhow!(msg)),
+        Err(MlError::Unreachable(msg) | MlError::Preparing(msg)) => return Err(anyhow::anyhow!(msg)),
     };
     let mut c = state.db.get()?;
     let tx = c.transaction()?;
@@ -320,7 +333,7 @@ fn embed_batch(state: &AppState, client: &Client, batch: &[PhotoRec]) -> Result<
                 }
             }
             None => {
-                let _ = store(state, &tx, r, None, Some("the ML service could not read the thumbnail"));
+                let _ = store(state, &tx, r, None, Some("the AI engine could not read the thumbnail"));
             }
         }
     }

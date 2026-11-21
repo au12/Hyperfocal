@@ -1,8 +1,10 @@
 # Models kept in this repository
 
-`fetch_models.py` downloads the other models of the image from their publishers. These two
-have no ONNX release, so they are converted once and kept here; the image build copies them
-after checking their sha256 (in `../models.json`).
+Hyperfocal downloads the other AI models from their publishers the first time a feature
+needs them (into `/config/ml`, checked against the sha256s in
+`server/src/ml/manifest.json`). These two have no ONNX release, so they are converted once
+and kept here; the image ships them in `/app/ml/models` (they are small: 6.8 MB together),
+and the image build checks that they load and tell open eyes from closed ones.
 
 | File | What | Source |
 | --- | --- | --- |
@@ -24,8 +26,8 @@ tf2onnx 1.17.0 (TensorFlow 2.21.0, onnx 1.23.2, opset 15) by `convert.sh`. tf2on
 write byte-identical files from run to run, so a new conversion has other sha256s; its
 outputs are numerically identical (checked on random inputs: largest difference 0).
 
-`hyperfocal_ml/eyes.py` uses them as MediaPipe's own graph does: the face 1.5 times enlarged
-and turned upright for the mesh model, the 146 landmarks MediaPipe lists in
-`face_blendshapes_graph.cc` for the blendshape model (which centres and scales them itself).
-On 300 portraits its eyeBlink scores are within 0.05 of the MediaPipe Python package's on
-average.
+`server/src/ml/engine/eyes.rs` uses them as MediaPipe's own graph does: the face 1.5 times
+enlarged and turned upright for the mesh model, the 146 landmarks MediaPipe lists in
+`face_blendshapes_graph.cc` for the blendshape model (which centres and scales them
+itself). On 300 portraits its eyeBlink scores are within 0.05 of the MediaPipe Python
+package's on average.

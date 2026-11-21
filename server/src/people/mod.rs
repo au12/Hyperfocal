@@ -1,9 +1,9 @@
-//! People and pets: faces, dogs and cats found by the companion ML service
-//! (`hyperfocal-ml`), grouped by who they are, named by you, and written to the XMP
-//! sidecars (person keywords, MWG face regions, IPTC "person shown") once confirmed.
+//! People and pets: faces, dogs and cats found by the AI engine (`crate::ml`), grouped
+//! by who they are, named by you, and written to the XMP sidecars (person keywords, MWG
+//! face regions, IPTC "person shown") once confirmed.
 //!
-//! The ML service only ever sees upright JPEGs and answers boxes and embeddings. The
-//! rest happens here:
+//! The engine only ever sees upright JPEGs and answers boxes and embeddings. The rest
+//! happens here:
 //! - `worker`: picks the photos to analyse (the ones you are looking at first, then the
 //!   newest), prepares and sends them, stores what comes back, and reads the face
 //!   regions other apps wrote (Lightroom, digiKam), so names you gave there carry over.
@@ -18,7 +18,6 @@
 pub mod api;
 pub mod engine;
 pub mod index;
-pub mod ml;
 pub mod regions;
 pub mod worker;
 pub mod xmp;
@@ -159,11 +158,12 @@ pub fn migrate(c: &Connection) -> Result<()> {
 /// What the People & pets view shows about the analysis.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Status {
-    /// An ML service is configured (HYPERFOCAL_ML_URL).
+    /// Face and pet recognition is on (HYPERFOCAL_ML and HYPERFOCAL_ML_FACES).
     pub enabled: bool,
-    /// off, connecting, offline, analysing, idle, paused, grouping, error
+    /// off, preparing (the models download or load), offline, analysing, idle, paused,
+    /// grouping, error
     pub phase: String,
-    /// What the service reported: version, device, models.
+    /// What the engine reported: version, device, models.
     pub service: Option<serde_json::Value>,
     pub error: Option<String>,
     pub analyzed: i64,
@@ -182,7 +182,7 @@ pub struct Ctl {
     /// Photos to analyse before anything else (the ones on screen).
     pub priority: VecDeque<i64>,
     pub priority_set: HashSet<i64>,
-    /// Photos whose sidecar may hold new names (read without the ML service).
+    /// Photos whose sidecar may hold new names (read without the AI engine).
     pub resync: VecDeque<i64>,
     /// Photos whose sidecar an undo restored: their names are read back exactly.
     pub exact: VecDeque<i64>,
@@ -208,7 +208,7 @@ pub struct People {
 impl People {
     pub fn new(cfg: &crate::config::Config) -> Result<People> {
         Ok(People {
-            status: RwLock::new(Status { enabled: cfg.ml_url.is_some(), phase: "off".into(), ..Default::default() }),
+            status: RwLock::new(Status { enabled: cfg.ml.faces_on(), phase: "off".into(), ..Default::default() }),
             ctl: Mutex::new(Ctl::default()),
             cv: Condvar::new(),
             engine: Mutex::new(None),

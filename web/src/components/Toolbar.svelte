@@ -7,6 +7,7 @@
   import { segmented, easeOut, reduced } from '../lib/motion';
   import { albums } from '../lib/albums.svelte';
   import { cull, ISSUES } from '../lib/cull.svelte';
+  import { mlPreparing, mlState } from '../lib/ml';
 
   let facets = $state<Facets | null>(null);
   let filterOpen = $state(false);
@@ -130,6 +131,8 @@
   const sortNow = $derived<SortKey>(visual && store.relevance ? 'relevance' : f.sort);
   const vis = $derived(store.status?.visual);
   const looking = $derived(visual && vis && vis.total > 0 && vis.done < vis.total);
+  // A search by content before its models are in: say so, with how far the download is.
+  const mlWait = $derived(visual && mlPreparing(store.status?.ml) ? store.status?.ml : null);
 
   // The album shown: rename in place, a note, delete.
   let editing = $state(false);
@@ -235,7 +238,9 @@
       <span class="chip who" title="Photos with this person or pet"><Icon name="user" size={12} /><span class="ellipsis">{store.subjLabels[sid] ?? 'Person'}</span><button onclick={() => store.setFilter('subj', f.subj.filter((x) => x !== sid))} aria-label="Remove"><Icon name="x" size={12} /></button></span>
     {/each}
     <span class="count tnum">{Math.round(shown.current).toLocaleString()} {count === 1 ? 'photo' : 'photos'}</span>
-    {#if looking && vis}
+    {#if mlWait}
+      <span class="chip looking" title="Search by content needs its AI models, which are downloaded into the app data folder once"><span class="spinner"></span>{mlState(mlWait)}</span>
+    {:else if looking && vis}
       <span class="chip looking" title="Search by content looks at every photo once, in the background (the newest first): results grow as it goes"><span class="spinner"></span>{vis.done.toLocaleString()} of {vis.total.toLocaleString()} looked at</span>
     {/if}
     {#if albums.arranging && !store.mobile && count > 1}<span class="hint-arrange" title="Drag photos (or a selection) to put them in order"><Icon name="grip" size={13} /><span class="txt">Drag to arrange</span></span>{/if}

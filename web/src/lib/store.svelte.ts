@@ -12,6 +12,7 @@ import {
   type IntegrityCounts,
   type JobStatus,
   type LabelColor,
+  type MlStatus,
   type Patch,
   type PhotoDetail,
   type PhotoList,
@@ -588,6 +589,9 @@ class Store {
         this.dupesRev++;
       } else if (e.type === 'cull') {
         cull.onEvent(e);
+      } else if (e.type === 'ml') {
+        const { type, ...m } = e;
+        if (this.status) this.status = { ...this.status, ml: m as MlStatus };
       }
     };
     es.onerror = () => {
@@ -836,7 +840,7 @@ class Store {
       open: [...cull.open],
     });
 
-  /** Search by content can run (the ML service has its models). */
+  /** Search by content can run (it is on; its models may still be downloading). */
   visualReady = () => !!this.status?.visual?.enabled;
   /** The search field searches by content now. */
   smartOn = () => this.settings.smartSearch && this.visualReady();

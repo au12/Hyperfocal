@@ -196,6 +196,7 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
         "immich": crate::immich::status(&state),
         "visual": crate::visual::status_json(&state),
         "cull": crate::cull::status_json(&state),
+        "ml": state.ml.status(),
         "auth": state.cfg.password.is_some(),
         "logged_in": true,
     })))
@@ -295,7 +296,7 @@ impl ListQuery {
     }
 }
 
-/// The hits of a search by content (blocking: may ask the ML service), staged for SQL
+/// The hits of a search by content (blocking: may ask the AI engine), staged for SQL
 /// on this connection.
 fn stage_visual(st: &AppState, c: &Connection, q: &ListQuery) -> anyhow::Result<()> {
     let hits = match (&q.vq, q.like) {
@@ -824,7 +825,7 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
             if st.cfg.cull {
                 st.cull.prioritize(&ids);
             }
-            if st.cfg.ml_url.is_some() {
+            if st.cfg.ml.faces_on() {
                 st.people.prioritize(&ids);
             }
         }

@@ -1,9 +1,11 @@
-//! Client for the companion ML service (`hyperfocal-ml`, see `ml/` in the repository).
+//! Client for the AI engine process (`super::engine`), which answers on 127.0.0.1. Get
+//! one from `Ml::client` each time: the engine's port changes when it restarts.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct Client {
     base: String,
     token: Option<String>,
@@ -59,15 +61,22 @@ pub struct Analysis {
     pub animals: Vec<Animal>,
 }
 
+/// The HTTP agent for the engine (connections are reused between requests).
+pub fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(5)))
+        // On the CPU a crowded group photo can take several seconds, and requests queue
+        // behind each other in the engine.
+        .timeout_global(Some(Duration::from_secs(300)))
+        .http_status_as_error(false)
+        // Never through a proxy set for the container's downloads: the engine is local.
+        .proxy(None)
+        .build()
+        .into()
+}
+
 impl Client {
-    pub fn new(base: &str, token: Option<String>) -> Client {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_connect(Some(Duration::from_secs(5)))
-            // A CPU-only service can take several seconds for a crowded group photo.
-            .timeout_global(Some(Duration::from_secs(180)))
-            .http_status_as_error(false)
-            .build()
-            .into();
+    pub fn new(base: &str, token: Option<String>, agent: ureq::Agent) -> Client {
         Client { base: base.trim_end_matches('/').to_string(), token, agent }
     }
 
@@ -81,9 +90,9 @@ impl Client {
     /// The service's version, device and models (with the content ids that tell
     /// whether stored embeddings still match).
     pub fn info(&self) -> Result<serde_json::Value> {
-        let mut r = self.auth(self.agent.get(&format!("{}/v1/info", self.base))).call().with_context(|| format!("reaching {}", self.base))?;
+        let mut r = self.auth(self.agent.get(&format!("{}/v1/info", self.base))).call().with_context(|| "reaching the AI engine".to_string())?;
         if !r.status().is_success() {
-            bail!("{} answered {}", self.base, r.status());
+            bail!("the AI engine answered {}", r.status());
         }
         let body = r.body_mut().read_to_string()?;
         Ok(serde_json::from_str(&body)?)
@@ -95,16 +104,16 @@ impl Client {
             .auth(self.agent.post(&format!("{}/v1/analyze", self.base)))
             .content_type("image/jpeg")
             .send(jpeg)
-            .map_err(|e| MlError::Unreachable(format!("{}: {e}", self.base)))?;
+            .map_err(|e| MlError::Unreachable(format!("the AI engine: {e}")))?;
         let status = r.status();
         let body = r.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| MlError::Unreachable(e.to_string()))?;
         if !status.is_success() {
             let msg = serde_json::from_str::<serde_json::Value>(&body).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(body);
-            let msg = format!("the ML service answered {status}: {msg}");
-            // 4xx: this image; 5xx (a model failed, the GPU ran out of memory): the service.
-            return Err(if status.is_client_error() { MlError::Rejected(msg) } else { MlError::Unreachable(msg) });
+            let msg = format!("the AI engine answered {status}: {msg}");
+            // 4xx: this image; 5xx (a model failed, the GPU ran out of memory): the engine.
+            return Err(if status.is_client_error() && status.as_u16() != 501 { MlError::Rejected(msg) } else { MlError::Unreachable(msg) });
         }
-        serde_json::from_str(&body).map_err(|e| MlError::Rejected(format!("unexpected answer from the ML service: {e}")))
+        serde_json::from_str(&body).map_err(|e| MlError::Rejected(format!("unexpected answer from the AI engine: {e}")))
     }
 }
 
@@ -119,7 +128,7 @@ impl Client {
         }
         let v = self.post_for_embs("/v1/embed", "application/x-hfml-batch", &body)?;
         if v.len() != images.len() {
-            return Err(MlError::Rejected(format!("the ML service answered {} embeddings for {} images", v.len(), images.len())));
+            return Err(MlError::Rejected(format!("the AI engine answered {} embeddings for {} images", v.len(), images.len())));
         }
         Ok(v)
     }
@@ -128,11 +137,11 @@ impl Client {
     pub fn embed_texts(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, MlError> {
         let body = serde_json::json!({ "texts": texts }).to_string();
         let v = self.post_for_embs("/v1/text", "application/json", body.as_bytes())?;
-        v.into_iter().map(|e| e.ok_or_else(|| MlError::Rejected("the ML service sent no embedding for a text".into()))).collect()
+        v.into_iter().map(|e| e.ok_or_else(|| MlError::Rejected("the AI engine sent no embedding for a text".into()))).collect()
     }
 
     /// Open or closed eyes of the face in each close-up (see `crate::cull`): None for a
-    /// close-up the service could not read.
+    /// close-up the engine could not read.
     pub fn check_eyes(&self, crops: &[Vec<u8>]) -> std::result::Result<Vec<Option<EyeCheck>>, MlError> {
         let mut body = Vec::with_capacity(crops.iter().map(|i| i.len() + 4).sum());
         for img in crops {
@@ -140,9 +149,9 @@ impl Client {
             body.extend_from_slice(img);
         }
         let v = self.post_json("/v1/eyes", "application/x-hfml-batch", &body)?;
-        let list = v["eyes"].as_array().ok_or_else(|| MlError::Rejected("unexpected answer from the ML service".into()))?;
+        let list = v["eyes"].as_array().ok_or_else(|| MlError::Rejected("unexpected answer from the AI engine".into()))?;
         if list.len() != crops.len() {
-            return Err(MlError::Rejected(format!("the ML service answered {} eye checks for {} faces", list.len(), crops.len())));
+            return Err(MlError::Rejected(format!("the AI engine answered {} eye checks for {} faces", list.len(), crops.len())));
         }
         Ok(list.iter().map(|e| serde_json::from_value::<EyeCheck>(e.clone()).ok()).collect())
     }
@@ -152,16 +161,16 @@ impl Client {
             .auth(self.agent.post(&format!("{}{path}", self.base)))
             .content_type(ctype)
             .send(body)
-            .map_err(|e| MlError::Unreachable(format!("{}: {e}", self.base)))?;
+            .map_err(|e| MlError::Unreachable(format!("the AI engine: {e}")))?;
         let status = r.status();
         let text = r.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| MlError::Unreachable(e.to_string()))?;
         if !status.is_success() {
             let msg = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(text);
-            let msg = format!("the ML service answered {status}: {msg}");
-            // 501: the service lacks the models. 4xx: this request. 5xx: the service.
+            let msg = format!("the AI engine answered {status}: {msg}");
+            // 501: the engine lacks the models. 4xx: this request. 5xx: the engine.
             return Err(if status.is_client_error() && status.as_u16() != 501 { MlError::Rejected(msg) } else { MlError::Unreachable(msg) });
         }
-        serde_json::from_str(&text).map_err(|e| MlError::Rejected(format!("unexpected answer from the ML service: {e}")))
+        serde_json::from_str(&text).map_err(|e| MlError::Rejected(format!("unexpected answer from the AI engine: {e}")))
     }
 
     fn post_for_embs(&self, path: &str, ctype: &str, body: &[u8]) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {
@@ -169,17 +178,17 @@ impl Client {
             .auth(self.agent.post(&format!("{}{path}", self.base)))
             .content_type(ctype)
             .send(body)
-            .map_err(|e| MlError::Unreachable(format!("{}: {e}", self.base)))?;
+            .map_err(|e| MlError::Unreachable(format!("the AI engine: {e}")))?;
         let status = r.status();
         let text = r.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| MlError::Unreachable(e.to_string()))?;
         if !status.is_success() {
             let msg = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(text);
-            let msg = format!("the ML service answered {status}: {msg}");
-            // 501: the service has no search models. 4xx: this request. 5xx: the service.
+            let msg = format!("the AI engine answered {status}: {msg}");
+            // 501: the engine has no search models. 4xx: this request. 5xx: the engine.
             return Err(if status.is_client_error() && status.as_u16() != 501 { MlError::Rejected(msg) } else { MlError::Unreachable(msg) });
         }
-        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| MlError::Rejected(format!("unexpected answer from the ML service: {e}")))?;
-        let embs = v["embs"].as_array().ok_or_else(|| MlError::Rejected("unexpected answer from the ML service".into()))?;
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| MlError::Rejected(format!("unexpected answer from the AI engine: {e}")))?;
+        let embs = v["embs"].as_array().ok_or_else(|| MlError::Rejected("unexpected answer from the AI engine".into()))?;
         Ok(embs.iter().map(|e| e.as_str().and_then(|s| decode_f16(s, crate::visual::DIM).ok())).collect())
     }
 }
@@ -204,26 +213,29 @@ pub fn decode_f16(b64: &str, dim: usize) -> Result<Vec<f32>> {
 
 #[derive(Debug)]
 pub enum MlError {
-    /// The service is down or failing: try again later.
+    /// The engine is not ready yet: the models are being downloaded or loaded.
+    Preparing(String),
+    /// The engine is down or failing: try again later.
     Unreachable(String),
-    /// The service could not handle this image.
+    /// The engine could not handle this image.
     Rejected(String),
 }
 
 impl std::fmt::Display for MlError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MlError::Unreachable(s) | MlError::Rejected(s) => f.write_str(s),
+            MlError::Preparing(s) | MlError::Unreachable(s) | MlError::Rejected(s) => f.write_str(s),
         }
     }
 }
 
-/// An embedding as the service sends it (base64 of little-endian float16), normalized.
+/// An embedding as the engine sends it (base64 of little-endian float16), normalized.
 pub fn decode_embedding(b64: &str) -> Result<Vec<f32>> {
     use base64::Engine;
+    let dim = crate::people::DIM;
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim())?;
-    if bytes.len() != super::DIM * 2 {
-        return Err(anyhow!("an embedding of {} bytes (expected {})", bytes.len(), super::DIM * 2));
+    if bytes.len() != dim * 2 {
+        return Err(anyhow!("an embedding of {} bytes (expected {})", bytes.len(), dim * 2));
     }
     let mut v: Vec<f32> = bytes.chunks_exact(2).map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32()).collect();
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -257,7 +269,7 @@ mod tests {
     fn embeddings() {
         use base64::Engine;
         let mut raw = Vec::new();
-        for i in 0..super::super::DIM {
+        for i in 0..crate::people::DIM {
             raw.extend_from_slice(&half::f16::from_f32(if i == 3 { 2.0 } else { 0.0 }).to_le_bytes());
         }
         let v = decode_embedding(&base64::engine::general_purpose::STANDARD.encode(&raw)).unwrap();

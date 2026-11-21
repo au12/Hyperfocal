@@ -13,4 +13,3 @@ server/fuzz/corpus
 server/fuzz/artifacts
 **/__pycache__
 **/.pytest_cache
-ml/tests

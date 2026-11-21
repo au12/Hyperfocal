@@ -43,7 +43,7 @@ class People {
   private listTimer: ReturnType<typeof setTimeout> | null = null;
   private statusAt = 0;
 
-  /** People and pets are available: an ML service is set up, or names exist. */
+  /** People and pets are available: face recognition is on, or names exist. */
   get enabled(): boolean {
     const s = this.status;
     return !!s && (s.status.enabled || s.people + s.pets + s.groups > 0);

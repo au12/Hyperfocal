@@ -19,6 +19,7 @@ pub mod inspect;
 pub mod integrity;
 pub mod keywords;
 pub mod meta;
+pub mod ml;
 pub mod model;
 pub mod native;
 pub mod ops;
@@ -115,6 +116,7 @@ pub fn main() -> std::process::ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     match args.get(1).and_then(|a| a.to_str()) {
         Some("native") => return native::helper::main(&args[2..]),
+        Some("ml-engine") => return ml::engine::serve::main(&args[2..]),
         Some("inspect") => return inspect::main(&args[2..]),
         Some("healthcheck") => return healthcheck(),
         Some("--version" | "-V") => {
@@ -150,6 +152,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
     let people = people::People::new(&cfg)?;
     let dupes = dupes::Dupes::new(&cfg);
     let visual = visual::Visual::new(&cfg);
+    let ml = ml::Ml::new(cfg.ml.clone());
     let state = Arc::new(AppState {
         cfg,
         db: pool,
@@ -172,6 +175,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         dupes,
         visual,
         cull: cull::Cull::new(),
+        ml,
     });
     if !readonly {
         match state.exiftool.lock().await.version().await {
@@ -209,6 +213,7 @@ async fn run() -> Result<()> {
 
     scan::spawn(state.clone());
     images::Images::spawn_workers(state.clone());
+    ml::supervisor::spawn(state.clone());
     integrity::spawn(state.clone());
     people::worker::spawn(state.clone());
     dupes::worker::spawn(state.clone());
@@ -217,10 +222,6 @@ async fn run() -> Result<()> {
         cull::worker::spawn(state.clone());
     } else {
         state.cull.status.write().phase = "off".into();
-    }
-    match &cfg.ml_url {
-        Some(u) => tracing::info!("people and pets: ML service at {u}"),
-        None => tracing::info!("people and pets: no ML service configured (HYPERFOCAL_ML_URL); names from other apps are still read"),
     }
     if !state.trigram_ready() {
         // An index from before substring search: fill the trigram index in the background.

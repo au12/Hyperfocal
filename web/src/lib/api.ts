@@ -33,8 +33,33 @@ export interface Status {
   visual?: { enabled: boolean; phase: string; done: number; total: number; error: string | null };
   /** Culling's measurements: how far along, and whether eyes are checked. */
   cull?: CullStatus;
+  /** The built-in AI engine: its models, device and state. */
+  ml?: MlStatus;
   auth: boolean;
   logged_in: boolean;
+}
+
+/** The built-in AI engine (faces and pets, search by content, closed eyes). */
+export interface MlStatus {
+  /** Some AI feature is on (HYPERFOCAL_ML and its feature switches). */
+  enabled: boolean;
+  phase: 'off' | 'starting' | 'downloading' | 'ready' | 'waiting' | 'error' | string;
+  /** cpu or cuda, once decided. */
+  device: string | null;
+  /** The GPU's name and memory, on cuda. */
+  gpu: string | null;
+  faces: boolean;
+  search: boolean;
+  eyes: boolean;
+  /** Bytes downloaded and to download, while downloading. */
+  done: number;
+  total: number;
+  current: string | null;
+  error: string | null;
+  /** Worth knowing, not an error (e.g. no GPU: running on the CPU). */
+  note: string | null;
+  /** Models and libraries in the app data folder (MB). */
+  disk_mb: number;
 }
 
 /** Folder tuple from /api/tree: [id, parent, name, count, isReject, scanned] */

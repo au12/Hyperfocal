@@ -282,7 +282,7 @@
               {#if dupes.mode === 'exact'}
                 <div class="dim">The rest are hashed by the integrity monitor's nightly check. <button class="link" onclick={openIntegrity}>Archive integrity</button> can run it now.</div>
               {:else if dupes.mode === 'visual'}
-                <div class="dim">Search by content looks at every photo once in the background, the newest first ({store.status?.visual?.phase === 'offline' ? 'the ML service is not answering' : 'see the search field'}).</div>
+                <div class="dim">Search by content looks at every photo once in the background, the newest first ({store.status?.visual?.phase === 'offline' ? 'the AI engine is not running' : store.status?.visual?.phase === 'preparing' ? 'its models are still downloading' : 'see the search field'}).</div>
               {:else if status && !status.enabled}
                 <div class="dim">Fingerprinting is off (<code>HYPERFOCAL_DUPES=false</code>): only photos fingerprinted before are compared.</div>
               {:else if hashing}

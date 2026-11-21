@@ -3,6 +3,7 @@
   import { urls, type Subject } from '../lib/api';
   import { people, subjectLabel } from '../lib/people.svelte';
   import { store } from '../lib/store.svelte';
+  import { mlProgress, mlState } from '../lib/ml';
   import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
   import SubjectSheet from './SubjectSheet.svelte';
@@ -17,11 +18,14 @@
   const total = $derived(s ? s.analyzed + s.pending : 0);
   const pct = $derived(total ? Math.min(100, (100 * (s?.analyzed ?? 0)) / total) : 0);
   const pets = $derived(people.tab === 'pet');
+  const ml = $derived(store.status?.ml);
+  // While the models download, the bar shows how far.
+  const fetchPct = $derived(mlProgress(ml));
 
   const phaseText: Record<string, string> = {
     off: 'Face and pet recognition is off',
-    connecting: 'Connecting to the ML service…',
-    offline: 'The ML service is not reachable',
+    preparing: 'Getting the AI models ready',
+    offline: 'The AI engine is not running',
     analysing: 'Looking for faces and pets',
     idle: 'Up to date',
     paused: 'Paused',
@@ -44,11 +48,12 @@
     </div>
     {#if s}
       <div class="state" title={s.error ?? s.current ?? ''}>
-        {#if s.phase === 'analysing' || s.phase === 'grouping'}<span class="spinner"></span>{/if}
+        {#if s.phase === 'analysing' || s.phase === 'grouping' || s.phase === 'preparing'}<span class="spinner"></span>{/if}
         <span class="ellipsis">
-          {phaseText[s.phase] ?? s.phase}{#if s.phase === 'analysing' && total}{` · ${fmt(s.analyzed)} of ${fmt(total)} photos`}{#if s.rate > 0}{` · ${Math.round(s.rate)}/min`}{/if}{/if}{#if s.phase === 'grouping' && s.regroup != null}{` · ${Math.round(s.regroup * 100)}%`}{/if}
+          {#if s.phase === 'preparing' && ml}{mlState(ml)}{:else}{phaseText[s.phase] ?? s.phase}{/if}{#if s.phase === 'analysing' && total}{` · ${fmt(s.analyzed)} of ${fmt(total)} photos`}{#if s.rate > 0}{` · ${Math.round(s.rate)}/min`}{/if}{/if}{#if s.phase === 'grouping' && s.regroup != null}{` · ${Math.round(s.regroup * 100)}%`}{/if}
         </span>
         {#if s.phase === 'analysing' && total}<span class="meter"><span style:width={`${pct}%`}></span></span>{/if}
+        {#if s.phase === 'preparing' && fetchPct != null}<span class="meter"><span style:width={`${fetchPct * 100}%`}></span></span>{/if}
       </div>
     {/if}
     <div class="grow"></div>
@@ -81,11 +86,13 @@
         <div class="art"><Icon name="scan-face" size={44} /></div>
         <h2>People & pets</h2>
         <p>Hyperfocal can find the faces, dogs and cats in your photos, group them by who they are, and write the names you give them to the XMP sidecars (as <code>People|Name</code> and <code>Pets|Name</code> keywords, face regions and IPTC “person shown”), where Lightroom, digiKam and Excire read them.</p>
-        <p>It needs the companion container <b>hyperfocal-ml</b>, which runs the models (on the CPU, or an NVIDIA GPU). Start it and set <code>HYPERFOCAL_ML_URL</code> on Hyperfocal, e.g. <code>http://hyperfocal-ml:8090</code>. Nothing leaves your server.</p>
+        <p>It is turned off on this server. The models run inside Hyperfocal, on the CPU or an NVIDIA GPU: set <code>HYPERFOCAL_ML</code> and <code>HYPERFOCAL_ML_FACES</code> to <code>true</code> (the default) and restart the container. The models, about 0.7 GB, are downloaded into your app data folder the first time. Your photos never leave your server.</p>
       </div>
     {:else}
       {#if s && s.phase === 'offline' && s.error}
-        <div class="notice"><Icon name="cloud-off" />The ML service at your <code>HYPERFOCAL_ML_URL</code> is not answering ({s.error}). Names and groups still work; new photos are analysed when it is back.</div>
+        <div class="notice"><Icon name="cloud-off" />The AI engine is not running ({s.error}). Names and groups still work; new photos are analysed when it is back.</div>
+      {:else if s && s.phase === 'preparing' && ml?.phase === 'downloading'}
+        <div class="notice"><Icon name="download" />The face and pet models are downloading into your app data folder, once (about 0.7 GB; with search by content, 1.7 GB in all). The analysis starts as soon as they are in.</div>
       {/if}
 
       {#if people.named.length}

@@ -1,14 +1,15 @@
 //! The background worker: measures every photo outside the reject folders, newest first,
-//! the photos on screen ahead of the rest. With the ML service, a photo waits for its
-//! people analysis (its faces are what is measured) and its faces' eyes are checked; a
-//! photo measured without them is measured again once they come. It steps aside
-//! whenever someone is waiting on an image and while the library is being scanned.
+//! the photos on screen ahead of the rest. With People & pets on, a photo waits for its
+//! people analysis (its faces are what is measured) and its faces' eyes are checked by
+//! the AI engine; a photo measured without them is measured again once they come. It
+//! steps aside whenever someone is waiting on an image and while the library is being
+//! scanned.
 
 use super::measure::{self, Subject};
 use super::CLOSED;
 use crate::images::tone::{self, ToneMode};
 use crate::model::{Kind, PhotoRec};
-use crate::people::ml::{Client, MlError};
+use crate::ml::{Client, MlError};
 use crate::people::regions::Rect;
 use crate::people::{FACE, IGNORED};
 use crate::repo;
@@ -22,7 +23,7 @@ use std::time::{Duration, Instant};
 const BATCH: i64 = 8;
 /// A photo that could not be read is tried again after this long (or once its file changes).
 const RETRY_MS: i64 = 7 * 86_400_000;
-/// Close-ups sent to the ML service at once.
+/// Close-ups sent to the AI engine at once.
 const EYES_BATCH: usize = 16;
 
 /// Photos to measure (?1: retry errors from before, ?2: eyes can be checked, ?3: the people
@@ -165,17 +166,20 @@ fn wait(state: &AppState, d: Duration) {
 /// Whether eyes can be checked and whether photos wait for the people analysis.
 fn current_mode(state: &AppState, client: Option<&Client>) -> Mode {
     let people = state.people.status.read().phase.clone();
-    let wait_for_people = client.is_some() && matches!(people.as_str(), "analysing" | "idle" | "grouping" | "connecting");
+    // While the models download, photos wait too: measured now, they would be measured
+    // again once their faces are known.
+    let wait_for_people = state.cfg.ml.faces_on() && matches!(people.as_str(), "analysing" | "idle" | "grouping" | "preparing");
     let eyes = client.and_then(|c| c.info().ok()).is_some_and(|i| i["models"]["eye_checker"].is_object());
     Mode { eyes, wait_for_people }
 }
 
 fn worker(state: &Arc<AppState>) {
-    let client = state.cfg.ml_url.as_deref().map(|u| Client::new(u, state.cfg.ml_token.clone()));
     let lut = tone::build_lut(ToneMode::Normal, crate::images::RENDER_BOOST_EV);
     let mut rate: VecDeque<Instant> = VecDeque::new();
     let mut rx = state.events.subscribe();
     loop {
+        // The engine's port changes when it restarts: ask for it each round.
+        let client = if state.cfg.ml.eyes_on() { state.ml.client().ok() } else { None };
         let mode = current_mode(state, client.as_ref());
         state.cull.status.write().eyes = mode.eyes;
         update_counts(state, mode);
@@ -257,7 +261,7 @@ fn worker(state: &Arc<AppState>) {
                     }
                     Ok(false) => {}
                     Err(e) => {
-                        // The ML service went away mid-way: measure again later.
+                        // The AI engine went away mid-way: measure again later.
                         set_phase(state, "offline", Some(format!("{e:#}")));
                         offline = true;
                         break;
@@ -277,7 +281,7 @@ fn worker(state: &Arc<AppState>) {
                 update_counts(state, mode);
                 counted = Instant::now();
             }
-            // The ML service or the people analysis may have changed: look again now
+            // The AI engine or the people analysis may have changed: look again now
             // and then.
             if started.elapsed() > Duration::from_secs(600) && !priority {
                 break;
@@ -311,7 +315,7 @@ struct Eye {
 }
 
 /// Measures a photo and keeps the result. Ok(false): nothing to do (gone, rejected);
-/// an error: the ML service is away (measure it again later).
+/// an error: the AI engine is away (measure it again later).
 pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[u8], rec: &PhotoRec) -> Result<bool> {
     let c = state.db.get()?;
     let Some(loc) = repo::load(&c, rec.id)? else { return Ok(false) };
@@ -357,7 +361,7 @@ pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[
                             eyes.insert(*det, Eye { closed: r.closed as f64, at: [pos(0), pos(1)] });
                         }
                     }
-                    Err(MlError::Unreachable(e)) => anyhow::bail!("the ML service: {e}"),
+                    Err(MlError::Unreachable(e) | MlError::Preparing(e)) => anyhow::bail!("the AI engine: {e}"),
                     Err(MlError::Rejected(e)) => tracing::debug!("cull: eyes of photo {}: {e}", rec.id),
                 }
             }
