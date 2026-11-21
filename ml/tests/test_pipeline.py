@@ -126,3 +126,43 @@ def test_search_embeddings_match_images_with_descriptions():
     assert np.allclose(np.linalg.norm(img, axis=1), 1, atol=1e-4)
     sim = txt @ img.T
     assert sim[0, 0] > sim[0, 1] and sim[1, 1] > sim[1, 0]
+
+
+def test_eye_regions_turn_with_the_face():
+    from hyperfocal_ml.eyes import SIZE, roi_matrix, roi_of
+
+    # Landmarks of a face turned by 30 degrees: the region turns with it, and maps the
+    # face's middle to the middle of the model's input.
+    rng = np.random.default_rng(3)
+    pts = rng.normal(0, 40, (478, 2))
+    pts[33], pts[263] = (-30, 0), (30, 0)
+    a = np.deg2rad(30.0)
+    rot = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    turned = pts @ rot.T + np.array([200.0, 150.0])
+    cx, cy, side, angle = roi_of(turned)
+    assert np.isclose(np.rad2deg(angle), 30.0)
+    m = roi_matrix(cx, cy, side, angle)
+    corners = turned[[33, 263]] @ m[:, :2].T + m[:, 2]
+    # Upright in the model's input: both eye corners on one row.
+    assert abs(corners[0, 1] - corners[1, 1]) < 1e-6
+    assert np.allclose(np.array([cx, cy]) @ m[:, :2].T + m[:, 2], [SIZE / 2, SIZE / 2])
+
+
+@pytest.mark.skipif(not all((MODELS / f).exists() for f in ("face-landmarks.onnx", "face-blendshapes.onnx")), reason="models not available")
+def test_eyes_open_and_closed():
+    import onnxruntime as ort
+
+    from hyperfocal_ml.eyes import Eyes
+
+    eyes = Eyes(MODELS, lambda path: ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]))
+    data = Path(__file__).parent / "data"
+    face = cv2.imread(str(data / "face-open.jpg"))
+    r = eyes.check(np.ascontiguousarray(face[:, :, ::-1]))
+    assert r["p"] > 0.9 and r["closed"] < 0.2, r
+    # Turned 30 degrees: found upright again, still open.
+    m = cv2.getRotationMatrix2D((face.shape[1] / 2, face.shape[0] / 2), 30, 1.0)
+    turned = eyes.check(np.ascontiguousarray(cv2.warpAffine(face, m, face.shape[1::-1], borderMode=cv2.BORDER_REPLICATE)[:, :, ::-1]))
+    assert turned["closed"] < 0.2 and abs(turned["angle"]) > 10, turned
+    shut = cv2.imread(str(data / "face-closed.jpg"))
+    closed = eyes.check(np.ascontiguousarray(shut[:, :, ::-1]))
+    assert closed["p"] > 0.9 and closed["closed"] > 0.6, closed

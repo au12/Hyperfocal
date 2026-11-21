@@ -5,6 +5,7 @@ pub mod albums;
 pub mod ann;
 pub mod api;
 pub mod config;
+pub mod cull;
 pub mod db;
 pub mod dupes;
 pub mod files;
@@ -170,6 +171,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         people,
         dupes,
         visual,
+        cull: cull::Cull::new(),
     });
     if !readonly {
         match state.exiftool.lock().await.version().await {
@@ -211,6 +213,11 @@ async fn run() -> Result<()> {
     people::worker::spawn(state.clone());
     dupes::worker::spawn(state.clone());
     visual::worker::spawn(state.clone());
+    if cfg.cull {
+        cull::worker::spawn(state.clone());
+    } else {
+        state.cull.status.write().phase = "off".into();
+    }
     match &cfg.ml_url {
         Some(u) => tracing::info!("people and pets: ML service at {u}"),
         None => tracing::info!("people and pets: no ML service configured (HYPERFOCAL_ML_URL); names from other apps are still read"),

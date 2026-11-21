@@ -6,6 +6,7 @@
   import { Tween } from 'svelte/motion';
   import { segmented, easeOut, reduced } from '../lib/motion';
   import { albums } from '../lib/albums.svelte';
+  import { cull, ISSUES } from '../lib/cull.svelte';
 
   let facets = $state<Facets | null>(null);
   let filterOpen = $state(false);
@@ -14,7 +15,15 @@
 
   const crumbs = $derived(store.folderPath(store.folderId));
   const f = $derived(store.filters);
-  const count = $derived(store.list.id.length);
+  /** Photos shown: a folded series counts all its frames. */
+  const count = $derived.by(() => {
+    void store.rev;
+    const L = store.list;
+    if (!L.sk || !L.sn) return L.id.length;
+    let n = 0;
+    for (let i = 0; i < L.id.length; i++) n += L.sk[i] && !cull.open.has(L.sk[i]) ? Math.max(1, L.sn[i]) : 1;
+    return n;
+  });
   // The photo count rolls to its new value.
   const shown = new Tween(0, { duration: 420, easing: easeOut });
   $effect(() => {
@@ -36,7 +45,7 @@
   }
 
   function clearFilters() {
-    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '', subj: [], ids: [] });
+    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '', subj: [], ids: [], ppl: '', shot: '', eyes: '', issue: [], weak: false });
     store.persist();
     store.reload();
   }
@@ -59,6 +68,11 @@
     if (store.dateRange) parts.push(store.dateRange.label);
     if (f.dateFrom || f.dateTo) parts.push([f.dateFrom, f.dateTo].filter(Boolean).join(' – '));
     if (f.onlyRejected) parts.push('Rejected');
+    if (f.ppl) parts.push(f.ppl === '0' ? 'No people' : `${f.ppl.replace('-', '–')} ${f.ppl === '1' ? 'person' : 'people'}`);
+    if (f.shot) parts.push(f.shot === 'portrait' ? 'Portraits' : 'Groups');
+    if (f.eyes) parts.push(f.eyes === 'closed' ? 'Eyes closed' : 'Eyes open');
+    for (const k of f.issue ?? []) parts.push(ISSUES.find((x) => x.key === k)?.label ?? k);
+    if (f.weak) parts.push('Weaker frames');
     const folder = store.folders.get(store.folderId ?? -1);
     if (folder && folder.path && !store.dateRange && !(store.query.trim() && !coll)) parts.push(folder.name);
     return parts.join(' · ').slice(0, 120) || 'New collection';
@@ -85,7 +99,25 @@
     ['name', 'File name'],
     ['rating', 'Rating'],
     ['modified', 'File date'],
+    ['focus', 'Sharpness'],
   ];
+
+  function toggleIssue(k: string) {
+    const cur = f.issue ?? [];
+    store.setFilter('issue', cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k]);
+  }
+
+  const cs = $derived(store.status?.cull);
+  /** Culling's measurements are still under way somewhere in the library. */
+  const measuring = $derived(cull.on() && cs && cs.total > 0 && cs.done < cs.total && cs.phase !== 'off');
+  const stacks = $derived.by(() => {
+    void store.rev;
+    const sk = store.list.sk;
+    if (!sk) return 0;
+    let n = 0;
+    for (let i = 0; i < sk.length; i++) if (sk[i] && sk[i] !== sk[i - 1]) n++;
+    return n;
+  });
   const album = $derived(albums.current);
   const visual = $derived(store.visualShown());
   const sorts = $derived<[SortKey, string][]>([
@@ -208,6 +240,31 @@
     {#if store.loading}<span class="spinner"></span>{/if}
   </div>
 
+  {#if cull.on()}
+    <div class="cullbar">
+      <span class="cb-title" title="Culling"><Icon name="focus" size={14} /><span class="t">Culling</span></span>
+      {#if stacks > 0}
+        <span class="cb-sep"></span>
+        <button class="btn sm ghost" onclick={cull.expandAll} title="Show every frame of every series"><Icon name="stack" size={13} />Unfold {stacks} {stacks === 1 ? 'series' : 'series'}</button>
+        {#if cull.open.size > 0}<button class="btn sm ghost" onclick={cull.collapseAll}>Fold all</button>{/if}
+      {/if}
+      <span class="cb-sep"></span>
+      <span class="cb-label">Possible rejects</span>
+      {#each ISSUES as is (is.key)}
+        <button class="cb-chip {is.key}" class:on={(f.issue ?? []).includes(is.key)} onclick={() => toggleIssue(is.key)} title={is.hint}><Icon name={is.icon} size={12} />{is.label}</button>
+      {/each}
+      <button class="cb-chip weak" class:on={!!f.weak} onclick={() => store.setFilter('weak', !f.weak)} title="Every frame of a series but its best"><Icon name="stack" size={12} />Weaker frames</button>
+      <span class="grow"></span>
+      {#if measuring && cs}
+        <span class="cb-progress" title="Every photo is measured once, in the background (the ones on screen first): sharpness of the subject from the RAW{cs.eyes ? ', closed eyes' : ''} and clipping">
+          <span class="spinner"></span>{cs.done.toLocaleString()} of {cs.total.toLocaleString()} measured
+        </span>
+      {:else if cs?.phase === 'off'}
+        <span class="cb-progress dim" title="HYPERFOCAL_CULL=0 is set">Measurements are off</span>
+      {/if}
+    </div>
+  {/if}
+
   {#if noteOpen && album}
     <form class="notebox" onsubmit={(e) => { e.preventDefault(); noteOpen = false; if (album) albums.setNote(album, noteText); }}>
       <!-- svelte-ignore a11y_autofocus -->
@@ -224,14 +281,24 @@
     {#if !store.query && !store.mobile && albums.currentId == null && f.like == null}
       <label class="check" title="Include photos in sub folders">
         <input type="checkbox" checked={store.recursive} onchange={(e) => { store.recursive = (e.target as HTMLInputElement).checked; store.reload(); }} />
-        Sub folders
+        <span class="t">Sub folders</span><span class="t-short">Subs</span>
       </label>
     {/if}
+
+    <button
+      class="btn sm cull-toggle"
+      class:on={cull.on()}
+      onclick={cull.toggle}
+      title={(cull.on() ? 'Culling on: series as stacks, possible rejects marked, faces side by side' : 'Culling: series as stacks, possible rejects marked, faces side by side') + store.keyHint('cull')}
+      aria-pressed={cull.on()}
+    >
+      <Icon name="focus" />{#if !store.mobile}<span class="t">Cull</span>{/if}
+    </button>
 
     <Popover bind:open={filterOpen} align="right" width="19rem">
       {#snippet trigger(toggle, open)}
         <button class="btn sm" class:on={open || activeFilters > 0} onclick={() => { toggle(); loadFacets(); }}>
-          <Icon name="filter" /> {store.mobile ? '' : 'Filter'}
+          <Icon name="filter" />{#if !store.mobile}<span class="t">Filter</span>{/if}
           {#if activeFilters > 0}<span class="badge">{activeFilters}</span>{/if}
         </button>
       {/snippet}
@@ -294,6 +361,29 @@
             <div class="fl">Keyword</div>
             <span class="chip">{f.kw}<button onclick={() => store.setFilter('kw', '')} aria-label="Remove"><Icon name="x" size={12} /></button></span>
           {/if}
+          <div class="fl">People</div>
+          <div class="seg small" use:segmented>
+            {#each [['', 'Any'], ['0', 'None'], ['1', '1'], ['2', '2'], ['3-5', '3–5'], ['6-', '6+']] as [v, label] (v)}
+              <button class:on={(f.ppl ?? '') === v} onclick={() => store.setFilter('ppl', v)}>{label}</button>
+            {/each}
+          </div>
+          <div class="seg small" use:segmented>
+            <button class:on={!f.shot} onclick={() => store.setFilter('shot', '')}>Any shot</button>
+            <button class:on={f.shot === 'portrait'} onclick={() => store.setFilter('shot', 'portrait')} title="One person, close">Portraits</button>
+            <button class:on={f.shot === 'group'} onclick={() => store.setFilter('shot', 'group')} title="Three people or more">Groups</button>
+          </div>
+          <div class="seg small" use:segmented>
+            <button class:on={!f.eyes} onclick={() => store.setFilter('eyes', '')}>Any eyes</button>
+            <button class:on={f.eyes === 'open'} onclick={() => store.setFilter('eyes', 'open')} title="Every face looked at has its eyes open">Eyes open</button>
+            <button class:on={f.eyes === 'closed'} onclick={() => store.setFilter('eyes', 'closed')} title="Someone's eyes are closed">Eyes closed</button>
+          </div>
+          <div class="fl">Possible rejects <span class="dim hint">any of</span></div>
+          <div class="row wrap">
+            {#each ISSUES as is (is.key)}
+              <button class="btn sm issue-chip {is.key}" class:on={(f.issue ?? []).includes(is.key)} onclick={() => toggleIssue(is.key)} title={is.hint}><Icon name={is.icon} size={13} />{is.label}</button>
+            {/each}
+            <button class="btn sm issue-chip weak" class:on={!!f.weak} onclick={() => store.setFilter('weak', !f.weak)} title="Every frame of a series but its best (the one you rated or picked, else open eyes and the sharpest)"><Icon name="stack" size={13} />Weaker frames</button>
+          </div>
           <div class="fl">Rejected photos</div>
           <div class="seg small" use:segmented>
             <button class:on={!f.showRejected && !f.onlyRejected} onclick={() => { store.filters.onlyRejected = false; store.setFilter('showRejected', false); }}>Hide</button>
@@ -334,7 +424,7 @@
 
     <Popover align="right">
       {#snippet trigger(toggle, open)}
-        <button class="btn sm" class:on={open} onclick={toggle} title="Sort"><Icon name="sort" />{store.mobile ? '' : sorts.find((s) => s[0] === sortNow)?.[1]}</button>
+        <button class="btn sm" class:on={open} onclick={toggle} title={'Sort: ' + (sorts.find((s) => s[0] === sortNow)?.[1] ?? '')}><Icon name="sort" />{#if !store.mobile}<span class="t">{sorts.find((s) => s[0] === sortNow)?.[1]}</span>{/if}</button>
       {/snippet}
       {#snippet children(close)}
         {#each sorts as [k, label]}
@@ -352,8 +442,8 @@
     {#if !store.mobile}
       <input class="size" type="range" min="110" max="420" step="10" value={store.settings.rowHeight} oninput={setRow} title="Thumbnail size" />
       <div class="seg" use:segmented>
-        <button class:on={store.view === 'grid'} onclick={() => (store.view = 'grid')}><Icon name="grid" />Grid</button>
-        <button class:on={store.view === 'map'} onclick={() => (store.view = 'map')}><Icon name="map" />Map</button>
+        <button class:on={store.view === 'grid'} onclick={() => (store.view = 'grid')} title="Grid"><Icon name="grid" /><span class="t">Grid</span></button>
+        <button class:on={store.view === 'map'} onclick={() => (store.view = 'map')} title="Map"><Icon name="map" /><span class="t">Map</span></button>
       </div>
     {/if}
   </div>
@@ -361,6 +451,7 @@
 
 <style>
   .toolbar {
+    container: toolbar / inline-size;
     min-height: var(--toolbar-h);
     flex: none;
     display: flex;
@@ -370,6 +461,178 @@
     border-bottom: 1px solid var(--border);
     background: var(--bg);
     flex-wrap: wrap;
+  }
+  /* Short of room, the tools give way before the folder's name: the thumbnail size
+     narrows, then the buttons keep only their icons. */
+  .t-short {
+    display: none;
+  }
+  @container toolbar (max-width: 64rem) {
+    .tools .size {
+      width: 4.5rem;
+    }
+  }
+  @container toolbar (max-width: 56rem) {
+    .tools .t {
+      display: none;
+    }
+    .tools .t-short {
+      display: inline;
+    }
+    .tools .btn.sm {
+      padding: 0 0.5rem;
+    }
+  }
+  @container toolbar (max-width: 40rem) {
+    .tools .size {
+      display: none;
+    }
+  }
+  @container toolbar (max-width: 60rem) {
+    .cullbar .cb-title .t,
+    .cullbar .cb-label {
+      display: none;
+    }
+  }
+  /* Culling on: the toggle glows, and a second row holds the stacks and the possible
+     rejects. */
+  .cull-toggle.on {
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent-strong) 85%, #a35bff), var(--accent-strong));
+    border-color: transparent;
+    color: #fff;
+    box-shadow: var(--shadow-glow);
+  }
+  .cull-toggle.on :global(svg) {
+    animation: cull-spin 0.6s var(--ease-spring);
+  }
+  @keyframes cull-spin {
+    from {
+      transform: rotate(-90deg) scale(0.6);
+    }
+  }
+  .cullbar {
+    order: 10;
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin: 0.125rem -0.25rem -0.125rem;
+    padding: 0.375rem 0.25rem 0.0625rem;
+    border-top: 1px solid var(--border);
+    font-size: var(--fs-sm);
+    animation: cullbar-in var(--dur-slow) var(--ease-out);
+  }
+  @keyframes cullbar-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+  /* A phone: the chips scroll sideways in one row. */
+  :global(.mobile) .cullbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin-right: -0.75rem;
+    padding-right: 0.75rem;
+  }
+  :global(.mobile) .cullbar::-webkit-scrollbar {
+    display: none;
+  }
+  :global(.mobile) .cullbar > * {
+    flex: none;
+  }
+  .cb-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    font-weight: 680;
+    color: var(--accent);
+    letter-spacing: -0.01em;
+  }
+  .cb-sep {
+    width: 1px;
+    height: 1rem;
+    background: var(--border-strong);
+    margin: 0 0.25rem;
+  }
+  .cb-label {
+    color: var(--text-3);
+    font-weight: 550;
+    margin-right: 0.125rem;
+  }
+  .cb-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    height: 1.625rem;
+    padding: 0 0.625rem 0 0.5rem;
+    border: 1px solid var(--border-strong);
+    border-radius: 99px;
+    background: var(--surface);
+    color: var(--text-2);
+    font: inherit;
+    font-weight: 560;
+    cursor: pointer;
+    transition:
+      background var(--dur-fast),
+      color var(--dur-fast),
+      border-color var(--dur-fast),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .cb-chip:hover {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--chip, var(--accent)) 50%, transparent);
+  }
+  .cb-chip:active {
+    transform: scale(0.96);
+  }
+  .cb-chip :global(svg) {
+    color: var(--chip, var(--accent));
+  }
+  .cb-chip.on {
+    background: color-mix(in srgb, var(--chip, var(--accent)) 18%, transparent);
+    border-color: color-mix(in srgb, var(--chip, var(--accent)) 60%, transparent);
+    color: var(--text);
+  }
+  .cb-chip.blur,
+  .issue-chip.blur {
+    --chip: #f59e0b;
+  }
+  .cb-chip.eyes,
+  .issue-chip.eyes {
+    --chip: #ff5c61;
+  }
+  .cb-chip.over,
+  .issue-chip.over {
+    --chip: #fb7a3c;
+  }
+  .cb-chip.under,
+  .issue-chip.under {
+    --chip: #6b8cff;
+  }
+  .cb-chip.weak,
+  .issue-chip.weak {
+    --chip: var(--accent);
+  }
+  .issue-chip :global(svg) {
+    color: var(--chip);
+  }
+  .cb-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4375rem;
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .cullbar .grow {
+    flex: 1;
+  }
+  .fl .hint {
+    font-weight: 450;
+    text-transform: none;
+    letter-spacing: 0;
   }
   .crumbs {
     display: flex;
@@ -402,6 +665,18 @@
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
+  }
+  /* Short of room, the folders above give way first (ellipsis), never the one shown. */
+  button.crumb:not(.current) {
+    display: block;
+    flex-shrink: 1;
+    min-width: 2.25rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .crumb.current {
+    flex-shrink: 0;
+    max-width: 100%;
   }
   .crumb:hover {
     background: var(--surface-2);

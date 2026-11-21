@@ -11,6 +11,8 @@
   import Histogram from './Histogram.svelte';
   import InfoPanel from './InfoPanel.svelte';
   import FaceOverlay from './FaceOverlay.svelte';
+  import FaceStrip from './FaceStrip.svelte';
+  import { cull as culling } from '../lib/cull.svelte';
   import { people } from '../lib/people.svelte';
   import { flip } from 'svelte/animate';
   import { flyImage, segmented, bump, reduced, type Rect } from '../lib/motion';
@@ -820,6 +822,9 @@
         {#if people.enabled}
           <button class="btn sm icon" class:on={store.panels.faces} onclick={() => { store.panels.faces = !store.panels.faces; store.persist(); requestDraw(); }} title={'Faces and pets' + store.keyHint('faces')}><Icon name="scan-face" /></button>
         {/if}
+        {#if culling.on()}
+          <button class="btn sm icon" class:on={store.panels.closeups} onclick={() => { store.panels.closeups = !store.panels.closeups; store.persist(); }} title={'Faces side by side, across the series' + store.keyHint('closeups')}><Icon name="users" /></button>
+        {/if}
         <button class="btn sm {inReject ? '' : 'danger'}" onclick={() => store.reject()} title={inReject ? 'Restore from reject folder' : 'Move to reject folder (Del / Ctrl+Shift+Del)'}>
           <Icon name={inReject ? 'restore' : 'reject'} /> {inReject ? 'Restore' : 'Reject'}
         </button>
@@ -890,6 +895,10 @@
       <aside class="side"><InfoPanel compact /></aside>
     {/if}
   </div>
+
+  {#if !store.mobile && culling.on() && store.panels.closeups && !store.panels.hidden && id != null}
+    <FaceStrip photo={id} />
+  {/if}
 
   {#if !store.mobile}
     <footer class="bottom">

@@ -1,4 +1,5 @@
-"""Download the models listed in models.json into a folder and check their sha256.
+"""Download the models listed in models.json into a folder and check their sha256 (or
+copy the ones kept in this repository, after the same check).
 
     python fetch_models.py /models
 
@@ -7,6 +8,7 @@ Files already present with the right hash are kept. Exits non-zero on any mismat
 
 import hashlib
 import json
+import shutil
 import sys
 import urllib.request
 from pathlib import Path
@@ -24,10 +26,21 @@ def main() -> int:
     dest = Path(sys.argv[1] if len(sys.argv) > 1 else "/models")
     dest.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((Path(__file__).parent / "models.json").read_text())
+    here = Path(__file__).parent
     for m in manifest["models"]:
         out = dest / m["file"]
         if out.exists() and sha256(out) == m["sha256"]:
             print(f"ok      {m['file']}")
+            continue
+        if "vendored" in m:
+            # Kept in the repository (converted from its source: see models/README.md).
+            src = here / m["vendored"]
+            got = sha256(src) if src.exists() else "missing"
+            if got != m["sha256"]:
+                print(f"error   {m['file']}: {src} sha256 {got}, expected {m['sha256']}", file=sys.stderr)
+                return 1
+            shutil.copyfile(src, out)
+            print(f"copy    {m['file']} <- {m['vendored']}")
             continue
         print(f"fetch   {m['file']} <- {m['url']}", flush=True)
         tmp = out.with_suffix(".part")

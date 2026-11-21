@@ -36,6 +36,8 @@ pub enum Event {
     Albums,
     /// Progress of search by content: photos looked at, of how many.
     Visual { phase: String, done: i64, total: i64 },
+    /// Progress of culling's measurements, and the photos just measured.
+    Cull { phase: String, done: i64, total: i64, ids: Vec<i64> },
     /// Progress of a background change.
     Job(crate::ops::JobStatus),
     /// The archive integrity problems changed: how many of each there are now.
@@ -85,6 +87,8 @@ pub struct AppState {
     pub dupes: crate::dupes::Dupes,
     /// Search by content: image embeddings of the photos.
     pub visual: crate::visual::Visual,
+    /// Culling: sharpness, eyes and exposure of the photos.
+    pub cull: crate::cull::Cull,
 }
 
 impl AppState {

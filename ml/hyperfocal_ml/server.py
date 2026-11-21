@@ -8,6 +8,10 @@
                         a 4-byte little-endian length, then its bytes). Answers
                         {"embs": [...]}: a SigLIP 2 embedding (base64 float16) per image.
     POST /v1/text       body: {"texts": [...]}. Answers {"embs": [...]} in the same space.
+    POST /v1/eyes       body: close-ups of faces (one image, or a batch as for /v1/embed),
+                        each a square around a known face (eyes.py). Answers
+                        {"eyes": [...]}: per close-up {"closed": 0..1, "blink": [left,
+                        right], "p": face probability, ...} or null.
 
 Set HFML_TOKEN to require "Authorization: Bearer <token>" on /v1/ (for a service
 reachable from more than the Docker network).
@@ -59,6 +63,7 @@ class Service:
             "face_scales": list(self.cfg.face_scales),
             "thresholds": {"face": self.cfg.face_threshold, "animal": self.cfg.animal_threshold},
             "search": p.siglip is not None,
+            "eyes": p.eyes is not None,
             "analyzed": self.analyzed,
             "uptime_s": round(time.time() - self.started),
             "avg_ms": round(self.busy_ms / self.analyzed, 1) if self.analyzed else None,
@@ -104,6 +109,8 @@ def make_handler(svc: Service):
             u = urlparse(self.path)
             if u.path in ("/v1/embed", "/v1/text"):
                 return self._search(u.path)
+            if u.path == "/v1/eyes":
+                return self._eyes()
             if u.path != "/v1/analyze":
                 return self._json(404, {"error": "not found"})
             if not self._authorized():
@@ -173,6 +180,27 @@ def make_handler(svc: Service):
                 log.exception("embedding failed")
                 return self._json(500, {"error": f"embedding failed: {e}"})
             self._json(200, {"embs": embs, "ms": round((time.perf_counter() - t) * 1000, 1)})
+
+        def _eyes(self) -> None:
+            if not self._authorized():
+                return self._json(401, {"error": "unauthorized"})
+            data = self._body()
+            if data is None:
+                return
+            if svc.pipeline.eyes is None:
+                return self._json(501, {"error": "eye checks are off (no Face Landmarker models, or HFML_EYES=0)"})
+            t = time.perf_counter()
+            try:
+                images = split_batch(data) if self.headers.get("Content-Type", "").startswith("application/x-hfml-batch") else [data]
+                if not images or len(images) > 64:
+                    return self._json(400, {"error": "1 to 64 images a request"})
+                res = svc.pipeline.check_eyes(images, lock=svc.lock)
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            except Exception as e:
+                log.exception("eye check failed")
+                return self._json(500, {"error": f"eye check failed: {e}"})
+            self._json(200, {"eyes": res, "ms": round((time.perf_counter() - t) * 1000, 1)})
 
     return Handler
 

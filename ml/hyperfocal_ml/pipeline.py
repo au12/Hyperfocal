@@ -6,6 +6,8 @@ Faces:  YuNet (OpenCV Zoo, MIT) at three scales, so a face from about 0.6% to 95
 Pets:   RF-DETR (Roboflow, Apache-2.0) for dogs and cats, then a pet re-identification
         embedding (open-noodle pet-recognition, Apache-2.0) of each animal.
 Search: SigLIP 2 (Google, Apache-2.0) image and text embeddings in one space (search.py).
+Eyes:   MediaPipe Face Landmarker (Google, Apache-2.0) on close-ups of known faces: open
+        or closed (eyes.py).
 
 Every coordinate in the answer is normalized to the image that was sent (0..1, origin
 top left), which must be upright: EXIF orientation is ignored.
@@ -27,7 +29,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from . import search
+from . import eyes, search
 
 log = logging.getLogger("hyperfocal_ml")
 
@@ -133,6 +135,9 @@ class Config:
     animal_threshold: float = field(default_factory=lambda: float(env("HFML_ANIMAL_THRESHOLD", "0.35")))
     # Search by content (SigLIP 2): on when its models are there, unless HFML_SEARCH=0.
     search: bool = field(default_factory=lambda: env("HFML_SEARCH", "1").lower() not in ("0", "false", "no", "off"))
+    # Open or closed eyes (MediaPipe Face Landmarker): on when its models are there,
+    # unless HFML_EYES=0.
+    eyes: bool = field(default_factory=lambda: env("HFML_EYES", "1").lower() not in ("0", "false", "no", "off"))
 
 
 class Pipeline:
@@ -167,6 +172,14 @@ class Pipeline:
             self.siglip = search.Siglip(d, self._session)
             self.models["image_embedder"] = {"file": search.VISION, "id": fingerprint(d / search.VISION), "dim": search.DIM}
             self.models["text_embedder"] = {"file": search.TEXT, "id": fingerprint(d / search.TEXT), "dim": search.DIM}
+        self.eyes = None
+        if self.cfg.eyes and eyes.available(d):
+            self.eyes = eyes.Eyes(d, self._session)
+            self.models["eye_checker"] = {
+                "file": eyes.LANDMARKS,
+                "id": fingerprint(d / eyes.LANDMARKS) + fingerprint(d / eyes.BLENDSHAPES)[:4],
+                "crop": eyes.CROP_SIDE,
+            }
         self._warm()
 
     # ------------------------------------------------------------------ runtime
@@ -226,6 +239,8 @@ class Pipeline:
         self.pet_emb.run(None, {self.pet_emb_input: np.zeros((1, 3, 224, 224), np.float32)})
         if self.siglip is not None:
             self.siglip.embed_images([img[:, :, ::-1]])
+        if self.eyes is not None:
+            self.eyes.check(np.ascontiguousarray(cv2.resize(img, (320, 320))[:, :, ::-1]))
         log.info("models ready on %s in %.1fs", self.device, time.time() - t)
 
     # ------------------------------------------------------------------ faces
@@ -416,6 +431,24 @@ class Pipeline:
             raise RuntimeError("search is off (no SigLIP 2 models, or HFML_SEARCH=0)")
         with lock or _NOLOCK:
             return [b64_f16(e) for e in self.siglip.embed_texts(texts)]
+
+    # ------------------------------------------------------------------ eyes
+
+    def check_eyes(self, images: list[bytes], lock: threading.Semaphore | None = None) -> list[dict | None]:
+        """Open or closed eyes of the face in each close-up (see eyes.py); None for one
+        that does not decode."""
+        if self.eyes is None:
+            raise RuntimeError("eye checks are off (no Face Landmarker models, or HFML_EYES=0)")
+        out: list[dict | None] = [None] * len(images)
+        rgbs: list[tuple[int, np.ndarray]] = []
+        for i, data in enumerate(images):
+            bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+            if bgr is not None and min(bgr.shape[:2]) >= 32:
+                rgbs.append((i, np.ascontiguousarray(bgr[:, :, ::-1])))
+        with lock or _NOLOCK:
+            for i, rgb in rgbs:
+                out[i] = self.eyes.check(rgb)
+        return out
 
     # ------------------------------------------------------------------ entry point
 

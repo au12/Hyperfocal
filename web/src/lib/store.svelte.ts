@@ -26,6 +26,7 @@ import { setOffline } from './offline';
 import { people } from './people.svelte';
 import { dupes } from './dupes.svelte';
 import { albums, albumKey, albumSpec } from './albums.svelte';
+import { cull } from './cull.svelte';
 
 export const LABELS: { color: LabelColor; name: string; key: string }[] = [
   { color: 'red', name: 'Red', key: '6' },
@@ -37,7 +38,7 @@ export const LABELS: { color: LabelColor; name: string; key: string }[] = [
 
 type CullPatch = Pick<Patch, 'rating' | 'label' | 'pick'>;
 
-export type SortKey = 'taken' | 'name' | 'rating' | 'modified' | 'album' | 'relevance';
+export type SortKey = 'taken' | 'name' | 'rating' | 'modified' | 'album' | 'relevance' | 'focus';
 
 export interface Filters {
   rmin: number;
@@ -64,6 +65,16 @@ export interface Filters {
   album?: number | null;
   /** Photos that look like this one (Find similar). */
   like?: number | null;
+  /** People in the photo: '' any, '0', '1', '2', '3-5', '6-'. */
+  ppl?: string;
+  /** 'portrait' (one person, close) or 'group' (three or more). */
+  shot?: '' | 'portrait' | 'group';
+  /** 'closed': someone's eyes are closed; 'open': every face has them open. */
+  eyes?: '' | 'open' | 'closed';
+  /** Possible rejects: any of these (culling's measurements). */
+  issue?: string[];
+  /** The frames of each series that are not its best. */
+  weak?: boolean;
 }
 
 export const DEFAULT_FILTERS: Filters = {
@@ -91,7 +102,7 @@ export function activeFilterCount(f: Filters): number {
   return (
     (f.rmin > 0 ? 1 : 0) + (f.unrated ? 1 : 0) + (f.lc.length ? 1 : 0) + (f.pick != null ? 1 : 0) + (f.kinds.length ? 1 : 0) +
     (f.gps != null ? 1 : 0) + (f.cam ? 1 : 0) + (f.lens ? 1 : 0) + (f.kw ? 1 : 0) + (f.onlyRejected ? 1 : 0) + (f.dateFrom || f.dateTo ? 1 : 0) +
-    (f.subj?.length ? 1 : 0)
+    (f.subj?.length ? 1 : 0) + (f.ppl ? 1 : 0) + (f.shot ? 1 : 0) + (f.eyes ? 1 : 0) + (f.issue?.length ? 1 : 0) + (f.weak ? 1 : 0)
   );
 }
 
@@ -146,6 +157,9 @@ export function viewParams(v: {
   smart?: boolean;
   /** A search by content in order of relevance (false: in the order chosen). */
   relevance?: boolean;
+  /** Culling: measurements, and series as stacks (`open`: the stacks shown whole). */
+  cull?: boolean;
+  open?: number[];
 }): Record<string, unknown> {
   const f = v.filters;
   const q = v.query.trim();
@@ -185,6 +199,14 @@ export function viewParams(v: {
     from,
     to,
     q: smart ? undefined : q || undefined,
+    ppl: f.ppl || undefined,
+    shot: f.shot || undefined,
+    eyes: f.eyes || undefined,
+    issue: f.issue?.length ? f.issue.join(',') : undefined,
+    weak: f.weak ? 1 : undefined,
+    cull: v.cull ? 1 : undefined,
+    stack: v.cull && !f.weak && f.sort !== 'focus' ? 1 : undefined,
+    open: v.cull && v.open?.length ? v.open.join(',') : undefined,
     sort: visual
       ? v.relevance !== false || f.sort === 'relevance'
         ? undefined
@@ -210,6 +232,8 @@ export interface ViewerState {
 }
 
 export interface Settings {
+  /** Culling: series as stacks, badges for possible rejects, faces side by side. */
+  cull: boolean;
   theme: 'dark' | 'light' | 'auto';
   defaultSource: 'jpeg' | 'raw';
   prefetch: number;
@@ -242,6 +266,7 @@ export interface Settings {
 export const SHARPEN_SIGMA = [0, 1.0, 2.0] as const;
 
 const DEFAULT_SETTINGS: Settings = {
+  cull: false,
   theme: 'dark',
   defaultSource: 'jpeg',
   prefetch: 3,
@@ -384,7 +409,7 @@ class Store {
   viewer = $state<ViewerState>(
     loadLocal('hf.viewer', { source: 'jpeg', tone: 'normal', wb: 'asshot', ev: 0, evOn: true, sharpen: 0, peaking: 0, over: false, under: false, invert: false } as ViewerState),
   );
-  panels = $state(loadLocal('hf.panels', { sidebar: true, info: true, histogram: false, filmstrip: true, hidden: false, faces: false }));
+  panels = $state(loadLocal('hf.panels', { sidebar: true, info: true, histogram: false, filmstrip: true, hidden: false, faces: false, closeups: true }));
 
   settings = $state<Settings>(migrateSettings(loadLocal('hf.settings', DEFAULT_SETTINGS)));
   toasts = $state<Toast[]>([]);
@@ -561,6 +586,8 @@ class Store {
         people.onEvent(e);
       } else if (e.type === 'dupes') {
         this.dupesRev++;
+      } else if (e.type === 'cull') {
+        cull.onEvent(e);
       }
     };
     es.onerror = () => {
@@ -805,6 +832,8 @@ class Store {
       scoped: this.collection != null,
       smart: this.smartOn(),
       relevance: this.relevance,
+      cull: this.settings.cull,
+      open: [...cull.open],
     });
 
   /** Search by content can run (the ML service has its models). */

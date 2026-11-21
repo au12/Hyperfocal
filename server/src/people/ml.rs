@@ -25,6 +25,18 @@ pub struct Face {
     pub emb: Option<String>,
 }
 
+/// The eyes of a face in a close-up (`/v1/eyes`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct EyeCheck {
+    /// 0 open .. 1 closed.
+    pub closed: f32,
+    /// How surely the close-up shows a face (0..1): below one half, the answer is a guess.
+    pub p: f32,
+    /// The eyes' centres in the close-up (0..1), picture left first.
+    #[serde(default)]
+    pub eyes: Vec<[f32; 2]>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Animal {
     #[serde(rename = "box")]
@@ -117,6 +129,39 @@ impl Client {
         let body = serde_json::json!({ "texts": texts }).to_string();
         let v = self.post_for_embs("/v1/text", "application/json", body.as_bytes())?;
         v.into_iter().map(|e| e.ok_or_else(|| MlError::Rejected("the ML service sent no embedding for a text".into()))).collect()
+    }
+
+    /// Open or closed eyes of the face in each close-up (see `crate::cull`): None for a
+    /// close-up the service could not read.
+    pub fn check_eyes(&self, crops: &[Vec<u8>]) -> std::result::Result<Vec<Option<EyeCheck>>, MlError> {
+        let mut body = Vec::with_capacity(crops.iter().map(|i| i.len() + 4).sum());
+        for img in crops {
+            body.extend_from_slice(&(img.len() as u32).to_le_bytes());
+            body.extend_from_slice(img);
+        }
+        let v = self.post_json("/v1/eyes", "application/x-hfml-batch", &body)?;
+        let list = v["eyes"].as_array().ok_or_else(|| MlError::Rejected("unexpected answer from the ML service".into()))?;
+        if list.len() != crops.len() {
+            return Err(MlError::Rejected(format!("the ML service answered {} eye checks for {} faces", list.len(), crops.len())));
+        }
+        Ok(list.iter().map(|e| serde_json::from_value::<EyeCheck>(e.clone()).ok()).collect())
+    }
+
+    fn post_json(&self, path: &str, ctype: &str, body: &[u8]) -> std::result::Result<serde_json::Value, MlError> {
+        let mut r = self
+            .auth(self.agent.post(&format!("{}{path}", self.base)))
+            .content_type(ctype)
+            .send(body)
+            .map_err(|e| MlError::Unreachable(format!("{}: {e}", self.base)))?;
+        let status = r.status();
+        let text = r.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| MlError::Unreachable(e.to_string()))?;
+        if !status.is_success() {
+            let msg = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(text);
+            let msg = format!("the ML service answered {status}: {msg}");
+            // 501: the service lacks the models. 4xx: this request. 5xx: the service.
+            return Err(if status.is_client_error() && status.as_u16() != 501 { MlError::Rejected(msg) } else { MlError::Unreachable(msg) });
+        }
+        serde_json::from_str(&text).map_err(|e| MlError::Rejected(format!("unexpected answer from the ML service: {e}")))
     }
 
     fn post_for_embs(&self, path: &str, ctype: &str, body: &[u8]) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {

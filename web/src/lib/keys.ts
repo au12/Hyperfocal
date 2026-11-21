@@ -15,7 +15,8 @@ export type Action =
   | 'selectToggle' | 'selectNext' | 'selectPrev' | 'selectRight' | 'selectLeft' | 'selectDown' | 'selectUp'
   | 'selectFirst' | 'selectLast' | 'selectPageDown' | 'selectPageUp' | 'selectAll' | 'selectNone' | 'selectInvert'
   | 'rotateCcw' | 'rotateCw' | 'rotate180'
-  | 'histogram' | 'info' | 'filmstrip' | 'folders' | 'hidePanels' | 'help' | 'search' | 'undo' | 'map' | 'faces' | 'people';
+  | 'histogram' | 'info' | 'filmstrip' | 'folders' | 'hidePanels' | 'help' | 'search' | 'undo' | 'map' | 'faces' | 'people'
+  | 'cull' | 'stack' | 'closeups' | 'keepBest';
 
 type Bindings = Partial<Record<Action, string[]>>;
 export type KeyOverrides = Partial<Record<Action, string[]>>;
@@ -117,6 +118,10 @@ const FRV: Bindings = {
   map: ['M'],
   faces: ['Shift+F'],
   people: ['Shift+P'],
+  cull: ['Shift+C'],
+  stack: ['Shift+G'],
+  closeups: ['V'],
+  keepBest: ['Ctrl+Shift+K'],
 };
 
 const LR: Bindings = {
@@ -147,7 +152,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['wb', 'White balance (as shot / daylight / auto)'], ['evToggle', 'Exposure correction on/off'],
     ['evUp', 'Exposure +⅓ EV'], ['evDown', 'Exposure −⅓ EV'], ['evUpBig', 'Exposure +1 EV'], ['evDownBig', 'Exposure −1 EV'], ['evReset', 'Reset exposure'],
     ['histogram', 'Histogram'], ['info', 'Info & metadata panel'], ['filmstrip', 'Filmstrip'], ['folders', 'Folders panel'], ['hidePanels', 'Hide all panels'],
-    ['faces', 'Show faces and pets on the photo'],
+    ['faces', 'Show faces and pets on the photo'], ['closeups', 'Faces side by side (across the series)'],
   ]],
   ['Culling & metadata', [
     ['rate1', 'Rating 1'], ['rate2', 'Rating 2'], ['rate3', 'Rating 3'], ['rate4', 'Rating 4'], ['rate5', 'Rating 5'], ['rate0', 'Clear rating'], ['rateUp', 'Rating +1'], ['rateDown', 'Rating −1'],
@@ -156,6 +161,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['editTitle', 'Edit title & caption'], ['keywords', 'Add keywords'], ['location', 'Set location on map'],
     ['albumAdd', 'Add to the target album (the last one used)'], ['albumPick', 'Add to an album…'], ['albumRemove', 'Take out of the album shown'],
     ['rotateCcw', 'Rotate left'], ['rotateCw', 'Rotate right'], ['rotate180', 'Rotate 180°'], ['undo', 'Undo last change'],
+    ['cull', 'Culling on / off (stacks, possible rejects)'], ['stack', 'Unfold / fold the series'], ['keepBest', 'Keep the best of the series, reject the others'],
   ]],
   ['Selection & search', [
     ['selectToggle', 'Select / deselect'], ['selectNext', 'Select / deselect and next'], ['selectPrev', 'Previous and select / deselect'],

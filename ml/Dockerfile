@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Hyperfocal ML: face and pet detection and recognition, and search by content, for Hyperfocal.
+# Hyperfocal ML: face and pet detection and recognition, search by content and eye checks, for Hyperfocal.
 #   docker build -f ml/Dockerfile -t hyperfocal-ml .                         (CPU)
 #   docker build -f ml/Dockerfile --build-arg VARIANT=cuda -t hyperfocal-ml:cuda .   (NVIDIA)
 
@@ -11,6 +11,7 @@ ARG VARIANT=cpu
 FROM python:3.12-slim-trixie AS models
 WORKDIR /build
 COPY ml/models.json ml/fetch_models.py ./
+COPY ml/models ./models
 RUN python fetch_models.py /models
 
 # ---------------------------------------------------------------- runtime

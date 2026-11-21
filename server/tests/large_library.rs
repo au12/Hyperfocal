@@ -412,6 +412,46 @@ fn generate_dupes(state: &AppState) {
     tx.commit().unwrap();
 }
 
+/// Culling's measurements: every photo measured (a few blurry, clipped or dark), and the
+/// eyes of most faces checked (a few closed).
+fn generate_cull(state: &AppState) {
+    let mut rng = Rng(0xc0_11ed_5eed_9999);
+    let mut c = state.db.get().unwrap();
+    let tx = c.transaction().unwrap();
+    {
+        let mut st = tx.prepare("SELECT id, size, mtime, orientation FROM photos WHERE pair_of IS NULL ORDER BY id").unwrap();
+        let rows: Vec<(i64, i64, i64, i64)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().map(|r| r.unwrap()).collect();
+        let mut ins = tx
+            .prepare(
+                "INSERT INTO cull(photo_id, size, mtime, orientation, faces_at, at, focus, focus_on, over, under, eyes, closed, issues)
+                 VALUES(?1, ?2, ?3, ?4, 0, 0, ?5, 3, ?6, ?7, 0, 0, ?8)",
+            )
+            .unwrap();
+        for (id, size, mtime, o) in rows {
+            let focus = rng.below(1000) as f64 / 1000.0;
+            let over = if rng.chance(0.06) { 0.05 } else { 0.001 };
+            let under = if rng.chance(0.03) { 0.6 } else { 0.05 };
+            let issues = hyperfocal::cull::issues(Some(focus), Some(0), Some(over), Some(under));
+            ins.execute(params![id, size, mtime, o, focus, over, under, issues]).unwrap();
+        }
+        let faces: Vec<(i64, i64)> = tx.prepare("SELECT id, photo_id FROM detections WHERE kind = 1").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+        let mut f = tx.prepare("INSERT INTO cull_faces(detection_id, photo_id, focus, closed) VALUES(?1, ?2, ?3, ?4)").unwrap();
+        for (d, p) in faces {
+            if rng.chance(0.8) {
+                let closed = if rng.chance(0.05) { 0.8 } else { 0.05 };
+                f.execute(params![d, p, rng.below(1000) as f64 / 1000.0, closed]).unwrap();
+            }
+        }
+    }
+    tx.execute_batch(
+        "UPDATE cull SET closed = (SELECT count(*) FROM cull_faces cf WHERE cf.photo_id = cull.photo_id AND cf.closed >= 0.45),
+                         eyes = (SELECT count(*) FROM cull_faces cf WHERE cf.photo_id = cull.photo_id);
+         UPDATE cull SET issues = issues | 2 WHERE closed > 0;",
+    )
+    .unwrap();
+    tx.commit().unwrap();
+}
+
 fn rss_mb() -> (f64, f64) {
     let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let field = |k: &str| -> f64 {
@@ -495,6 +535,8 @@ async fn large_library() {
     {
         let st = state.clone();
         tokio::task::spawn_blocking(move || generate_dupes(&st)).await.unwrap();
+        let st = state.clone();
+        tokio::task::spawn_blocking(move || generate_cull(&st)).await.unwrap();
     }
     let gen_time = t.elapsed();
     hyperfocal::db::optimize(&state.db.get().unwrap()).unwrap();
@@ -598,6 +640,21 @@ async fn large_library() {
         b.get("dupes: series", "/api/dupes?mode=series", ms(1200)).await;
         b.get("dupes: event against library", &format!("/api/dupes?mode=near&scope=against&folder={big}"), ms(1500)).await;
         b.get("dupes: one event", &format!("/api/dupes?mode=exact&scope=folder&folder={event}"), ms(300)).await;
+        // Culling: series as stacks, possible rejects, the people filters.
+        let stacked = b.get("culling: event folder, stacked", &format!("/api/photos?folder={big}&cull=1&stack=1"), ms(150)).await;
+        if round == 0 {
+            assert!(stacked["sn"].as_array().unwrap().iter().any(|n| n.as_i64().unwrap_or(0) > 1), "no series in the biggest event");
+        }
+        b.get("culling: year, stacked", &format!("/api/photos?folder={year}&rec=1&cull=1&stack=1"), ms(600)).await;
+        b.get("culling: library, stacked", &format!("/api/photos?folder={root}&rec=1&cull=1&stack=1"), ms(3000)).await;
+        b.get("culling: library possible rejects", &format!("/api/photos?folder={root}&rec=1&issue=blur,eyes"), ms(800)).await;
+        b.get("culling: weaker frames of a year", &format!("/api/photos?folder={year}&rec=1&weak=1"), ms(600)).await;
+        b.get("culling: year sharpest first", &format!("/api/photos?folder={year}&rec=1&sort=focus"), ms(600)).await;
+        b.get("people: library groups", &format!("/api/photos?folder={root}&rec=1&shot=group"), ms(800)).await;
+        b.get("people: library portraits", &format!("/api/photos?folder={root}&rec=1&shot=portrait"), ms(800)).await;
+        b.get("people: library nobody", &format!("/api/photos?folder={root}&rec=1&ppl=0"), ms(1200)).await;
+        b.get("people: year, eyes closed", &format!("/api/photos?folder={year}&rec=1&eyes=closed"), ms(400)).await;
+        b.get("culling: a photo's series", &format!("/api/cull/photo/{face_photo}"), ms(100)).await;
         let group_ids: Vec<String> = ex["groups"][0]["members"].as_array().map(|m| m.iter().map(|x| x["id"].to_string()).collect()).unwrap_or_default();
         b.get("photos: a duplicate group", &format!("/api/photos?ids={}", group_ids.join(",")), ms(50)).await;
         rss_after.push(rss_mb().0);

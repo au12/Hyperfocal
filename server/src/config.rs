@@ -42,6 +42,8 @@ pub struct Config {
     pub raw_decoder_libraw: bool,
     /// Archive integrity monitor: hash every original and verify it again over time.
     pub integrity: bool,
+    /// Culling help: measure the sharpness, eyes and exposure of every photo.
+    pub cull: bool,
     /// Days in which every original is verified once.
     pub verify_days: u32,
     /// The nightly window for verification: start (local hour, the container's TZ) and length.
@@ -120,6 +122,7 @@ impl Config {
             rename_sidecars: true,
             raw_decoder_libraw: false,
             integrity: false,
+            cull: false,
             verify_days: 90,
             verify_hour: 4,
             verify_minutes: 120,
@@ -171,6 +174,7 @@ impl Config {
             rename_sidecars: env_bool("HYPERFOCAL_RENAME_SIDECARS", true),
             raw_decoder_libraw: env_str("HYPERFOCAL_RAW_DECODER").is_some_and(|v| v.eq_ignore_ascii_case("libraw")),
             integrity: env_bool("HYPERFOCAL_INTEGRITY", true),
+            cull: env_bool("HYPERFOCAL_CULL", true),
             verify_days: env_num("HYPERFOCAL_VERIFY_DAYS", 90u32).clamp(1, 3650),
             verify_hour: env_num("HYPERFOCAL_VERIFY_HOUR", 4u32).min(23),
             verify_minutes: env_num("HYPERFOCAL_VERIFY_MINUTES", 120u32).clamp(1, 1440),

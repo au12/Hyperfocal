@@ -27,6 +27,7 @@
   import AlbumPicker from './components/AlbumPicker.svelte';
   import ImmichDialog from './components/ImmichDialog.svelte';
   import { albums } from './lib/albums.svelte';
+  import { cull } from './lib/cull.svelte';
 
   let drawer = $state(false);
 
@@ -213,6 +214,18 @@
       case 'map': store.view = store.view === 'map' ? 'grid' : 'map'; store.loupe = false; break;
       case 'faces': store.panels.faces = !store.panels.faces; store.persist(); break;
       case 'people': store.openPeople(); break;
+      case 'cull': cull.toggle(); break;
+      case 'stack': cull.toggleStackAt(); break;
+      case 'closeups': store.panels.closeups = !store.panels.closeups; store.persist(); break;
+      case 'keepBest': {
+        const id = store.list.id[inLoupe ? store.current : store.cursor];
+        if (id == null) break;
+        cull.get(id).then((c) => {
+          if (c?.series) cull.keepBest(c);
+          else store.toast('Not part of a series', 'info', undefined, 1800);
+        });
+        break;
+      }
     }
     void e;
     return true;

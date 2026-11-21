@@ -31,6 +31,8 @@ export interface Status {
   immich?: { url: string; library: boolean } | null;
   /** Search by content: whether it can run, and how many photos it has looked at. */
   visual?: { enabled: boolean; phase: string; done: number; total: number; error: string | null };
+  /** Culling's measurements: how far along, and whether eyes are checked. */
+  cull?: CullStatus;
   auth: boolean;
   logged_in: boolean;
 }
@@ -66,7 +68,21 @@ export interface PhotoList {
   g: number[];
   v: string[];
   x: string[];
+  /** Culling (with cull=1): issue bits (1 blurry, 2 eyes closed, 4 highlights clipped,
+   * 8 too dark; -1 not measured yet) and the subject's sharpness (0..100, -1 unknown). */
+  cq?: number[];
+  cf?: number[];
+  /** Series (with stack=1 or weak=1): the stack's key (its first frame; 0: none), how many
+   * frames it has, and 1 for its best frame. */
+  sk?: number[];
+  sn?: number[];
+  sb?: number[];
 }
+
+export const ISSUE_BLUR = 1;
+export const ISSUE_EYES = 2;
+export const ISSUE_OVER = 4;
+export const ISSUE_UNDER = 8;
 
 export const emptyList = (): PhotoList => ({ id: [], n: [], w: [], h: [], o: [], t: [], r: [], lc: [], p: [], k: [], f: [], g: [], v: [], x: [] });
 
@@ -332,6 +348,70 @@ export interface IntegritySummary extends IntegrityCounts {
   days: number;
   mbps: number;
   alert: { host: string; format: string } | null;
+}
+
+export interface CullStatus {
+  phase: 'starting' | 'off' | 'waiting' | 'measuring' | 'idle' | 'offline' | string;
+  done: number;
+  total: number;
+  rate: number;
+  error: string | null;
+  eyes: boolean;
+}
+
+/** A face as culling sees it: where it is (upright photo, 0..1), how sharp (0..1), eyes
+ * (0 open .. 1 closed; `shut` past the threshold), who. */
+export interface CullFace {
+  id: number;
+  photo: number;
+  box: [number, number, number, number];
+  focus: number | null;
+  closed: number | null;
+  shut: boolean | null;
+  eyes: [[number, number], [number, number]] | null;
+  subject: { id: number; name: string | null } | null;
+  /** Version for the crop URL. */
+  v: string;
+}
+
+export interface CullFrame {
+  id: number;
+  name: string;
+  v: string;
+  w: number | null;
+  h: number | null;
+  o: number;
+  rating: number;
+  pick: number;
+  focus: number | null;
+  closed: number | null;
+  issues: CullIssue[];
+}
+
+export type CullIssue = 'blur' | 'eyes' | 'over' | 'under';
+
+export interface CullPhoto {
+  id: number;
+  measured: boolean;
+  pending: boolean;
+  error: string | null;
+  focus: number | null;
+  focus_on: 'faces' | 'animals' | 'photo' | null;
+  over: number | null;
+  under: number | null;
+  eyes: { checked: number; closed: number | null } | null;
+  issues: CullIssue[];
+  faces: CullFace[];
+  /** The series it belongs to: its frames in shooting order, the best one and why, and
+   * each face of this photo followed through the frames. */
+  series: {
+    key: number;
+    best: number;
+    why: string | null;
+    index: number;
+    frames: CullFrame[];
+    tracks: { subject: { id: number; name: string | null } | null; faces: (CullFace | null)[] }[];
+  } | null;
 }
 
 export type DupeMode = 'exact' | 'near' | 'series' | 'visual';
@@ -682,6 +762,9 @@ export const api = {
   peopleAnalyze: (ids: number[]) => req<{ ok: boolean }>('POST', 'people/analyze', { ids }),
   peopleControl: (b: { pause?: boolean; regroup?: boolean; reanalyze?: number }) => req<{ ok: boolean; paused: boolean }>('POST', 'people/control', b),
   photoPeople: (id: number, signal?: AbortSignal) => req<PhotoPeople>('GET', `photo/${id}/people`, undefined, undefined, signal),
+  cullPhoto: (id: number, signal?: AbortSignal) => req<CullPhoto>('GET', `cull/photo/${id}`, undefined, undefined, signal),
+  cullStatus: () => req<CullStatus>('GET', 'cull/status'),
+  cullMeasure: (ids: number[]) => req<{ ok: boolean }>('POST', 'cull/measure', { ids }),
   login: (password: string) => req<{ ok: boolean }>('POST', 'login', { password }),
   logout: () => req<{ ok: boolean }>('POST', 'logout', {}),
 };
@@ -706,6 +789,7 @@ export const urls = {
   /** The tone curve of a RAW view (65536 bytes), for the GPU path. */
   lut: (mode: ToneMode, ev: number, ver: string) => apiUrl('lut', { mode: mode === 'normal' ? undefined : mode, ev: ev ? ev.toFixed(2) : undefined, v: ver || undefined }),
   events: () => apiUrl('events'),
-  /** A face or animal, cropped square (JPEG). */
-  crop: (d: { id: number; v: string }) => apiUrl(`detection/${d.id}/crop`, { v: d.v }),
+  /** A face or animal, cropped square (JPEG); `big`: twice the size, from a larger image
+   * (close-ups for culling). */
+  crop: (d: { id: number; v: string }, big = false) => apiUrl(`detection/${d.id}/crop`, { v: d.v, s: big ? 2 : undefined }),
 };

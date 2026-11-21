@@ -48,7 +48,7 @@ fn not_found() -> ApiError {
 }
 
 /// A version for a crop URL: changes when the photo or the box does.
-fn crop_v(r: &Rect, photo_v: &str) -> String {
+pub(crate) fn crop_v(r: &Rect, photo_v: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for v in [r.x, r.y, r.w, r.h] {
         h ^= (v * 1e5).round() as i64 as u64;
@@ -387,10 +387,18 @@ async fn names(State(state): St, Query(q): Query<NamesQuery>) -> ApiResult<Json<
     .map(Json)
 }
 
-async fn crop(State(state): St, Path(id): Path<i64>) -> ApiResult<Response> {
+#[derive(Deserialize)]
+struct CropQuery {
+    /// 2: a close-up twice the size, the face filling it, from an image twice as large
+    /// (culling; not kept).
+    s: Option<u8>,
+}
+
+async fn crop(State(state): St, Path(id): Path<i64>, Query(q): Query<CropQuery>) -> ApiResult<Response> {
     let st = state.clone();
+    let big = q.s == Some(2);
     let bytes = blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
-        if let Some(b) = st.people.crops.get(id) {
+        if !big && let Some(b) = st.people.crops.get(id) {
             return Ok(Some(b));
         }
         // Not kept (a poor face, or the cache was cleared): made from the photo.
@@ -405,16 +413,20 @@ async fn crop(State(state): St, Path(id): Path<i64>) -> ApiResult<Response> {
         drop(c);
         let src = crate::scan::photo_path(&st, &loc.folder_path, &loc.rec.name);
         let k = crate::model::Kind::from_i32(loc.rec.kind);
-        // The size it was analysed at: the same source image, so the box fits.
-        let long = st.cfg.ml_size;
+        // The size it was analysed at: the same source image, so the box fits (boxes are
+        // relative, so a larger image of it fits too).
+        let scale = if big { 2 } else { 1 };
+        let long = st.cfg.ml_size * scale;
         let o = loc.rec.orientation as u8;
         let img = crate::images::raw::catch(|| -> anyhow::Result<crate::images::jpeg::Rgb> {
             let img = crate::images::load_display_rgb(&src, k, long)?;
             Ok(crate::images::jpeg::orient(crate::images::jpeg::fit_long(img, long)?, o))
         })
         .map_err(|e| anyhow::anyhow!(e))?;
-        let b = super::worker::crop(&img, rect, kind, super::worker::CROP)?;
-        st.people.crops.put(&[(id, b.clone())]);
+        let b = if big { super::worker::closeup(&img, rect, kind, super::worker::CROP * scale)? } else { super::worker::crop(&img, rect, kind, super::worker::CROP)? };
+        if !big {
+            st.people.crops.put(&[(id, b.clone())]);
+        }
         Ok(Some(b))
     })
     .await?

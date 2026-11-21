@@ -10,6 +10,8 @@
   import { people } from '../lib/people.svelte';
   import { bump } from '../lib/motion';
   import { albums } from '../lib/albums.svelte';
+  import CullInfo from './CullInfo.svelte';
+  import { cull } from '../lib/cull.svelte';
 
   let { compact = false }: { compact?: boolean } = $props();
 
@@ -112,6 +114,10 @@
       </div>
       {#if d.rating < 0}<div class="warn small">Rating: rejected (−1)</div>{/if}
     </section>
+
+    {#if cull.on()}
+      <CullInfo photo={d.id} />
+    {/if}
 
     <section class="fields">
       <EditField label="Title" value={d.title} onsave={(v) => save({ title: v })} readonly={ro} bind:inputRef={titleRef} />

@@ -101,6 +101,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(crate::dupes::api::routes())
         .merge(crate::albums::routes())
         .merge(crate::immich::routes())
+        .merge(crate::cull::api::routes())
         .route("/login", post(login))
         .route("/logout", post(logout))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -194,6 +195,7 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
         "integrity": state.cfg.integrity,
         "immich": crate::immich::status(&state),
         "visual": crate::visual::status_json(&state),
+        "cull": crate::cull::status_json(&state),
         "auth": state.cfg.password.is_some(),
         "logged_in": true,
     })))
@@ -268,6 +270,22 @@ pub struct ListQuery {
     vq: Option<String>,
     /// Search by content: photos that look like this one.
     like: Option<i64>,
+    /// 1: culling's measurements too (issue bits `cq`, sharpness `cf`).
+    cull: Option<u8>,
+    /// 1: series as stacks, each shown as its best frame (`sk` stack key, `sn` frames,
+    /// `sb` the best); `open` lists the stacks shown whole (their keys).
+    stack: Option<u8>,
+    open: Option<String>,
+    /// 1: only the frames of series that are not their best ("weaker frames").
+    weak: Option<u8>,
+    /// People in the photo: "0", "2", "3-5", "6-".
+    ppl: Option<String>,
+    /// "portrait" (one person, close) or "group" (three or more).
+    shot: Option<String>,
+    /// "closed": someone's eyes are closed; "open": every face checked has them open.
+    eyes: Option<String>,
+    /// Possible rejects: "blur,eyes,over,under" (any of them).
+    issue: Option<String>,
 }
 
 impl ListQuery {
@@ -419,6 +437,7 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
             a.push(Box::new(fq));
         }
     }
+    people_filters(q, &mut w, &mut a);
     if let (Some(we), Some(s), Some(e), Some(n)) = (q.west, q.south, q.east, q.north) {
         w.push("p.lat BETWEEN ? AND ? AND p.lon BETWEEN ? AND ?".into());
         a.push(Box::new(s));
@@ -427,6 +446,66 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
         a.push(Box::new(e.min(180.0)));
     }
     Ok((w.join(" AND "), a))
+}
+
+/// People in the photo, portrait or group, eyes, and culling's possible rejects. The
+/// faces counted are the people's (`cull::PERSON_MIN_H` tall or more), not passers-by.
+fn people_filters(q: &ListQuery, w: &mut Vec<String>, a: &mut Vec<Box<dyn ToSql>>) {
+    use crate::cull::{CLOSED, GROUP_MIN, PERSON_MIN_H, PORTRAIT_MIN_H, REAL_FACE};
+    let faces = format!("SELECT photo_id FROM detections WHERE kind = 1 AND h >= ? AND state != 3 AND {REAL_FACE}");
+    let faces = faces.as_str();
+    if let Some(v) = q.ppl.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let (lo, hi) = match v.split_once('-') {
+            Some((a, b)) => (a.trim().parse::<i64>().unwrap_or(0), b.trim().parse::<i64>().ok()),
+            None => {
+                let n = v.parse::<i64>().unwrap_or(0);
+                (n, Some(n))
+            }
+        };
+        if hi == Some(0) {
+            // Analysed, and nobody in it.
+            w.push(format!("p.id IN (SELECT photo_id FROM analysis WHERE error IS NULL) AND p.id NOT IN ({faces})"));
+            a.push(Box::new(PERSON_MIN_H));
+        } else {
+            w.push(format!("p.id IN ({faces} GROUP BY photo_id HAVING count(*) BETWEEN ? AND ?)"));
+            a.push(Box::new(PERSON_MIN_H));
+            a.push(Box::new(lo.max(1)));
+            a.push(Box::new(hi.unwrap_or(i64::MAX)));
+        }
+    }
+    match q.shot.as_deref() {
+        // One face of a person close enough to be the subject, and nobody else near
+        // half its size.
+        Some("portrait") => {
+            w.push(format!("p.id IN ({faces} GROUP BY photo_id HAVING count(*) = 1 AND max(h) >= ?)"));
+            a.push(Box::new(PORTRAIT_MIN_H / 2.0));
+            a.push(Box::new(PORTRAIT_MIN_H));
+        }
+        Some("group") => {
+            w.push(format!("p.id IN ({faces} GROUP BY photo_id HAVING count(*) >= ?)"));
+            a.push(Box::new(PERSON_MIN_H));
+            a.push(Box::new(GROUP_MIN));
+        }
+        _ => {}
+    }
+    match q.eyes.as_deref() {
+        Some("closed") => {
+            w.push("p.id IN (SELECT photo_id FROM cull_faces WHERE closed >= ?)".into());
+            a.push(Box::new(CLOSED));
+        }
+        Some("open") => {
+            w.push("p.id IN (SELECT photo_id FROM cull_faces WHERE closed IS NOT NULL GROUP BY photo_id HAVING max(closed) < ?)".into());
+            a.push(Box::new(CLOSED));
+        }
+        _ => {}
+    }
+    if let Some(v) = q.issue.as_deref() {
+        let bits = crate::cull::issue_bits(v);
+        if bits != 0 {
+            w.push("p.id IN (SELECT photo_id FROM cull WHERE issues & ? != 0)".into());
+            a.push(Box::new(bits));
+        }
+    }
 }
 
 fn order_by(q: &ListQuery) -> String {
@@ -441,6 +520,11 @@ fn order_by(q: &ListQuery) -> String {
         Some("rating") => format!("p.rating {}, COALESCE(p.taken, p.mtime / 1000) ASC, p.name", if desc { "ASC" } else { "DESC" }),
         Some("modified") => format!("p.mtime {d}, p.name"),
         Some("size") => format!("p.size {d}, p.name"),
+        // Sharpest first (culling's measurement); photos not measured yet last.
+        Some("focus") => format!(
+            "(SELECT cu2.focus FROM cull cu2 WHERE cu2.photo_id = p.id) {} NULLS LAST, COALESCE(p.taken, p.mtime / 1000) ASC, p.name",
+            if desc { "ASC" } else { "DESC" }
+        ),
         // An album's own order (the id is a number: safe to put in the SQL).
         Some("album") if q.album.is_some() => {
             format!("(SELECT ap.pos FROM album_photos ap WHERE ap.album_id = {} AND ap.photo_id = p.id) {d}, p.id", q.album.unwrap_or(0))
@@ -489,7 +573,33 @@ fn json_str(out: &mut String, s: &str) {
 /// The columnar photo list, written straight into one string per column: a
 /// 300,000-photo list is 20 MB of JSON, and building it as `serde_json` values would
 /// allocate millions of small objects first.
+/// A photo of a list, before it is written out.
+#[derive(Default)]
+struct ListRow {
+    id: i64,
+    name: String,
+    w: i64,
+    h: i64,
+    o: i64,
+    taken: Option<i64>,
+    rating: i64,
+    lcolor: Option<String>,
+    pick: i64,
+    kind: i64,
+    folder: i64,
+    gps: i64,
+    sig: String,
+    label: String,
+    issues: Option<i64>,
+    focus: Option<f64>,
+    closed: Option<i64>,
+    camera: String,
+    hash: Option<u64>,
+    sharp: Option<f64>,
+}
+
 struct Columns {
+    names: Vec<&'static str>,
     cols: Vec<String>,
     rows: usize,
 }
@@ -497,8 +607,10 @@ struct Columns {
 impl Columns {
     const NAMES: [&'static str; 14] = ["id", "n", "w", "h", "o", "t", "r", "lc", "p", "k", "f", "g", "v", "x"];
 
-    fn new() -> Columns {
-        Columns { cols: (0..Self::NAMES.len()).map(|_| String::with_capacity(4096)).collect(), rows: 0 }
+    /// The list's columns, then `extra` ones.
+    fn new(extra: &[&'static str]) -> Columns {
+        let names: Vec<&'static str> = Self::NAMES.iter().chain(extra).copied().collect();
+        Columns { cols: (0..names.len()).map(|_| String::with_capacity(4096)).collect(), names, rows: 0 }
     }
     fn row(&mut self) {
         if self.rows > 0 {
@@ -530,7 +642,7 @@ impl Columns {
     fn finish(self) -> String {
         let mut out = String::with_capacity(self.cols.iter().map(|c| c.len() + 8).sum::<usize>() + 2);
         out.push('{');
-        for (i, (name, col)) in Self::NAMES.iter().zip(self.cols).enumerate() {
+        for (i, (name, col)) in self.names.iter().zip(self.cols).enumerate() {
             if i > 0 {
                 out.push(',');
             }
@@ -573,7 +685,8 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
             stage_visual(&st, &c, &q)?;
         }
         let (wh, args) = build_where(&c, &q, st.trigram_ready())?;
-        if count_only {
+        let weak = q.weak == Some(1);
+        if count_only && !weak {
             let n: i64 = c.query_row(
                 &format!("SELECT count(*) FROM photos p JOIN folders f ON f.id = p.folder_id WHERE {wh}"),
                 params_from_iter(args.iter().map(|b| b.as_ref())),
@@ -582,38 +695,176 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
             return Ok(format!("{{\"count\":{n}}}"));
         }
         let limit = q.limit.unwrap_or(100_000).min(250_000);
+        let cull = q.cull == Some(1);
+        let stack = q.stack == Some(1) && !weak;
+        let series = stack || weak;
+        // Culling's measurements count only for the file as it is now.
+        let mut joins = String::new();
+        if cull || series {
+            joins.push_str(" LEFT JOIN cull cu ON cu.photo_id = p.id AND cu.size = p.size AND cu.mtime = p.mtime AND cu.orientation = p.orientation");
+        }
+        if series {
+            joins.push_str(" LEFT JOIN phashes h ON h.photo_id = p.id");
+        }
+        let extra = match (cull || series, series) {
+            (_, true) => ", cu.issues, cu.focus, cu.closed, COALESCE(p.make, '') || ' ' || COALESCE(p.model, ''), h.hash, h.sharp",
+            (true, false) => ", cu.issues, cu.focus, NULL, NULL, NULL, NULL",
+            _ => "",
+        };
         let sql = format!(
             "SELECT p.id, p.name, p.width, p.height, p.orientation, p.taken, p.rating, p.lcolor, p.pick, p.kind, p.folder_id,
-                    p.lat IS NOT NULL, p.size, p.mtime, p.companion, p.ext
-             FROM photos p JOIN folders f ON f.id = p.folder_id WHERE {wh} ORDER BY {} LIMIT {limit}",
+                    p.lat IS NOT NULL, p.size, p.mtime, p.companion, p.ext{extra}
+             FROM photos p JOIN folders f ON f.id = p.folder_id{joins} WHERE {wh} ORDER BY {} LIMIT {limit}",
             order_by(&q)
         );
         let mut s = c.prepare(&sql)?;
-        let mut cols = Columns::new();
         let mut rows = s.query(params_from_iter(args.iter().map(|b| b.as_ref())))?;
+        let mut list: Vec<ListRow> = Vec::new();
         let mut label = String::new();
         while let Some(r) = rows.next()? {
             let id: i64 = r.get(0)?;
-            let (w, h): (Option<i64>, Option<i64>) = (r.get(2)?, r.get(3)?);
             let o: i32 = r.get(4)?;
             let rec = crate::model::PhotoRec { id, size: r.get(12)?, mtime: r.get(13)?, orientation: o, ..Default::default() };
-            cols.row();
-            cols.int(0, id);
-            cols.str(1, r.get_ref(1)?.as_str()?);
-            cols.int(2, w.unwrap_or(3));
-            cols.int(3, h.unwrap_or(2));
-            cols.int(4, o as i64);
-            cols.opt_int(5, r.get(5)?);
-            cols.int(6, r.get::<_, i64>(6)?);
-            cols.opt_str(7, r.get_ref(7)?.as_str_or_null()?);
-            cols.int(8, r.get::<_, i64>(8)?);
-            cols.int(9, r.get::<_, i64>(9)?);
-            cols.int(10, r.get::<_, i64>(10)?);
-            cols.int(11, r.get::<_, bool>(11)? as i64);
-            cols.str(12, &images::sig_str(&rec));
             label.clear();
             file_label_into(&mut label, r.get_ref(15)?.as_str()?, r.get_ref(14)?.as_str_or_null()?);
-            cols.str(13, &label);
+            let (w, h): (Option<i64>, Option<i64>) = (r.get(2)?, r.get(3)?);
+            let mut row = ListRow {
+                id,
+                name: r.get(1)?,
+                w: w.unwrap_or(3),
+                h: h.unwrap_or(2),
+                o: o as i64,
+                taken: r.get(5)?,
+                rating: r.get(6)?,
+                lcolor: r.get(7)?,
+                pick: r.get(8)?,
+                kind: r.get(9)?,
+                folder: r.get(10)?,
+                gps: r.get::<_, bool>(11)? as i64,
+                sig: images::sig_str(&rec),
+                label: label.clone(),
+                ..Default::default()
+            };
+            if cull || series {
+                row.issues = r.get(16)?;
+                row.focus = r.get(17)?;
+            }
+            if series {
+                row.closed = r.get(18)?;
+                row.camera = r.get(19)?;
+                row.hash = r.get::<_, Option<i64>>(20)?.map(|h| h as u64);
+                row.sharp = r.get(21)?;
+            }
+            list.push(row);
+        }
+        drop(rows);
+        drop(s);
+        // Series: stacks, or the frames that are not their series' best.
+        let mut stacks: Vec<(i64, i64, bool)> = vec![(0, 0, false); list.len()];
+        let order: Vec<usize> = if series {
+            use crate::cull::series::{self as cs, Frame};
+            let frames: Vec<Frame> = list
+                .iter()
+                .map(|r| Frame {
+                    id: r.id,
+                    folder: r.folder,
+                    camera: r.camera.clone(),
+                    taken: r.taken,
+                    name: r.name.clone(),
+                    hash: r.hash,
+                    rating: r.rating,
+                    pick: r.pick,
+                    focus: r.focus,
+                    closed: r.closed,
+                    sharp: r.sharp,
+                })
+                .collect();
+            let groups = cs::group(&frames, crate::dupes::bursts::Rules::default());
+            let mut member: Vec<Option<usize>> = vec![None; list.len()];
+            let mut best = Vec::with_capacity(groups.len());
+            for (g, m) in groups.iter().enumerate() {
+                let b = cs::best(&frames, m);
+                best.push(b);
+                for &i in m {
+                    member[i] = Some(g);
+                    stacks[i] = (frames[m[0]].id, m.len() as i64, i == b);
+                }
+            }
+            if weak {
+                (0..list.len()).filter(|&i| member[i].is_some_and(|g| best[g] != i)).collect()
+            } else {
+                let open: std::collections::HashSet<i64> = q.open.as_deref().unwrap_or_default().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                let mut done = vec![false; groups.len()];
+                let mut out = Vec::with_capacity(list.len());
+                for i in 0..list.len() {
+                    match member[i] {
+                        None => out.push(i),
+                        Some(g) if !done[g] => {
+                            done[g] = true;
+                            if open.contains(&frames[groups[g][0]].id) {
+                                out.extend(groups[g].iter().copied());
+                            } else {
+                                out.push(best[g]);
+                            }
+                        }
+                        Some(_) => {}
+                    }
+                }
+                out
+            }
+        } else {
+            (0..list.len()).collect()
+        };
+        if count_only {
+            return Ok(format!("{{\"count\":{}}}", order.len()));
+        }
+        if cull {
+            // The photos on screen are measured first (their faces found first).
+            let ids: Vec<i64> = order.iter().take(600).map(|&i| list[i].id).collect();
+            if st.cfg.cull {
+                st.cull.prioritize(&ids);
+            }
+            if st.cfg.ml_url.is_some() {
+                st.people.prioritize(&ids);
+            }
+        }
+        let mut extra_cols: Vec<&'static str> = Vec::new();
+        if cull {
+            extra_cols.extend(["cq", "cf"]);
+        }
+        if series {
+            extra_cols.extend(["sk", "sn", "sb"]);
+        }
+        let mut cols = Columns::new(&extra_cols);
+        for &i in &order {
+            let r = &list[i];
+            cols.row();
+            cols.int(0, r.id);
+            cols.str(1, &r.name);
+            cols.int(2, r.w);
+            cols.int(3, r.h);
+            cols.int(4, r.o);
+            cols.opt_int(5, r.taken);
+            cols.int(6, r.rating);
+            cols.opt_str(7, r.lcolor.as_deref());
+            cols.int(8, r.pick);
+            cols.int(9, r.kind);
+            cols.int(10, r.folder);
+            cols.int(11, r.gps);
+            cols.str(12, &r.sig);
+            cols.str(13, &r.label);
+            let mut k = 14;
+            if cull {
+                cols.int(k, r.issues.unwrap_or(-1));
+                cols.int(k + 1, r.focus.map(|f| (f * 100.0).round() as i64).unwrap_or(-1));
+                k += 2;
+            }
+            if series {
+                let (key, n, best) = stacks[i];
+                cols.int(k, key);
+                cols.int(k + 1, n);
+                cols.int(k + 2, best as i64);
+            }
         }
         Ok(cols.finish())
     })
@@ -1224,7 +1475,7 @@ mod tests {
 
     #[test]
     fn columns_are_valid_json() {
-        let mut c = Columns::new();
+        let mut c = Columns::new(&[]);
         for (i, name) in ["IMG_1.CR3", "quote \" back\\slash\n\t\u{1}", "Zürich ✓"].iter().enumerate() {
             c.row();
             for col in 0..Columns::NAMES.len() {
@@ -1242,7 +1493,7 @@ mod tests {
         assert_eq!(v["t"], serde_json::json!([-5, null, -5]));
         assert_eq!(v["lc"], serde_json::json!([null, "red", null]));
         assert_eq!(v["id"], serde_json::json!([-1, 999, 1999]));
-        let empty: serde_json::Value = serde_json::from_str(&Columns::new().finish()).unwrap();
+        let empty: serde_json::Value = serde_json::from_str(&Columns::new(&[]).finish()).unwrap();
         assert_eq!(empty["x"], serde_json::json!([]));
     }
 

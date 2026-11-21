@@ -7,6 +7,7 @@
   import { thumb, thumbs } from '../lib/thumbs';
   import { bump, reduced } from '../lib/motion';
   import { albums } from '../lib/albums.svelte';
+  import { cull, ISSUES } from '../lib/cull.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import Icon from './Icon.svelte';
 
@@ -742,6 +743,15 @@
   function stars(n: number) {
     return n > 0 ? '★'.repeat(n) : '';
   }
+
+  /** Is tile `i` the first of an unfolded stack (where its pill sits)? */
+  function firstOfOpen(i: number, key: number): boolean {
+    return (store.list.sk?.[i - 1] ?? 0) !== key;
+  }
+
+  function issueTitle(bits: number): string {
+    return ISSUES.filter((x) => bits & x.bit).map((x) => x.label).join(' · ');
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -777,6 +787,10 @@
       {@const i = t.i}
       {@const id = store.list.id[i]}
       {@const _r = store.rev}
+      {@const cq = cull.on() ? (store.list.cq?.[i] ?? -1) : -1}
+      {@const sk = store.list.sk?.[i] ?? 0}
+      {@const sn = store.list.sn?.[i] ?? 0}
+      {@const unfolded = sk !== 0 && cull.open.has(sk)}
       <!-- Keyboard culling is handled by the global key map (arrows, ratings, P/X…). -->
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
@@ -787,6 +801,10 @@
         class:leaving={store.leaving.has(id)}
         class:lifted={lifted.has(id)}
         class:arrangeable={albums.arranging}
+        class:stacked={sk !== 0 && !unfolded}
+        class:unfolded
+        class:best={unfolded && store.list.sb?.[i] === 1}
+        class:poor={cq > 0}
         style:transform={`translate3d(${t.x}px, ${t.y}px, 0)`}
         style:width={`${t.w}px`}
         style:height={`${t.h}px`}
@@ -803,8 +821,33 @@
         <img use:thumb={{ url: urls.thumb(id, store.list.v[i], store.thumbRev[id]), i }} alt="" decoding="async" draggable="false" onload={(e) => e.currentTarget.classList.add('ld')} />
         <span class="sk" aria-hidden="true"></span>
         {#if store.list.lc[i] && _r >= 0}<span class="lc label-{store.list.lc[i]}"></span>{/if}
-        {#if store.list.p[i] === 1}<span class="flag"><Icon name="flag" size={14} fill /></span>{/if}
+        {#if sk !== 0 && !unfolded}<span class="sheets" aria-hidden="true"></span>{/if}
+        {#if unfolded}<span class="rail" class:start={firstOfOpen(i, sk)} class:end={(store.list.sk?.[i + 1] ?? 0) !== sk}></span>{/if}
+        <div class="corner">
+          {#if cq > 0}
+            <span class="issues" title={issueTitle(cq)}>
+              {#each ISSUES as is (is.key)}
+                {#if cq & is.bit}<span class="issue {is.key}"><Icon name={is.icon} size={12} stroke={2.2} /></span>{/if}
+              {/each}
+            </span>
+          {/if}
+          {#if store.list.p[i] === 1}<span class="flag"><Icon name="flag" size={14} fill /></span>{/if}
+        </div>
         {#if store.selected.has(id)}<span class="check"><Icon name="check" size={13} stroke={3} /></span>{/if}
+        {#if sk !== 0 && (!unfolded || firstOfOpen(i, sk))}
+          <button
+            class="stack-pill"
+            class:open={unfolded}
+            class:shifted={store.selected.has(id)}
+            onclick={(e) => { e.stopPropagation(); cull.toggleStack(sk); }}
+            ondblclick={(e) => e.stopPropagation()}
+            onpointerdown={(e) => e.stopPropagation()}
+            title={unfolded ? `Fold the series back to its best frame${store.keyHint('stack')}` : `A series of ${sn}: this is its best frame. Show them all${store.keyHint('stack')}`}
+          >
+            <Icon name="stack" size={12} stroke={2.2} /><span class="tnum">{sn}</span>{#if unfolded}<Icon name="chevron-left" size={11} stroke={2.4} />{/if}
+          </button>
+        {/if}
+        {#if unfolded && store.list.sb?.[i] === 1}<span class="best-pill" class:after={firstOfOpen(i, sk)} title="The best frame of the series">Best</span>{/if}
         <div class="meta">
           {#if store.list.r[i] > 0}<span class="stars" use:bump={store.list.r[i]}>{stars(store.list.r[i])}</span>{:else if store.list.r[i] < 0}<span class="rej-r">✕</span>{/if}
           <span class="grow"></span>
@@ -987,10 +1030,188 @@
     top: 0;
     height: 3px;
   }
-  .flag {
+  /* Top right: what may be wrong (culling), then the pick flag. */
+  .corner {
     position: absolute;
     top: 0.375rem;
     right: 0.375rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3125rem;
+    pointer-events: none;
+  }
+  .issues {
+    display: flex;
+    gap: 0.1875rem;
+    padding: 0.1875rem;
+    border-radius: 99px;
+    background: rgba(12, 13, 16, 0.62);
+    backdrop-filter: blur(8px) saturate(1.4);
+    -webkit-backdrop-filter: blur(8px) saturate(1.4);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    pointer-events: auto;
+    animation: issue-in 0.34s var(--ease-spring);
+  }
+  .issue {
+    width: 1.125rem;
+    height: 1.125rem;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: #fff;
+  }
+  .issue.blur {
+    background: #d97706;
+  }
+  .issue.eyes {
+    background: #e5484d;
+  }
+  .issue.over {
+    background: #c2410c;
+  }
+  .issue.under {
+    background: #3b5bdb;
+  }
+  @keyframes issue-in {
+    from {
+      opacity: 0;
+      transform: translateY(-3px) scale(0.8);
+    }
+  }
+  .tile.poor img:global(.ld) {
+    filter: saturate(0.82);
+  }
+  /* A series folded to its best frame: a pill with how many it holds (a click unfolds
+     it), and the edges of the frames behind peeking out above the photo. */
+  .tile.stacked {
+    background: transparent;
+  }
+  .tile.stacked img {
+    margin-top: 7px;
+    height: calc(100% - 7px);
+    border-radius: 0.375rem;
+  }
+  .tile.stacked .sk {
+    top: 7px;
+    border-radius: 0.375rem;
+  }
+  .sheets {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 7px;
+    pointer-events: none;
+  }
+  .sheets::before,
+  .sheets::after {
+    content: '';
+    position: absolute;
+    height: 5px;
+    border-radius: 0.3125rem 0.3125rem 0 0;
+    background: color-mix(in srgb, var(--text) 22%, var(--surface-2));
+  }
+  .sheets::before {
+    left: 12%;
+    right: 12%;
+    top: 0;
+    opacity: 0.55;
+  }
+  .sheets::after {
+    left: 6%;
+    right: 6%;
+    top: 2.5px;
+    opacity: 0.85;
+  }
+  .tile.stacked .stack-pill,
+  .tile.stacked .corner,
+  .tile.stacked .check {
+    margin-top: 7px;
+  }
+  .tile.stacked::after,
+  .tile.stacked .lc {
+    top: 7px;
+  }
+  .stack-pill {
+    position: absolute;
+    top: 0.375rem;
+    left: 0.375rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    height: 1.375rem;
+    padding: 0 0.5rem 0 0.4375rem;
+    border: 0;
+    border-radius: 99px;
+    background: rgba(12, 13, 16, 0.66);
+    backdrop-filter: blur(8px) saturate(1.4);
+    -webkit-backdrop-filter: blur(8px) saturate(1.4);
+    color: #fff;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+    transition:
+      background 0.15s,
+      transform 0.18s var(--ease-spring),
+      left 0.2s var(--ease-out);
+    z-index: 2;
+  }
+  .stack-pill:hover {
+    background: var(--accent-strong);
+    transform: scale(1.06);
+  }
+  .stack-pill.open {
+    background: var(--accent-strong);
+  }
+  .stack-pill.shifted {
+    left: 2.125rem;
+  }
+  .best-pill {
+    position: absolute;
+    top: 0.375rem;
+    left: 0.375rem;
+    height: 1.375rem;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.5rem;
+    border-radius: 99px;
+    background: linear-gradient(135deg, #f5b301, #f08c00);
+    color: #1a1200;
+    font-size: 0.6875rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    animation: issue-in 0.34s var(--ease-spring);
+  }
+  .best-pill.after {
+    left: 3.75rem;
+  }
+  /* The frames of an unfolded series: a rail joins them along the bottom. */
+  .rail {
+    position: absolute;
+    left: -3px;
+    right: -3px;
+    bottom: 0;
+    height: 3px;
+    background: var(--accent);
+    opacity: 0.9;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .rail.start {
+    left: 0;
+    border-bottom-left-radius: 3px;
+  }
+  .rail.end {
+    right: 0;
+    border-bottom-right-radius: 3px;
+  }
+  .tile.unfolded {
+    background: color-mix(in srgb, var(--accent) 14%, var(--placeholder));
+  }
+  .flag {
     color: var(--pick);
     filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
     transform-origin: 20% 90%;

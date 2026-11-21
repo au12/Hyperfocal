@@ -70,13 +70,28 @@ impl Crops {
 /// A square crop around a box of an upright image: a face with room for hair and chin,
 /// an animal as it is.
 pub fn crop(img: &Rgb, r: Rect, kind: i64, size: usize) -> Result<Vec<u8>> {
+    let face = kind == FACE;
+    crop_around(img, r, size, if face { 1.7 } else { 1.06 }, if face { 0.08 } else { 0.0 })
+}
+
+/// A close-up of a face for culling: the face filling the square, its eyes and mouth
+/// large enough to judge.
+pub fn closeup(img: &Rgb, r: Rect, kind: i64, size: usize) -> Result<Vec<u8>> {
+    if kind != FACE {
+        return crop(img, r, kind, size);
+    }
+    crop_around(img, r, size, 1.22, 0.04)
+}
+
+/// A square of `factor` times the box's long side around it (raised by `up` of its
+/// height), at most `size` pixels.
+fn crop_around(img: &Rgb, r: Rect, size: usize, factor: f64, up: f64) -> Result<Vec<u8>> {
     let (w, h) = (img.w as f64, img.h as f64);
     let (bw, bh) = (r.w * w, r.h * h);
-    let face = kind == FACE;
-    let mut side = bw.max(bh) * if face { 1.7 } else { 1.06 };
+    let mut side = bw.max(bh) * factor;
     side = side.max(8.0).min(w.min(h));
     let cx = (r.x + r.w / 2.0) * w;
-    let cy = (r.y + r.h / 2.0) * h - if face { 0.08 * bh } else { 0.0 };
+    let cy = (r.y + r.h / 2.0) * h - up * bh;
     let x0 = (cx - side / 2.0).clamp(0.0, (w - side).max(0.0)).round() as usize;
     let y0 = (cy - side / 2.0).clamp(0.0, (h - side).max(0.0)).round() as usize;
     let s = (side.round() as usize).min(img.w - x0).min(img.h - y0).max(1);
