@@ -40,7 +40,7 @@ const FRV: Bindings = {
   compare: ['C', 'N'],
   zoomToggle: ['Z'],
   // Space steps the zoom 50% → 100% → fit in the single and compare views; in the grid
-  // it still moves to the next photo.
+  // it opens the photo.
   zoomCycle: ['Space'],
   fit: ['Ctrl+0'],
   zoomIn: ['Ctrl+Equal', 'Ctrl+Shift+Equal', 'Ctrl+NumpadAdd'],
@@ -136,7 +136,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['escape', 'Back / exit fullscreen'], ['fullscreen', 'Full screen'],
   ]],
   ['View', [
-    ['source', 'Switch RAW / embedded JPEG'], ['zoomToggle', 'Fit / 100%'], ['zoomCycle', 'Zoom 50% → 100% → fit (grid: next photo)'], ['fit', 'Fit to window'], ['zoomIn', 'Zoom in'], ['zoomOut', 'Zoom out'],
+    ['source', 'Switch RAW / embedded JPEG'], ['zoomToggle', 'Fit / 100%'], ['zoomCycle', 'Zoom 50% → 100% → fit (grid: open photo)'], ['fit', 'Fit to window'], ['zoomIn', 'Zoom in'], ['zoomOut', 'Zoom out'],
     ['sharpen', 'Screen sharpening (off / 1 / 2)'], ['peaking', 'Focus peaking (edges / details / both)'],
     ['over', 'Show overexposed areas'], ['under', 'Show underexposed areas'],
     ['shadows', 'Shadow boost'], ['highlights', 'Highlight inspection'], ['linear', 'Linear mode'], ['invert', 'Invert colours'],

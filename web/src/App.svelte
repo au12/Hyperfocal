@@ -121,7 +121,7 @@
       case 'toggleGrid': inLoupe ? store.closeLoupe() : store.openLoupe(store.cursor); break;
       case 'compare': store.openCompare(); break;
       case 'zoomToggle': if (!inLoupe) store.openLoupe(store.cursor); else viewerCtl.zoomToggle(); break;
-      case 'zoomCycle': if (!inLoupe) store.go(1); else viewerCtl.zoomCycle(); break;
+      case 'zoomCycle': if (!inLoupe) store.openLoupe(store.cursor); else viewerCtl.zoomCycle(); break;
       case 'fit': viewerCtl.fit(); break;
       case 'zoomIn': viewerCtl.zoomIn(); break;
       case 'zoomOut': viewerCtl.zoomOut(); break;
