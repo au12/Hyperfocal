@@ -50,6 +50,8 @@ pub enum Event {
     PeopleStatus(crate::people::Status),
     /// New visual fingerprints for the Duplicates report (it refreshes its counts).
     Dupes,
+    /// The AI engine: downloading its models, starting, ready, or stopped.
+    Ml(crate::ml::MlStatus),
 }
 
 pub enum ScanMsg {
@@ -89,6 +91,8 @@ pub struct AppState {
     pub visual: crate::visual::Visual,
     /// Culling: sharpness, eyes and exposure of the photos.
     pub cull: crate::cull::Cull,
+    /// The AI engine (faces, pets, search, eyes): its models, process and status.
+    pub ml: crate::ml::Ml,
 }
 
 impl AppState {

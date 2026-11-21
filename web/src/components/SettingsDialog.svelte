@@ -2,6 +2,7 @@
   import { store, applyTheme } from '../lib/store.svelte';
   import { api } from '../lib/api';
   import { offlineSupported, setOffline, clearOffline, offlineUsage } from '../lib/offline';
+  import { mlProgress, mlState } from '../lib/ml';
   import Icon from './Icon.svelte';
 
   const s = store.settings;
@@ -46,6 +47,14 @@
   const mb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
 
   const st = $derived(store.status);
+
+  /** What the AI engine does: its features, where it runs, and the space its models take. */
+  function aiLine(m: NonNullable<typeof st>['ml']): string {
+    if (!m || !m.enabled) return 'Off (HYPERFOCAL_ML)';
+    const on = [m.faces && 'people and pets', m.search && 'search by content', m.eyes && 'closed eyes'].filter(Boolean).join(', ');
+    const disk = m.disk_mb > 0 ? ` · ${m.disk_mb >= 1000 ? `${(m.disk_mb / 1000).toFixed(1)} GB` : `${m.disk_mb} MB`} of models` : '';
+    return `${mlState(m)} · ${on}${m.phase === 'ready' ? disk : ''}`;
+  }
 </script>
 
 <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (store.dialog = null)}>
@@ -156,6 +165,16 @@
             </dd>
           {/if}
           <dt>Photos</dt><dd class="tnum">{st.counts.photos.toLocaleString()} in {st.counts.folders.toLocaleString()} folders · {st.counts.geotagged.toLocaleString()} with GPS</dd>
+          {#if st.ml}
+            {@const m = st.ml}
+            {@const pct = mlProgress(m)}
+            <dt>AI</dt>
+            <dd>
+              {aiLine(m)}
+              {#if pct != null}<span class="meter"><span style:width={`${pct * 100}%`}></span></span>{/if}
+              {#if m.note}<div class="note dim">{m.note}</div>{/if}
+            </dd>
+          {/if}
           <dt>Writes</dt><dd>{st.readonly ? 'Read-only — nothing is written' : 'XMP sidecars and moves to ' + st.reject_dir + ' only; originals are never changed'}</dd>
           <dt>Index</dt><dd>{st.progress.phase}{#if st.progress.last_full_scan}{` · last full scan ${new Date(st.progress.last_full_scan).toLocaleString()}`}{/if}</dd>
         </dl>
@@ -219,6 +238,20 @@
   }
   dd {
     margin: 0;
+  }
+  .meter {
+    display: block;
+    height: 3px;
+    margin-top: 0.375rem;
+    border-radius: 2px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .meter > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.6s var(--ease-out, ease-out);
   }
   .wrap {
     flex-wrap: wrap;

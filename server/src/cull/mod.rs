@@ -1,6 +1,6 @@
 //! Culling help: per photo, how sharp its subject is (the faces, else the animals, else
 //! the sharpest part of the photo, measured on the RAW development: `focus`), whether
-//! someone's eyes are closed (the ML service), and clipped highlights or a dark exposure
+//! someone's eyes are closed (the AI engine), and clipped highlights or a dark exposure
 //! (the RAW data). Shown as badges, "possible rejects" filters and the suggested best
 //! frame of a series: nothing is ever rejected automatically.
 
@@ -136,7 +136,7 @@ pub struct Status {
     /// Photos a minute, over the last few minutes.
     pub rate: f64,
     pub error: Option<String>,
-    /// Eyes are checked (the ML service has the models).
+    /// Eyes are checked (the AI engine has the models).
     pub eyes: bool,
 }
 

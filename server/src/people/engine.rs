@@ -2,7 +2,7 @@
 //! and joins a person, a pet or an unnamed group, or starts a group with the faces it
 //! resembles.
 //!
-//! How alike two faces must be depends on the poorer of the two. The ML service rates
+//! How alike two faces must be depends on the poorer of the two. The AI engine rates
 //! each face (its embedding's length before normalization: masks, profiles, blur and
 //! veils make short embeddings), and a poor face must be much closer to count. Measured
 //! on two weddings' worth of photos (AuraFace): two clear frontal faces of one person

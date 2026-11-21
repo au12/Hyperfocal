@@ -11,7 +11,7 @@
 
 ![Hyperfocal library view](docs/screenshots/desktop-library.jpg)
 
-Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, DNG, NEF, ARW, RAF, RW2, PEF and more), JPEG and HEIC/HEIF, and lets you browse, check and cull it from any browser on your LAN, including your phone. It never modifies or deletes an original image file. Ratings, labels, picks, keywords, captions and locations go into standard XMP sidecars, and rejected photos are moved into a `_Rejected` sub-folder. Culling help shows each burst as one stack topped by its best frame, and flags blurry frames and clipping, measured on the RAW. With an optional companion container it also spots closed eyes, finds photos by what they show, and finds the people, dogs and cats in your photos, groups them by who they are and writes the names you give them to the sidecars.
+Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, DNG, NEF, ARW, RAF, RW2, PEF and more), JPEG and HEIC/HEIF, and lets you browse, check and cull it from any browser on your LAN, including your phone. It never modifies or deletes an original image file. Ratings, labels, picks, keywords, captions and locations go into standard XMP sidecars, and rejected photos are moved into a `_Rejected` sub-folder. Culling help shows each burst as one stack topped by its best frame, and flags blurry frames and clipping, measured on the RAW. Its built-in AI features also spot closed eyes, find photos by what they show, and find the people, dogs and cats in your photos, group them by who they are and write the names you give them to the sidecars, on the CPU or an NVIDIA GPU, without anything leaving your server.
 
 ## Contents
 
@@ -77,7 +77,7 @@ Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever reject
 - **Series as stacks.** Each burst or run of attempts at one moment (one camera, one folder, frames at most 2 seconds apart, cut where the scene changes) becomes one tile showing its best frame and how many frames it holds. Click the count or press `Shift+G` to unfold it in place; *Unfold N series* opens them all. The best frame is the one you rated or picked, else the one with the fewest closed eyes, then the sharpest. **Keep best** (`Ctrl+Shift+K`) keeps it and moves the rest of the series to `_Rejected` as one undoable move.
 - **Possible rejects.** Every photo is measured once in the background (the ones on screen first), and the grid marks what may be wrong with it: *Blurry*, *Eyes closed*, *Clipped* or *Too dark*. The culling bar filters by them, alone or together with *Weaker frames* (every frame of a series but its best), so a shoot's likely rejects can be checked in one pass.
 - **Sharpness of the subject, from the RAW.** Sharpness is measured where it matters: on the faces, else on the sharpest part of the frame, on the RAW's half-size development (one pixel per 2×2 sensor quad, so no demosaicing detail is invented). It compares how much each edge's energy drops when it is blurred a little more (a sharp edge loses a lot, a soft one hardly anything), along the strongest edges in four directions, with the sensor noise measured and taken out first so high ISO does not pass for detail. Scores are scaled to the same print size, so a 45 MP and a 20 MP frame compare fairly. Sort by *Sharpness* for the sharpest frames first, or reverse it for the softest.
-- **Closed eyes.** With the ML container, every face large enough gets MediaPipe's face landmarks and blink scores; a photo where someone blinked or looked down is marked. Faces turned away are judged from the eye that is visible.
+- **Closed eyes.** With the AI features on (the default), every face large enough gets MediaPipe's face landmarks and blink scores; a photo where someone blinked or looked down is marked. Faces turned away are judged from the eye that is visible.
 - **Faces side by side.** `V` in the single view lines up a close-up of every face across all frames of the series, each with its sharpness and eyes, the frame on screen outlined. The best frame for every person shows at a glance; click a face to go to its frame.
 - **Clipping from the RAW data:** the share of the photo with a clipped channel, counted as the RAW histogram counts it. It is flagged from 5% (a blown sky or window, not a few speculars); the info panel shows any amount.
 - **People filters.** How many people are in the photo (none, 1, 2, 3–5, 6+), portraits (one person, close) or groups (three or more), eyes open or closed. Faces too small to matter (under 2.5% of the frame's height) and doubtful detections, such as statues, are not counted.
@@ -102,11 +102,11 @@ Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever reject
   - The map view shows the whole library, clustered.
 - **Geotag from a track.** Load GPX, KML, TCX or NMEA files, or a phone's location history (Google Takeout's Records or Timeline export), and Hyperfocal matches capture times against them. The camera's time zone is detected, clock drift can be corrected, and the result is previewed on a map before anything is written to the sidecars.
 - **Archive integrity monitor.** Every original gets a content hash when it is first indexed and is verified again over time (a full pass every 90 days by default), in a nightly window and at a gentle read rate, so array disks are not kept spinning. Originals that changed, went missing or became unreadable are reported in the app and, optionally, through ntfy, Gotify or a webhook. For JPEG, HEIC and TIFF/DNG only the image data is hashed, so a metadata edit by another app is not reported as damage. A file moved to another folder is recognised by its hash. Report-only: nothing is ever repaired or deleted.
-- **Search by content.** Turn on the ✦ AI switch in the search field and describe what is in the photo — "dog on the beach", "candles on a cake", "red car at night", in English or the other languages SigLIP 2 learned — and the best matches come first, combined with any filter, folder or album. *Find similar* (single view, info panel, selection menu) shows the photos that look most like one. Every photo is looked at once in the background by the companion ML container (newest first; the header says how far it has got), from its thumbnail, and nothing leaves your network.
+- **Search by content.** Turn on the ✦ AI switch in the search field and describe what is in the photo — "dog on the beach", "candles on a cake", "red car at night", in English or the other languages SigLIP 2 learned — and the best matches come first, combined with any filter, folder or album. *Find similar* (single view, info panel, selection menu) shows the photos that look most like one. Every photo is looked at once in the background by the built-in AI engine (newest first; the header says how far it has got), from its thumbnail, and nothing leaves your network. Its models (about 1 GB) are downloaded the first time.
 - **Duplicates report.** Four searches, each for the whole library, one folder, or a folder against the rest of the library (Excire's scopes):
   - *Exact copies* come from the integrity monitor's content hashes. For JPEG, HEIC, TIFF and DNG only the image data is hashed, so a copy that another app wrote a caption or keywords into still counts as a copy; a whole-file comparison (Excire's exact mode) misses those.
   - *Near-duplicates* are resized, recompressed or re-exported copies and light edits, found by a 64-bit perceptual hash of each photo's thumbnail, made in the background, and turned or mirrored copies, found through the hashes of each photo's seven turned and mirrored versions. Strict, normal and loose levels.
-  - *Look-alikes* (with the ML container) are found by what the photos show: crops, edits, other renderings and mirror images that pixel fingerprints miss, each with how alike it is. Over the whole library this uses an inverted-file index, a few seconds for 300,000 photos.
+  - *Look-alikes* (with search by content on) are found by what the photos show: crops, edits, other renderings and mirror images that pixel fingerprints miss, each with how alike it is. Over the whole library this uses an inverted-file index, a few seconds for 300,000 photos.
   - *Series* are bursts and brackets: one camera, one folder, a few seconds apart, cut where the scene changes.
   - Each group suggests a keeper (RAW over JPEG, then the most pixels, then the most metadata; in a series the frame you rated or picked, else the sharpest) and says why. Click another photo to keep it instead, open the group in the compare view, mark it "not duplicates", or move the others to `_Rejected` with one click, journaled and undoable like any reject. Only exact copies can be rejected all at once (*Reject all but the keepers*): near-duplicates, look-alikes and series are different files, so each group is rejected on its own, after a look. A RAW and its JPEG twin count as one photo.
 - **Send to Immich.** Select photos (or an album) and send them to your Immich server, into a new or existing Immich album. Photos Immich already has are used as they are, never uploaded twice: found by path when Immich reads this library as an external library, or by content when the same file was uploaded before. RAW files go as a full-size JPEG by default (the camera's own JPEG of a RAW+JPEG pair, or the JPEG inside the RAW, carrying capture time, camera, lens, GPS, rating and keywords), or as the original with its sidecar. Progress shows in the header; nothing in the library changes, and nothing in Immich is changed or deleted besides adding to the album. See [Send to Immich](#send-to-immich).
@@ -115,7 +115,7 @@ Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever reject
 
 ### People & pets
 
-- **Faces, dogs and cats, recognised on your server.** An optional companion container (`hyperfocal-ml`, CPU or NVIDIA GPU) finds them, and Hyperfocal matches each one against every face it knows. Nothing leaves your network. See [People & pets](#people--pets).
+- **Faces, dogs and cats, recognised on your server.** Hyperfocal's AI engine finds them (on the CPU or an NVIDIA GPU) and matches each one against every face it knows. Nothing leaves your network. See [People & pets](#people--pets).
 - **Name a group once.** Its photos get the name, and new photos of that person or pet are suggested for a yes or no. Merge, split, hide strangers, and filter the grid by a person.
 - **Names go to the sidecars,** as `People|Name` and `Pets|Name` keywords, MWG face regions (Lightroom, digiKam) and IPTC "person shown", undoable like every other edit. Names other apps already wrote come in.
 - **On the photo.** The info panel lists who is in a photo; `Shift+F` draws the faces and pets on the single view, where you can name them.
@@ -134,11 +134,11 @@ Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever reject
 
 ## People & pets
 
-Hyperfocal finds the faces, dogs and cats in your photos, groups them by who they are and lets you name them. Names you confirm go to the sidecars, where Lightroom, digiKam and Excire read them. It is optional: without the companion container, everything else works as before, and names other apps wrote are still read.
+Hyperfocal finds the faces, dogs and cats in your photos, groups them by who they are and lets you name them. Names you confirm go to the sidecars, where Lightroom, digiKam and Excire read them. It is on by default and can be turned off (`HYPERFOCAL_ML_FACES=false`, or `HYPERFOCAL_ML=false` for every AI feature): everything else works as before, and names other apps wrote are still read.
 
 ### How it works
 
-- **The models run in a companion container, `hyperfocal-ml`** (Python and ONNX Runtime, on the CPU or an NVIDIA GPU). Hyperfocal sends it a 2048-pixel upright JPEG of each photo and gets back boxes and embeddings. The container doesn't mount your library, keeps nothing and needs no internet: the models are inside the image.
+- **The models run inside Hyperfocal, in a process of their own** (the AI engine: ONNX Runtime, on the CPU or an NVIDIA GPU). The server hands it a 2048-pixel upright JPEG of each photo over a local connection and gets back boxes and embeddings. The engine never opens your library and keeps nothing; if it crashes (a GPU driver, say), the server restarts it and carries on. Its models are downloaded into your app data folder the first time (see [Setting it up](#setting-it-up)).
 - **Faces:** YuNet at three scales (faces from about 0.6% to the whole of the frame), aligned on five landmarks, then AuraFace embeddings. Each face gets a quality from how recognisable it is: masked, blurred, tiny and turned-away faces must match much more closely to count.
 - **Dogs and cats:** RF-DETR Small finds them, and a pet re-identification model (DINOv2-based) tells individual animals apart. A cat the detector took for a dog still finds its look-alikes.
 - **Eyes, for culling:** each face of at least 64 pixels is cropped from the photo as culling measures it (a RAW's half-size development) and sent for MediaPipe's face landmarks and blendshapes, which give a blink score per eye, about 25 ms a face on the CPU.
@@ -168,45 +168,50 @@ Going the other way, named face regions that Lightroom, digiKam or another app w
 
 ### Setting it up
 
-**Unraid:**
+There is nothing to install: the AI features are part of the Hyperfocal image and on by default. On the first start the models are downloaded from their publishers into `/config/ml` (your app data folder), each checked against its sha256 before it is used, and the analysis starts as soon as they are in. The People & pets view and Settings show the download's progress.
 
-1. Save the companion template:
-   ```bash
-   wget -O /boot/config/plugins/dockerMan/templates-user/my-Hyperfocal-ML.xml \
-     https://raw.githubusercontent.com/au12/Hyperfocal/main/unraid/hyperfocal-ml.xml
-   ```
-2. **Docker → Add Container → Hyperfocal-ML**, and **Apply**. It has no web UI and needs no paths.
-3. In the Hyperfocal container, set **People and pets: ML service URL** to `http://<server-ip>:8090`, and **Apply**. The People & pets entry appears in the sidebar, and the analysis starts.
+| What | Download | Memory |
+| --- | --- | --- |
+| People & pets (faces, dogs, cats) | about 0.7 GB | about 1.2 GB |
+| Search by content, Find similar, look-alikes | about 1 GB | 0.8 GB, 1.7 GB once a text search has loaded the text model |
+| Closed eyes, for culling | none (7 MB, in the image) | about 60 MB |
+| NVIDIA GPU runtime (ONNX Runtime's CUDA build, CUDA 13, cuDNN 9) | about 1.3 GB (2 GB on disk), only with a GPU | |
 
-**NVIDIA GPU:** install the *Nvidia Driver* plugin (driver 580 or newer), then in the Hyperfocal-ML template set the repository to `ghcr.io/au12/hyperfocal-ml:cuda`, add `--runtime=nvidia` under **Extra Parameters**, and put your GPU's UUID (from the plugin's page) in **NVIDIA_VISIBLE_DEVICES**. The models are about 0.7 GB, so a 4 GB card is plenty, and the GPU can be shared with Plex or Immich. With the GPU, set **photos in flight** to 3 or 4 in Hyperfocal.
+Only what is turned on is downloaded. To get the space back, turn a feature off and delete `ml` in the app data folder; what is still needed is fetched again.
 
-**Docker Compose:** see the commented `hyperfocal-ml` service in the [example above](#docker-compose), and set `HYPERFOCAL_ML_URL: "http://hyperfocal-ml:8090"` on Hyperfocal.
+**NVIDIA GPU (Unraid):** install the *Nvidia Driver* plugin (driver 580 or newer), then in the Hyperfocal template add `--runtime=nvidia` under **Extra Parameters** (Advanced View) and put your GPU's UUID (from the plugin's page) in **NVIDIA_VISIBLE_DEVICES**. With **AI device** on `auto` (the default), Hyperfocal uses the GPU when it can reach one and the CPU otherwise; Settings says which. The models' weights come to about 1.7 GB with every AI feature on (0.7 GB without search), so a 4 GB card is enough, and the GPU can be shared with Plex or Immich. With the GPU, set **photos in flight** to 3 or 4.
 
-`hyperfocal-ml` settings:
+**Docker Compose:** see the commented `deploy` block in the [example](#docker-compose).
+
+**Coming from the `hyperfocal-ml` container:** remove it, and `HYPERFOCAL_ML_URL` and `HYPERFOCAL_ML_TOKEN` from Hyperfocal (they are ignored now). The models and their preprocessing are the same, so nothing is analysed again.
+
+AI settings (all optional):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `HFML_PORT` | `8090` | HTTP port |
-| `HFML_TOKEN` | – | Shared secret: requests must carry it (set the same value as `HYPERFOCAL_ML_TOKEN`) |
-| `HFML_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` (the GPU when the `cuda` image can reach one) |
-| `HFML_THREADS` | all cores | Threads per model on the CPU |
-| `HFML_WORKERS` | 1 (CPU), 2 (GPU) | Photos analysed at once |
-| `HFML_ANIMAL_DETECTOR` | `auto` | `rfdetr-small.onnx`, or `rfdetr-nano.onnx`: fewer small or half-hidden pets found, about 0.3 s a photo faster on a weak CPU |
-| `HFML_FACE_SCALES` | `1600,640,320` | Sizes faces are looked for at (long side, px) |
-| `HFML_GPU_MEM_MB` | – | Cap on the GPU memory ONNX Runtime takes |
-| `HFML_SEARCH` | `1` | `0` turns search by content off (the SigLIP 2 models are not loaded: about 1 GB less memory) |
-| `HFML_EYES` | `1` | `0` turns the closed-eyes check off |
-| `HFML_LOG` | `info` | `debug` for a line per photo |
+| `HYPERFOCAL_ML` | `true` | `false` turns every AI feature off: nothing is downloaded or run |
+| `HYPERFOCAL_ML_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` (an NVIDIA GPU when the container can reach one) |
+| `HYPERFOCAL_ML_FACES` | `true` | People & pets (and the closed-eyes check, which looks at the faces found) |
+| `HYPERFOCAL_ML_SEARCH` | `true` | Search by content, Find similar and look-alikes (`false`: 0.8–1.7 GB less memory) |
+| `HYPERFOCAL_ML_EYES` | `true` | Culling's closed-eyes check |
+| `HYPERFOCAL_ML_PET_DETECTOR` | `small` | `nano`: fewer small or half-hidden pets found, about 0.3 s a photo faster on a weak CPU (changing it analyses every photo again) |
+| `HYPERFOCAL_ML_THREADS` | all cores | Threads per model on the CPU |
+| `HYPERFOCAL_ML_WORKERS` | 1 (CPU), 2 (GPU) | Photos the engine analyses at once |
+| `HYPERFOCAL_ML_GPU` | `0` | Which GPU, when the container sees several |
+| `HYPERFOCAL_ML_GPU_MEM_MB` | – | Cap on the GPU memory ONNX Runtime takes |
+| `HYPERFOCAL_ML_FACE_SCALES` | `1600,640,320` | Sizes faces are looked for at (long side, px) |
+| `HYPERFOCAL_ML_DIR` | `$HYPERFOCAL_CONFIG/ml` | Where the models and the GPU runtime go |
+| `HYPERFOCAL_ML_LOG` | `info` | The engine's log level (`debug` for more) |
 
 ### Speed
 
-On the 2-vCPU test VM, a photo takes about 1–1.5 s on the CPU (faces at three scales, then dogs and cats), so a first pass over 100,000 photos takes a day and a half; a server CPU with more cores is proportionally faster, and new imports are analysed within minutes. The GPU variant was not measured on this VM.
+On the 2-vCPU test VM, a photo takes about 1–1.5 s on the CPU (faces at three scales, then dogs and cats), so a first pass over 100,000 photos takes a day and a half; a server CPU with more cores is proportionally faster, and new imports are analysed within minutes. The GPU was not measured on this VM.
 
 Matching a new face against 600,000 known faces takes 3 ms there. Each face also keeps a 64-byte sign code (the signs of its vector after a fixed random rotation): codes are compared first, eight instructions each, and only faces whose codes are close enough are compared in full. That gives the same matches as comparing every vector (24 ms) but for about one in 2,000 right at the threshold. Forming the groups again matches faces in batches at about 1 ms a face against 600,000: 20 seconds for 100,000 faces and about 11 minutes for 600,000 (70 minutes without the codes). It runs after the first analysis and at most once a day after that, a chunk at a time, so your edits never wait for it.
 
 ### Models and licences
 
-Every model is licensed for commercial use and checked against its sha256 (`ml/models.json`) when the image is built: most are downloaded from their publishers, and the two face-landmark models, which have no ONNX release, are converted once and kept in the repository (`ml/models`, with how they were made):
+Every model is licensed for commercial use, downloaded from its publisher the first time it is needed, and checked against its sha256 (`server/src/ml/manifest.json`) before it is used. The two face-landmark models, which have no ONNX release, are converted once and kept in the repository (`ml/models`, with how they were made) and in the image:
 
 | Model | Does | Licence |
 | --- | --- | --- |
@@ -216,6 +221,8 @@ Every model is licensed for commercial use and checked against its sha256 (`ml/m
 | [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) | tells pets apart | Apache-2.0 |
 | [SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-224) base (Google; ONNX by onnx-community) | search by content, Find similar and look-alikes: image and text embeddings in one space | Apache-2.0 |
 | [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) v1: Face Mesh V2 and Blendshape V2 (Google; converted to ONNX) | closed eyes, for culling: face landmarks, then blink scores per eye | Apache-2.0 |
+
+The engine runs them with [ONNX Runtime](https://onnxruntime.ai/) 1.29 (MIT): the CPU build is in the image; the CUDA build and NVIDIA's CUDA 13 and cuDNN 9 libraries (under NVIDIA's licences) are downloaded from PyPI, from the official wheels, only when a GPU is used. Its preprocessing reproduces OpenCV's (resizing, warping, rounding), so the thresholds tuned below hold: on test photos it finds the same faces and animals as the Python service it replaced, with the same scores and boxes and embeddings equal to within float16 rounding.
 
 The face models most self-hosted apps use (InsightFace's `buffalo_l` and friends) are for non-commercial research only, so they are not used. AuraFace was trained on commercially licensed data and is a little less accurate than those on the hardest benchmarks; the matching thresholds were tuned on two weddings' worth of photos (crowds, veils, masks, profiles) to make few wrong suggestions rather than many groups.
 
@@ -252,7 +259,7 @@ Hyperfocal was written for an archive that must not be damaged. These rules are 
    - libheif (HEIC) and LibRaw run only in a short-lived helper process that reads one file and exits. It is killed if it takes longer than three minutes.
    - If one of them crashes or hangs on a damaged file, only that request fails: the server, the indexer and your files are unaffected. These libraries do get security fixes from time to time, which is why they are kept at arm's length.
    - FlashRaw, the JPEG code and the HEIF metadata reader are memory-safe Rust and run in-process. A decoder that panics on a malformed file is caught too.
-8. **The face and pet analysis sees copies, not your files.** Hyperfocal sends the `hyperfocal-ml` container a 2048-pixel JPEG of each photo over HTTP. The container never mounts your library, keeps nothing and makes no connection of its own (its models are inside the image). Names reach the sidecars only once you confirm them, through the same journaled, backed-up writes as everything else.
+8. **The AI engine sees copies, not your files.** The models run in a process of their own, which the server hands a 2048-pixel JPEG of each photo over a local connection (127.0.0.1, with a secret only the server knows). The engine never opens your library and writes nothing; a crash in it (a GPU driver, say) costs a restart of the analysis, never the server. Hyperfocal connects to the internet only to download the models (Hugging Face, OpenCV Zoo) and, with a GPU, ONNX Runtime's CUDA build and NVIDIA's libraries (PyPI), each checked against its sha256; `HYPERFOCAL_ML=false` turns that off too. Names reach the sidecars only once you confirm them, through the same journaled, backed-up writes as everything else.
 9. **Read-only mode** turns every write off. It is used automatically when the library is mounted read-only or ExifTool is unavailable, and can be forced with `HYPERFOCAL_READONLY=true`.
 
 The readers of file contents that run in-process (HEIF, XMP, JPEG and TIFF/DNG headers, GPS tracks, the helper's output) are fuzzed with cargo-fuzz every week, and a smoke test of them runs on every push.
@@ -344,27 +351,22 @@ services:
       PGID: "100"
       UMASK: "000"
       # HYPERFOCAL_PASSWORD: "change-me"
-      # People & pets (optional, see below):
-      # HYPERFOCAL_ML_URL: "http://hyperfocal-ml:8090"
+      # AI features (on by default; models download into /config/ml on first use):
+      # HYPERFOCAL_ML: "false"            # turn them all off
+      # HYPERFOCAL_ML_DEVICE: "auto"      # cpu, cuda or auto
       # Send to Immich (optional, see below):
       # HYPERFOCAL_IMMICH_URL: "http://immich-server:2283"
       # HYPERFOCAL_IMMICH_API_KEY: "..."
       # HYPERFOCAL_IMMICH_LIBRARY_PATH: "/mnt/media/photos"   # if Immich reads this library
     restart: unless-stopped
-
-  # Optional: face and pet recognition. Use image ghcr.io/au12/hyperfocal-ml:cuda and the
-  # `deploy` block for an NVIDIA GPU.
-  # hyperfocal-ml:
-  #   image: ghcr.io/au12/hyperfocal-ml:latest
-  #   container_name: hyperfocal-ml
-  #   restart: unless-stopped
-  #   # deploy:
-  #   #   resources:
-  #   #     reservations:
-  #   #       devices:
-  #   #         - driver: nvidia
-  #   #           count: 1
-  #   #           capabilities: [gpu]
+    # An NVIDIA GPU for the AI features (NVIDIA Container Toolkit, driver 580 or newer):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
 ```
 
 ## Behind Nginx Proxy Manager
@@ -463,16 +465,15 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | `HYPERFOCAL_VERIFY_HOUR` | `4` | Start of the nightly verification window (local hour; set `TZ`) |
 | `HYPERFOCAL_VERIFY_MINUTES` | `120` | Length of the nightly window. Outside it, new and changed files are still hashed, at most 4 GB an hour. |
 | `HYPERFOCAL_HASH_MBPS` | `60` | Read rate while hashing, MB/s (`0` = unlimited). Reading pauses while you are viewing photos. |
-| `HYPERFOCAL_CULL` | `true` | Culling help: measure every photo once in the background (sharpness of the subject from the RAW, clipping, and closed eyes with the ML container) for stacks, possible rejects and the best frame of a series |
+| `HYPERFOCAL_CULL` | `true` | Culling help: measure every photo once in the background (sharpness of the subject from the RAW, clipping, and closed eyes with the AI features) for stacks, possible rejects and the best frame of a series |
 | `HYPERFOCAL_DUPES` | `true` | Duplicates report: fingerprint every photo's thumbnail in the background, for near-duplicates and series (exact copies need only the integrity monitor) |
 | `HYPERFOCAL_ALERT_URL` | – | Where integrity alerts go: an ntfy topic URL, a Gotify `…/message` URL, or any webhook |
 | `HYPERFOCAL_ALERT_FORMAT` | `auto` | `ntfy`, `gotify` or `json` (`auto` decides from the URL) |
 | `HYPERFOCAL_ALERT_TOKEN` | – | Access token for the alert service (ntfy token, Gotify app token, or a bearer token for a webhook) |
-| `HYPERFOCAL_ML_URL` | – | The `hyperfocal-ml` companion container for People & pets, e.g. `http://hyperfocal-ml:8090` |
-| `HYPERFOCAL_ML_TOKEN` | – | Its `HFML_TOKEN`, if set |
+| `HYPERFOCAL_ML`, `HYPERFOCAL_ML_DEVICE`, … | | The AI features: see [Setting it up](#setting-it-up) |
 | `HYPERFOCAL_PEOPLE_XMP` | `true` | Write confirmed names to the sidecars (`false`: names stay in the index) |
-| `HYPERFOCAL_ML_SIZE` | `2048` | Long side of the image sent for analysis, px |
-| `HYPERFOCAL_ML_CONCURRENCY` | `2` | Photos prepared and in flight to the ML service at once |
+| `HYPERFOCAL_ML_SIZE` | `2048` | Long side of the image analysed for faces and pets, px |
+| `HYPERFOCAL_ML_CONCURRENCY` | `2` | Photos prepared for the AI engine at once |
 | `HYPERFOCAL_IMMICH_URL` | – | Send to Immich: the Immich server as Hyperfocal reaches it, e.g. `http://192.168.1.10:2283` |
 | `HYPERFOCAL_IMMICH_API_KEY` | – | An Immich API key (Account settings → API keys) with `asset.read`, `asset.upload`, `album.read`, `album.create` and `albumAsset.create` |
 | `HYPERFOCAL_IMMICH_LIBRARY_PATH` | – | Where Immich sees this photo folder, if it reads it as an external library (e.g. `/mnt/media/photos`): photos it has are then found by path instead of uploaded |
@@ -497,7 +498,7 @@ These numbers are from a 2-vCPU test VM; an Unraid server will be faster.
 | Clipping mask | 4 ms |
 | Full-resolution RAW tile (512×512, RCD), on the server | 10 ms |
 | Culling measurements of a RAW file (development, sharpness, clipping), in the background | 0.3–0.4 s |
-| A closed-eyes check, per face (ML container, CPU) | about 25 ms |
+| A closed-eyes check, per face (AI engine, CPU) | about 25 ms |
 
 Thumbnails and previews made in the background are encoded with mozjpeg's trellis quantization (pure Rust): at the same SSIMULACRA2 score as libjpeg-turbo, thumbnails are about 12% smaller and 2048-pixel previews about 7% smaller (up to 26%), measured on real photos. Images made while you wait (a preview opened before it was made, tiles, RAW renders) still use libjpeg-turbo, which encodes about 15 times faster. WebP was measured too and rejected: 4% smaller at best, inconsistent, and 25 times slower to encode.
 
@@ -515,10 +516,10 @@ On the same VM, the LibRaw helper starts in a few milliseconds, and a LibRaw dev
 - Fujifilm X-Trans, monochrome and linear DNG files use an approximate development path, about 0.6–0.9 s.
 - HEIC/HEIF files get the image view, metadata and every culling feature, but none of the RAW tools: they hold no sensor data.
 - LibRaw 0.21, the version in the Docker image, has no colour data for some cameras released after 2022. FlashRaw handles those, but if LibRaw has to take over for one, its RAW view can look flat in colour.
-- People & pets needs the companion container, and a first analysis takes a while on a CPU (see [Speed](#speed)). Telling apart two pets of the same breed and colour is harder than telling people apart: expect more suggestions to review.
+- The AI features download their models once (about 1.7 GB with all of them on), and a first analysis takes a while on a CPU (see [Speed](#speed)). Telling apart two pets of the same breed and colour is harder than telling people apart: expect more suggestions to review.
 - Hyperfocal does no AI keywording: search by content and *Find similar* find photos by what they show without writing keywords. Keep Excire for keywords for now.
 - Culling measures sharpness on the half-size development (and a JPEG at about 3000 pixels): it catches a missed focus, shake and motion blur, but to choose between two sharp frames, look at 100%. Faces smaller than 64 pixels there are not measured, and eyes looking down can count as closed.
-- Near-duplicates compare a perceptual hash of each thumbnail (and of it turned and mirrored): resized, recompressed, re-exported, lightly edited, turned and mirrored copies are found; crops are found by look-alikes, which need the ML container. The Duplicates report's series keeper is the sharpest frame by an estimate from the thumbnail; culling's stacks use the measurements above.
+- Near-duplicates compare a perceptual hash of each thumbnail (and of it turned and mirrored): resized, recompressed, re-exported, lightly edited, turned and mirrored copies are found; crops are found by look-alikes, which need search by content. The Duplicates report's series keeper is the sharpest frame by an estimate from the thumbnail; culling's stacks use the measurements above.
 
 ## Troubleshooting a file
 
@@ -555,15 +556,16 @@ docker build -t hyperfocal .
 # release: CI runs the major tests, then publishes the versioned images
 git tag v0.2.0 && git push origin v0.2.0    # or publish a GitHub release with a new vX.Y.Z tag
 
-# People & pets service (Python 3.12): models into ./models, then serve on :8090
-cd ml && pip install -r requirements.txt && python fetch_models.py ../models
-HFML_MODELS=../models python -m hyperfocal_ml
-python -m pytest tests            # with HFML_MODELS set, the model tests run too
-docker build -f ml/Dockerfile -t hyperfocal-ml .                          # CPU
-docker build -f ml/Dockerfile --build-arg VARIANT=cuda -t hyperfocal-ml:cuda .   # NVIDIA
+# AI engine: a development build downloads ONNX Runtime for the CPU into $HYPERFOCAL_CONFIG/ml
+# along with the models; or point HYPERFOCAL_ORT_LIB at a libonnxruntime.so.1.29.0. The engine's
+# tests run when HYPERFOCAL_ORT_LIB is set (the face, pet and search ones also want the
+# downloaded models in HYPERFOCAL_TEST_ML_MODELS, e.g. ./dev/ml/models)
+HYPERFOCAL_ORT_LIB=/path/to/libonnxruntime.so.1.29.0 cargo test ml::
+# the GPU runtime: downloads it (1.3 GB) and checks its libraries link
+cargo test --release --test ml_runtime -- --ignored --nocapture
 ```
 
-The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a smoke test of every fuzz target on mutated inputs) and the 300,000-photo library test, builds the image and publishes it to GHCR, and does the same for `hyperfocal-ml` (`latest` for the CPU, `cuda` for NVIDIA GPUs). `.github/workflows/fuzz.yml` fuzzes the parsers weekly. The HEIC and DNG test fixtures are generated by `server/tests/fixtures/make_fixtures.py`.
+The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a smoke test of every fuzz target on mutated inputs) and the 300,000-photo library test, builds the image and publishes it to GHCR (the image build checks that ONNX Runtime loads and the bundled eye models give the right answers). `.github/workflows/fuzz.yml` fuzzes the parsers weekly. The HEIC and DNG test fixtures are generated by `server/tests/fixtures/make_fixtures.py`.
 
 ## Credits
 
@@ -577,10 +579,10 @@ The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a 
 - [Inter](https://rsms.me/inter/) typeface by Rasmus Andersson (SIL Open Font License 1.1)
 - [Augenblick](https://github.com/orohde/Augenblick): design inspiration
 - [FastRawViewer](https://www.fastrawviewer.com/) and [Excire Foto](https://excire.com/): the workflows this follows
-- People & pets models: [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT), [AuraFace](https://huggingface.co/fal/AuraFace-v1) (Apache-2.0), [RF-DETR](https://github.com/roboflow/rf-detr) (Apache-2.0), [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) (Apache-2.0), run with [ONNX Runtime](https://onnxruntime.ai/) (MIT) and [OpenCV](https://opencv.org/) (Apache-2.0)
-- Eye checks: [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) (Apache-2.0); search by content: [SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-224) (Apache-2.0)
+- People & pets models: [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT), [AuraFace](https://huggingface.co/fal/AuraFace-v1) (Apache-2.0), [RF-DETR](https://github.com/roboflow/rf-detr) (Apache-2.0), [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) (Apache-2.0), run with [ONNX Runtime](https://onnxruntime.ai/) (MIT) through [ort](https://ort.pyke.io/) (MIT/Apache-2.0), with preprocessing that follows [OpenCV](https://opencv.org/)'s (Apache-2.0)
+- Eye checks: [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) (Apache-2.0); search by content: [SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-224) (Apache-2.0), with Hugging Face's [tokenizers](https://github.com/huggingface/tokenizers) (Apache-2.0)
 - Photos in the screenshots: [raw.pixls.us](https://raw.pixls.us/) (CC0), CC0 pet photos from Flickr via [Openverse](https://openverse.org/), and AI-generated portraits from the [Open and Closed Eyes Dataset](https://huggingface.co/datasets/MichalMlodawski/closed-open-eyes) (ODC-By 1.0)
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The Docker image also contains LibRaw, libheif and libde265, used as unmodified shared system libraries under their own licenses.
+MIT. See [LICENSE](LICENSE). The Docker image also contains LibRaw, libheif and libde265, used as unmodified shared system libraries under their own licenses, and ONNX Runtime's shared library (MIT) and the two MediaPipe models (Apache-2.0).

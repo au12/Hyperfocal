@@ -1,4 +1,4 @@
-//! Search by content: an image embedding of every photo (SigLIP 2, from the ML service,
+//! Search by content: an image embedding of every photo (SigLIP 2, from the AI engine,
 //! made from its thumbnail), for
 //! - finding photos by a description: "dog on the beach", "red car at night", in any of
 //!   the languages SigLIP 2 learned;
@@ -8,8 +8,8 @@
 //!
 //! Embeddings are kept as int8 vectors (768 bytes a photo) in the index and in memory:
 //! a search compares the query with every photo (AVX2), about 50 ms for 300,000 photos.
-//! A photo's embedding is made again when its file changes, and every one when the ML
-//! service brings another image model.
+//! A photo's embedding is made again when its file changes, and every one when the AI
+//! engine brings another image model.
 
 pub mod worker;
 
@@ -42,7 +42,7 @@ pub fn migrate(c: &Connection) -> Result<()> {
     c.execute_batch(
         r#"
         -- An image embedding of each photo (int8), of the file as it was (size, mtime,
-        -- orientation), by the model the ML service named (meta 'visual_model'); `emb` NULL
+        -- orientation), by the model the AI engine named (meta 'visual_model'); `emb` NULL
         -- with an error when the photo could not be read.
         CREATE TABLE IF NOT EXISTS clip(
             photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
@@ -164,9 +164,10 @@ impl Index {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Status {
-    /// An ML service is configured.
+    /// Search by content is on (HYPERFOCAL_ML and HYPERFOCAL_ML_SEARCH).
     pub enabled: bool,
-    /// off, connecting, offline, unsupported (no search models), indexing, waiting, idle
+    /// off, preparing (the models download or load), offline, unsupported, indexing,
+    /// waiting, idle
     pub phase: String,
     pub error: Option<String>,
     /// Photos with an embedding, and photos shown in lists (outside the reject folders).
@@ -222,7 +223,7 @@ mod lru {
 impl Visual {
     pub fn new(cfg: &crate::config::Config) -> Visual {
         Visual {
-            status: RwLock::new(Status { enabled: cfg.ml_url.is_some(), phase: "off".into(), ..Default::default() }),
+            status: RwLock::new(Status { enabled: cfg.ml.search_on(), phase: "off".into(), ..Default::default() }),
             index: RwLock::new(Index::default()),
             ctl: Mutex::new(Ctl::default()),
             cv: Condvar::new(),
@@ -269,8 +270,10 @@ pub fn search_text(state: &AppState, q: &str) -> Result<Vec<(i64, f32)>> {
     let v = match cached {
         Some(v) => v,
         None => {
-            let url = state.cfg.ml_url.as_deref().ok_or_else(|| anyhow!("search by content needs the ML service (HYPERFOCAL_ML_URL)"))?;
-            let client = crate::people::ml::Client::new(url, state.cfg.ml_token.clone());
+            if !state.cfg.ml.search_on() {
+                return Err(anyhow!("search by content is turned off (HYPERFOCAL_ML_SEARCH=false or HYPERFOCAL_ML=false)"));
+            }
+            let client = state.ml.client().map_err(|e| anyhow!("search by content is not ready: {e}"))?;
             let e = client.embed_texts(&[prompt(q)]).map_err(|e| anyhow!("{e}"))?;
             let v = quantize(e.first().ok_or_else(|| anyhow!("no embedding for the text"))?);
             state.visual.texts.lock().put(q.to_string(), v.clone());

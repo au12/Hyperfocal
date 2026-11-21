@@ -57,6 +57,8 @@
     <div class="dim small row">
       {#if data.error}
         <Icon name="info" size={14} /> Not analysed: {data.error}
+      {:else if people.status?.status.enabled && people.status.status.phase === 'preparing'}
+        <span class="spinner sm"></span> Waiting for the AI models…
       {:else if people.status?.status.enabled}
         <span class="spinner sm"></span> Looking for faces and pets…
       {:else}

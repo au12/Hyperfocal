@@ -1,8 +1,0 @@
-# NVIDIA image: ONNX Runtime's CUDA provider with CUDA 13 and cuDNN 9 from NVIDIA's
-# wheels (no CUDA base image needed). Needs an NVIDIA driver of 580 or later on the host.
-onnxruntime-gpu[cuda,cudnn]==1.29.0
-nvidia-cublas~=13.0
-numpy==2.5.3
-opencv-python-headless==5.0.0.93
-# Search by content: SigLIP 2's tokenizer.
-tokenizers==0.23.3

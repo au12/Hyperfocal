@@ -2,13 +2,13 @@ name: Docker
 
 # Fast checks on every push and pull request; the heavy work only where it is needed.
 #
-#   pull request   tests for the parts that changed. Images are built (not pushed) only
-#                  when a Dockerfile or the ML dependencies change.
-#   push to main   the same tests, then publishes :latest for the images whose inputs
-#                  changed. A push that touches only docs builds nothing.
+#   pull request   tests for the parts that changed. The image is built (not pushed) only
+#                  when its Dockerfile changes.
+#   push to main   the same tests, then publishes :latest when the image's inputs changed.
+#                  A push that touches only docs builds nothing.
 #   tag vX.Y.Z     a release: everything, plus the major tests (300,000-photo library,
 #                  and fuzzing in fuzz.yml). The versioned images wait for them.
-#   weekly         rebuilds every image from scratch, so security fixes in Debian's
+#   weekly         rebuilds the image from scratch, so security fixes in Debian's
 #                  packages (libheif, LibRaw, the base image) reach them without a code change.
 #   manual         everything; the major tests too unless switched off.
 
@@ -42,9 +42,7 @@ jobs:
       major: ${{ steps.mode.outputs.major }}
       server: ${{ steps.mode.outputs.all == 'true' || steps.filter.outputs.server == 'true' }}
       web: ${{ steps.mode.outputs.all == 'true' || steps.filter.outputs.web == 'true' }}
-      ml: ${{ steps.mode.outputs.all == 'true' || steps.filter.outputs.ml == 'true' }}
       image: ${{ steps.plan.outputs.image }}
-      ml_variants: ${{ steps.plan.outputs.ml_variants }}
     steps:
       - uses: actions/checkout@v4
       - id: mode
@@ -71,16 +69,15 @@ jobs:
             server:
               - *ci
               - server/**
+              - ml/**
             web:
               - *ci
               - web/**
-            ml:
-              - *ci
-              - ml/**
             image:
               - *ci
               - server/**
               - web/**
+              - ml/**
               - docker/**
               - Dockerfile
               - .dockerignore
@@ -89,36 +86,24 @@ jobs:
               - docker/**
               - Dockerfile
               - .dockerignore
-            ml_image_def:
-              - *ci
-              - ml/Dockerfile
-              - ml/requirements*.txt
-              - ml/models.json
-              - ml/fetch_models.py
       - id: plan
         env:
           EVENT: ${{ github.event_name }}
           ALL: ${{ steps.mode.outputs.all }}
           IMAGE: ${{ steps.filter.outputs.image }}
           IMAGE_DEF: ${{ steps.filter.outputs.image_def }}
-          ML: ${{ steps.filter.outputs.ml }}
-          ML_IMAGE_DEF: ${{ steps.filter.outputs.ml_image_def }}
         run: |
-          image=false; ml='[]'
+          image=false
           if [[ "$ALL" == true ]]; then
-            image=true; ml='["cpu","cuda"]'
+            image=true
           elif [[ "$EVENT" == pull_request ]]; then
-            # Only check that the images still build when their definition changed.
-            # The CPU ML build loads every model, so it also tests them.
+            # Only check that the image still builds when its definition changed.
             [[ "$IMAGE_DEF" == true ]] && image=true
-            [[ "$ML_IMAGE_DEF" == true ]] && ml='["cpu"]'
           else
             [[ "$IMAGE" == true ]] && image=true
-            [[ "$ML" == true ]] && ml='["cpu","cuda"]'
           fi
           echo "image=$image" >> "$GITHUB_OUTPUT"
-          echo "ml_variants=$ml" >> "$GITHUB_OUTPUT"
-          echo "image=$image ml_variants=$ml"
+          echo "image=$image"
 
   server:
     name: Server tests
@@ -135,6 +120,16 @@ jobs:
           # Pull requests read main's cache but don't add their own: the 10 GB cache
           # limit is shared, and a branch's cache is no use to main.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # ONNX Runtime for the AI engine's tests (the eye models are in the repository; the
+      # large models are not downloaded here). The same wheel as the image's.
+      - name: ONNX Runtime
+        run: |
+          url=$(sed -n 's/^ARG ORT_WHEEL_AMD64=//p' Dockerfile)
+          sum=$(sed -n 's/^ARG ORT_SHA256_AMD64=//p' Dockerfile)
+          curl -fsSL --retry 5 -o /tmp/ort.whl "$url"
+          echo "$sum  /tmp/ort.whl" | sha256sum -c -
+          unzip -j -o /tmp/ort.whl onnxruntime/capi/libonnxruntime.so.1.29.0 -d "$RUNNER_TEMP/ort"
+          echo "HYPERFOCAL_ORT_LIB=$RUNNER_TEMP/ort/libonnxruntime.so.1.29.0" >> "$GITHUB_ENV"
       - name: Server tests
         working-directory: server
         run: cargo test --locked
@@ -157,24 +152,6 @@ jobs:
           npm ci --no-audit --no-fund
           npm run check
           npm run build
-
-  ml-test:
-    name: ML service tests
-    needs: changes
-    if: needs.changes.outputs.ml == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: ml/requirements.txt
-      - name: Unit tests (the model tests run inside the image build)
-        working-directory: ml
-        run: |
-          pip install -r requirements.txt pytest
-          python -m pytest -q tests
 
   # Major test, releases only: a generated 300,000-photo index through the real router.
   # Catches a query that turns into a full scan before it reaches a real archive.
@@ -244,65 +221,5 @@ jobs:
           # The layer cache lives in GHCR, not the Actions cache: exporting it there took
           # over 3 minutes a build, and its gigabytes pushed the Rust cache out of the
           # 10 GB limit. Layers the image already pushed are not uploaded twice.
-          cache-from: type=registry,ref=${{ env.CACHE_REF }}
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', env.CACHE_REF) || '' }}
-
-  # The companion container for People & pets: CPU (latest) and NVIDIA (cuda) variants.
-  # The build downloads the models (checked against their sha256) and loads every one of
-  # them once, so a broken model fails here, not on your server.
-  ml-image:
-    name: Build and publish ML image (${{ matrix.variant }})
-    needs: [changes, ml-test]
-    if: >-
-      always() && needs.changes.result == 'success' && needs.changes.outputs.ml_variants != '[]' &&
-      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: ${{ fromJSON(needs.changes.outputs.ml_variants) }}
-    permissions:
-      contents: read
-      packages: write
-    env:
-      CACHE_REF: ghcr.io/${{ github.repository_owner }}/hyperfocal-ml:buildcache-${{ matrix.variant }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Free disk space (the CUDA libraries are large)
-        if: matrix.variant == 'cuda'
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-      - uses: docker/setup-buildx-action@v3
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/hyperfocal-ml
-          flavor: |
-            latest=false
-            suffix=${{ matrix.variant == 'cuda' && '-cuda' || '' }},onlatest=true
-          tags: |
-            type=raw,value=latest,enable=${{ matrix.variant == 'cpu' && '{{is_default_branch}}' || 'false' }}
-            type=raw,value=cuda,suffix=,enable=${{ matrix.variant == 'cuda' && '{{is_default_branch}}' || 'false' }}
-            type=sha,format=short,enable=${{ github.event_name != 'schedule' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=pr
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ml/Dockerfile
-          build-args: VARIANT=${{ matrix.variant }}
-          platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          pull: true
-          no-cache: ${{ github.event_name == 'schedule' }}
           cache-from: type=registry,ref=${{ env.CACHE_REF }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', env.CACHE_REF) || '' }}

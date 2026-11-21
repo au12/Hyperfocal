@@ -57,14 +57,12 @@ pub struct Config {
     pub alert_format: String,
     /// Token for the alert service (ntfy access token, Gotify app token, webhook bearer).
     pub alert_token: Option<String>,
-    /// The companion ML service (`hyperfocal-ml`) for faces and pets, e.g.
-    /// `http://hyperfocal-ml:8090`. None: people and pets are off.
-    pub ml_url: Option<String>,
-    /// Shared token for the ML service (its HFML_TOKEN).
-    pub ml_token: Option<String>,
+    /// The AI features (faces and pets, search by content, eyes): which are on, the
+    /// device, and where their models go (`crate::ml`).
+    pub ml: crate::ml::MlConfig,
     /// Long side of the image sent for analysis (px).
     pub ml_size: usize,
-    /// Photos in flight to the ML service at once.
+    /// Photos in flight to the AI engine at once.
     pub ml_concurrency: usize,
     /// Write confirmed names to the sidecars (keywords, face regions, person shown).
     pub people_xmp: bool,
@@ -130,8 +128,7 @@ impl Config {
             alert_url: None,
             alert_format: "auto".into(),
             alert_token: None,
-            ml_url: None,
-            ml_token: None,
+            ml: crate::ml::MlConfig::off(&root.join("config")),
             ml_size: 2048,
             ml_concurrency: 2,
             people_xmp: true,
@@ -147,6 +144,7 @@ impl Config {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
         let config_dir = PathBuf::from(env_str("HYPERFOCAL_CONFIG").unwrap_or_else(|| "/config".into()));
         let cache_dir = env_str("HYPERFOCAL_CACHE").map(PathBuf::from).unwrap_or_else(|| config_dir.join("cache"));
+        let ml = crate::ml::MlConfig::from_env(&config_dir);
         let reject_dir = env_str("HYPERFOCAL_REJECT_DIR").unwrap_or_else(|| "_Rejected".into());
         let reject_dir = if reject_dir.contains('/') || reject_dir.contains('\\') || reject_dir.starts_with("..") {
             "_Rejected".into()
@@ -182,8 +180,7 @@ impl Config {
             alert_url: env_str("HYPERFOCAL_ALERT_URL"),
             alert_format: env_str("HYPERFOCAL_ALERT_FORMAT").unwrap_or_else(|| "auto".into()),
             alert_token: env_str("HYPERFOCAL_ALERT_TOKEN"),
-            ml_url: env_str("HYPERFOCAL_ML_URL").map(|u| u.trim_end_matches('/').to_string()),
-            ml_token: env_str("HYPERFOCAL_ML_TOKEN"),
+            ml,
             ml_size: env_num("HYPERFOCAL_ML_SIZE", 2048usize).clamp(640, 4096),
             ml_concurrency: env_num("HYPERFOCAL_ML_CONCURRENCY", 2usize).clamp(1, 16),
             people_xmp: env_bool("HYPERFOCAL_PEOPLE_XMP", true),
