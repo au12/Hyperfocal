@@ -1011,12 +1011,13 @@ async fn view_lut(State(state): St, Query(q): Query<ImgQuery>) -> ApiResult<Resp
     Ok(image_response(lut.as_ref().clone(), "application/octet-stream", q.v.is_some()))
 }
 
+/// The RAW clipping mask (PNG; pixel value = MASK_* bits). `ev`: the exposure correction
+/// the overexposure display follows (as FastRawViewer's does).
 async fn raw_mask(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
     let loc = load(&state, id).await?;
-    let dev = state.images.developed(&state, &loc, q.wb.unwrap_or_default(), true).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
-    let d2 = dev.clone();
-    let png = tokio::task::spawn_blocking(move || d2.mask_png().to_vec()).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(image_response(png, "image/png", q.v.is_some()))
+    let ev = q.ev.unwrap_or(0.0).clamp(-6.0, 6.0);
+    let png = state.images.mask_png(&state, &loc, q.wb.unwrap_or_default(), ev).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
+    Ok(image_response(png.as_ref().clone(), "image/png", q.v.is_some()))
 }
 
 async fn raw_info(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {

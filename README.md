@@ -54,7 +54,8 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 - **Calibrated against FastRawViewer.** The RAW rendering in every mode (normal, linear, shadow boost, highlight inspection), both sharpening levels and the exposure statistics were matched to FastRawViewer screenshots and stats of the same file.
 - **Clipping measured on the raw data,** before white balance, per channel. This is the same idea as FastRawViewer's RAW-based over/underexposure display.
   - Canon's own white levels are read from the maker note, so pulled ISOs (160, 320, 640, 1250 …) clip where the sensor really does, not at the nominal 14-bit maximum.
-  - Overexposed means within 0.05 EV of saturation. Underexposed means more than 7.7 EV below it.
+  - The exposure stats count a sample as clipped where FastRawViewer does: for Canon, from 1.083 times the level that renders white; otherwise within 0.05 EV of saturation. Underexposed means a signal of less than 62 above black (14-bit scale), FastRawViewer's default.
+  - The overexposure overlay marks from 0.22–0.45 EV below saturation, like FastRawViewer's, and it **follows the exposure correction**: at +1 EV it shows what would have clipped with a stop more exposure, and a negative correction shrinks it to what is clipped in the RAW data, never less.
   - Overlays are per channel: cyan, magenta or yellow for a clipped channel, red, green or blue for an underexposed one.
   - The RAW histogram is drawn in EV below clipping, with the share of clipped and underexposed samples per channel.
 - **Rate, label, pick, reject.** Ratings 0–5, colour labels, pick and reject flags.

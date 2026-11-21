@@ -630,7 +630,9 @@ export const urls = {
   jpeg: (id: number, v: string) => apiUrl(`photo/${id}/jpeg`, { v }),
   raw: (id: number, v: string, o: { w: number; mode: ToneMode; ev: number; wb: WbMode; low?: boolean }) =>
     apiUrl(`photo/${id}/raw`, { v, w: o.w, mode: o.mode === 'normal' ? undefined : o.mode, ev: o.ev ? o.ev.toFixed(2) : undefined, wb: o.wb === 'asshot' ? undefined : o.wb, prio: o.low ? 'low' : undefined }),
-  rawmask: (id: number, v: string, wb: WbMode) => apiUrl(`photo/${id}/rawmask`, { v, wb: wb === 'asshot' ? undefined : wb, a: ANALYSIS_REV }),
+  /** The RAW clipping mask; `ev`: the exposure correction the overexposure display follows. */
+  rawmask: (id: number, v: string, wb: WbMode, ev = 0) =>
+    apiUrl(`photo/${id}/rawmask`, { v, wb: wb === 'asshot' ? undefined : wb, ev: Math.abs(ev) >= 0.005 ? ev.toFixed(2) : undefined, a: ANALYSIS_REV }),
   /** A full-resolution tile of the RAW view, demosaiced and tone-mapped on the server (JPEG). */
   rawtile: (id: number, v: string, o: { mode: ToneMode; ev: number; wb: WbMode; tx: number; ty: number }) =>
     apiUrl(`photo/${id}/rawtile`, { v, mode: o.mode === 'normal' ? undefined : o.mode, ev: o.ev ? o.ev.toFixed(2) : undefined, wb: o.wb === 'asshot' ? undefined : o.wb, tx: o.tx, ty: o.ty }),

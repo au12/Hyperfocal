@@ -184,6 +184,8 @@ pub struct Images {
     tiles: Mutex<Lru<TileKey, Arc<Vec<u8>>>>,
     /// Tiles demosaic on one core each: about as many at once as there are cores.
     tile_sem: tokio::sync::Semaphore,
+    /// Clipping masks with the overexposure display moved by an exposure correction (PNG).
+    ev_masks: Mutex<Lru<(DevKey, i32), Arc<Vec<u8>>>>,
 }
 
 /// The preview sizes (long edge) the API serves.
@@ -339,6 +341,7 @@ impl Images {
             bayer_inflight: Mutex::new(HashMap::new()),
             tiles: Mutex::new(Lru::new(96 * 1024 * 1024)),
             tile_sem: tokio::sync::Semaphore::new(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 16)),
+            ev_masks: Mutex::new(Lru::new(48 * 1024 * 1024)),
         })
     }
 
@@ -603,6 +606,32 @@ impl Images {
         let bytes = Arc::new(res?);
         self.tiles.lock().put(tkey, bytes.clone(), bytes.len());
         Ok(bytes)
+    }
+
+    /// The clipping mask of a RAW file as PNG. With an exposure correction (`ev`), the
+    /// overexposure display moves with it (`raw::mask_for_ev`), from the sensor data,
+    /// which the photo being viewed keeps in memory.
+    pub async fn mask_png(&self, state: &AppState, loc: &Located, wb: WbMode, ev: f32) -> Result<Arc<Vec<u8>>> {
+        let dev = self.developed(state, loc, wb, true).await?;
+        if !raw::ev_moves_mask(ev) {
+            let d = dev.clone();
+            return Ok(Arc::new(tokio::task::spawn_blocking(move || d.mask_png().to_vec()).await?));
+        }
+        let key = (DevKey { id: loc.rec.id, sig: sig(&loc.rec), wb }, (ev * 100.0).round() as i32);
+        if let Some(b) = self.ev_masks.lock().get(&key) {
+            return Ok(b);
+        }
+        let busy = Busy::new(&self.interactive);
+        let bayer = if dev.oe.is_some() { Some(self.bayer(state, loc).await?) } else { None };
+        let res = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+            let mask = raw::mask_for_ev(&dev, bayer.as_deref(), ev)?;
+            Ok(raw::encode_mask_png(dev.w, dev.h, &mask))
+        })
+        .await;
+        drop(busy);
+        let png = Arc::new(res??);
+        self.ev_masks.lock().put(key, png.clone(), png.len());
+        Ok(png)
     }
 
     /// A tile's demosaic input for the viewer's GPU path (`raw::cfa_tile`).

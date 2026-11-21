@@ -5,6 +5,7 @@
   import { GLView, hexToRgb } from '../lib/viewer/gl';
   import { ImageCache, type Decoded } from '../lib/viewer/loader';
   import { DetailLayer, type DetailPath } from '../lib/viewer/detail';
+  import { MaskLoader } from '../lib/viewer/mask';
   import { viewerCtl, toggleFullscreen, ZOOM_STEPS } from '../lib/ctl';
   import Icon from './Icon.svelte';
   import Histogram from './Histogram.svelte';
@@ -34,7 +35,7 @@
   let shownKind = $state<'thumb' | 'preview' | 'full' | 'raw'>('thumb');
   let shownId = -1;
   let loadError = $state('');
-  let maskShown = '';
+  const masks = new MaskLoader(() => gl, () => requestDraw());
   let rawInfo = $state<RawInfo | null>(null);
   let jpegHist = $state<Uint32Array[] | null>(null);
   let chrome = $state(true);
@@ -160,37 +161,12 @@
     cache.cancelOthers(keep);
   }
 
-  // The RAW clipping mask of the current photo. Kept while OE/UE are toggled off so
-  // toggling back is instant; dropped as soon as the photo, WB or source changes so a
-  // previous photo's mask is never drawn over this one. While it loads, RAW view shows
-  // no over/underexposure at all rather than a misleading guess from the rendered image.
-  async function loadMask() {
-    if (!gl) return;
-    const url = useRaw && id != null ? urls.rawmask(id, v, store.viewer.wb) : '';
-    if (url === maskShown) return;
-    if (maskShown) {
-      maskShown = '';
-      gl.setMask(null);
-      requestDraw();
-    }
-    if (!url || !(store.viewer.over || store.viewer.under)) return;
-    maskShown = url;
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(res.statusText);
-      const bmp = await createImageBitmap(await res.blob(), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-      if (!gl || maskShown !== url) return bmp.close();
-      gl.setMask(bmp);
-      bmp.close();
-      requestDraw();
-    } catch {
-      // No RAW mask (e.g. the RAW failed to develop): fall back to the shown image.
-      if (gl && maskShown === url) {
-        maskShown = '';
-        gl.setMask(null);
-        requestDraw();
-      }
-    }
+  // The RAW clipping mask of the current photo (see MaskLoader): its overexposure display
+  // follows the exposure correction.
+  function loadMask() {
+    const base = useRaw && id != null ? `${id}|${v}|${store.viewer.wb}` : '';
+    const url = base ? urls.rawmask(id, v, store.viewer.wb, store.viewer.over ? ev : 0) : '';
+    masks.update(base, url, store.viewer.over || store.viewer.under);
   }
 
   async function loadRawInfo() {
@@ -290,7 +266,7 @@
       peakColor: hexToRgb(s.peakColor),
       over: store.viewer.over,
       under: store.viewer.under,
-      maskOnly: useRaw && maskShown !== '',
+      maskOnly: useRaw && masks.active,
       overSolid: s.overColor === 'red',
       underSolid: s.underDisplay === 'solid',
       underColor: hexToRgb(s.underColor),
@@ -376,6 +352,7 @@
       ro.disconnect();
       cancelAnimationFrame(raf);
       cache.clear();
+      masks.destroy();
       detail?.destroy();
       detail = null;
       gl?.destroy();
@@ -478,6 +455,7 @@
     void useRaw;
     void id;
     void store.viewer.wb;
+    void ev;
     untrack(() => loadMask());
   });
 

@@ -102,7 +102,48 @@ pub struct Developed {
     pub cam_to_srgb: [[f32; 3]; 3],
     /// Full-resolution size of the area `w` x `h` covers (Bayer data only): 1:1 tiles.
     pub full: Option<(u32, u32)>,
+    /// The raw levels the overexposure display was measured against (Bayer data only), so
+    /// [`mask_for_ev`] can move it with an exposure correction.
+    pub oe: Option<OeLevels>,
     mask_png: OnceLock<Vec<u8>>,
+}
+
+/// Raw levels of a Bayer development: the black level (mean of the 2x2 pattern), where
+/// each channel saturates, and the level from which the exposure stats count a sample as
+/// clipped. The overexposure display marks from OE_DISPLAY_EV below saturation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OeLevels {
+    pub black: f32,
+    pub sat: [f32; 3],
+    pub clip: [f32; 3],
+}
+
+impl OeLevels {
+    /// The raw level from which channel `c` is shown as overexposed with `ev` EV of
+    /// exposure correction. As in FastRawViewer (its "Exposure adjustments affect
+    /// Over-Exposure display", on by default), a positive correction shows the areas that
+    /// would be overexposed had the photo been taken with that much more exposure. A
+    /// negative one shrinks the display towards what is clipped in the RAW data, never
+    /// below it: what the stats count as clipped is lost whatever the correction.
+    pub fn display_level(&self, c: usize, ev: f32) -> f32 {
+        let d = self.black + (self.sat[c] - self.black) * 2f32.powf(-(OE_DISPLAY_EV[c] + ev));
+        d.min(self.clip[c])
+    }
+}
+
+/// An 8-bit greyscale PNG of a clipping mask (pixel value = MASK_* bits).
+pub fn encode_mask_png(w: u32, h: u32, mask: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Grayscale);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_compression(png::Compression::Fast);
+        if let Ok(mut wr) = enc.write_header() {
+            let _ = wr.write_image_data(mask);
+        }
+    }
+    out
 }
 
 impl Developed {
@@ -112,20 +153,75 @@ impl Developed {
 
     /// The clipping mask as an 8-bit greyscale PNG (pixel value = MASK_* bits).
     pub fn mask_png(&self) -> &[u8] {
-        self.mask_png.get_or_init(|| {
-            let mut out = Vec::new();
-            {
-                let mut enc = png::Encoder::new(&mut out, self.w, self.h);
-                enc.set_color(png::ColorType::Grayscale);
-                enc.set_depth(png::BitDepth::Eight);
-                enc.set_compression(png::Compression::Fast);
-                if let Ok(mut wr) = enc.write_header() {
-                    let _ = wr.write_image_data(&self.mask);
-                }
-            }
-            out
-        })
+        self.mask_png.get_or_init(|| encode_mask_png(self.w, self.h, &self.mask))
     }
+}
+
+/// Whether a development's overexposure display depends on the exposure correction in a
+/// way [`mask_for_ev`] can recompute: from the sensor data (Bayer) or from the processed
+/// values (everything else).
+pub fn ev_moves_mask(ev: f32) -> bool {
+    ev.abs() >= 0.005
+}
+
+/// The clipping mask with the overexposure display moved by an exposure correction of
+/// `ev` (see [`OeLevels::display_level`]); the underexposure bits stay as developed.
+/// Bayer developments need their sensor data (`bayer`); for images a decoder developed
+/// itself the processed values are used, as for the developed mask.
+pub fn mask_for_ev(dev: &Developed, bayer: Option<&Bayer>, ev: f32) -> Result<Vec<u8>> {
+    let (hw, hh) = (dev.w as usize, dev.h as usize);
+    let Some(levels) = dev.oe else {
+        // Processed values (approximate): clipped from 0.998, i.e. 0.998 / 2^ev with the
+        // correction, and never above 0.998 itself.
+        let t = (0.998 * 2f32.powf(-ev)).min(0.998);
+        let mut out = vec![0u8; hw * hh];
+        out.par_chunks_mut(hw.max(1)).enumerate().for_each(|(y, row)| {
+            for (x, m) in row.iter_mut().enumerate() {
+                let i = y * hw + x;
+                let mut v = dev.mask[i] & !7;
+                for c in 0..3 {
+                    if half::f16::from_bits(dev.rgb[i * 3 + c]).to_f32() >= t {
+                        v |= 1 << c;
+                    }
+                }
+                *m = v;
+            }
+        });
+        return Ok(out);
+    };
+    let b = bayer.ok_or_else(|| anyhow!("the sensor data is needed"))?;
+    let [cx, cy, cw, crop_h] = b.crop;
+    if cw / 2 != hw || crop_h / 2 != hh || cy + hh * 2 > b.rows || cx + hw * 2 > b.stride {
+        return Err(anyhow!("the sensor data does not match the development"));
+    }
+    let disp = [0, 1, 2].map(|c| levels.display_level(c, ev));
+    let level = b.ch.map(|r| r.map(|c| disp[c]));
+    let bit = b.ch.map(|r| r.map(|c| 1u8 << c));
+    let mut out = vec![0u8; hw * hh];
+    out.par_chunks_mut(hw.max(1)).enumerate().for_each(|(by, row)| {
+        let y0 = cy + by * 2;
+        let r0 = &b.data[y0 * b.stride + cx..][..hw * 2];
+        let r1 = &b.data[(y0 + 1) * b.stride + cx..][..hw * 2];
+        let src = &dev.mask[by * hw..][..hw];
+        for (bx, m) in row.iter_mut().enumerate() {
+            let (p, q) = (&r0[bx * 2..bx * 2 + 2], &r1[bx * 2..bx * 2 + 2]);
+            let mut v = src[bx] & !7;
+            if p[0] as f32 >= level[0][0] {
+                v |= bit[0][0];
+            }
+            if p[1] as f32 >= level[0][1] {
+                v |= bit[0][1];
+            }
+            if q[0] as f32 >= level[1][0] {
+                v |= bit[1][0];
+            }
+            if q[1] as f32 >= level[1][1] {
+                v |= bit[1][1];
+            }
+            *m = v;
+        }
+    });
+    Ok(out)
 }
 
 fn wb_from_matrix(frame: &flashraw::RawFrame) -> Option<[f32; 3]> {
@@ -606,8 +702,10 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
             thr = [t; 3];
         }
     }
-    // The overexposure display's levels (see OE_DISPLAY_EV).
-    let disp: [f32; 3] = [0, 1, 2].map(|c| blk_mean + (sat[c] - blk_mean) * 2f32.powf(-OE_DISPLAY_EV[c]));
+    // The overexposure display's levels (see OE_DISPLAY_EV); what the stats count as
+    // clipped is always shown.
+    let oe = OeLevels { black: blk_mean, sat, clip: thr };
+    let disp: [f32; 3] = [0, 1, 2].map(|c| oe.display_level(c, 0.0));
     let inv: [f32; 3] = [1.0 / (sat[0] - blk_mean).max(1.0), 1.0 / (sat[1] - blk_mean).max(1.0), 1.0 / (sat[2] - blk_mean).max(1.0)];
     // Rendering scale: Canon's own rendering and FastRawViewer map NormalWhiteLevel to white
     // (FastRawViewer's linear mode is exactly that signal at gamma 2.2); values between it
@@ -739,7 +837,7 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
             mask.set_len(hw * hh);
         }
         let acc = st.into_acc(&k);
-        return Ok(finish(f, hw, hh, rgb, mask, acc, wb, inv, rscale, m, t0, decode_ms, decoder));
+        return Ok(finish(f, hw, hh, rgb, mask, acc, wb, inv, rscale, m, oe, t0, decode_ms, decoder));
     }
     let mut rgb = vec![0u16; hw * hh * 3];
     let mut mask = vec![0u8; hw * hh];
@@ -804,7 +902,7 @@ fn develop_bayer(f: &BayerFrame, wb_mode: WbMode, under_ev: f32, t0: Instant, de
             acc
         })
         .reduce(Acc::new, Acc::merge);
-    Ok(finish(f, hw, hh, rgb, mask, acc, wb, inv, rscale, m, t0, decode_ms, decoder))
+    Ok(finish(f, hw, hh, rgb, mask, acc, wb, inv, rscale, m, oe, t0, decode_ms, decoder))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -819,6 +917,7 @@ fn finish(
     inv: [f32; 3],
     rscale: [f32; 3],
     m: [[f32; 3]; 3],
+    oe: OeLevels,
     t0: Instant,
     decode_ms: f32,
     decoder: &'static str,
@@ -853,6 +952,7 @@ fn finish(
         rscale,
         cam_to_srgb: m,
         full: Some(((hw * 2) as u32, (hh * 2) as u32)),
+        oe: Some(oe),
         mask_png: OnceLock::new(),
     }
 }
@@ -1161,6 +1261,7 @@ fn finish_processed(mut rgb: Vec<u16>, mut w: usize, mut h: usize, under_ev: f32
         rscale: [1.0; 3],
         cam_to_srgb: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         full: None,
+        oe: None,
         mask_png: OnceLock::new(),
     }
 }
@@ -1698,6 +1799,100 @@ mod tests {
         let _ = super::super::demosaic::rcd(&cfa, bw, bh, |r, c| b.ch[r & 1][c & 1]);
         let rcd_ms = t.elapsed().as_secs_f64() * 1e3;
         eprintln!("develop {dev_ms:.1} ms, render {render_ms:.1} ms ({}x{}), render at 1024 {render_small_ms:.1} ms, tile {tile_ms:.1} ms (RCD alone {rcd_ms:.1} ms)", img.w, img.h);
+    }
+
+    /// The overexposure display moves with the exposure correction, as FastRawViewer's
+    /// does: more exposure marks more, less shrinks it to what the stats count as clipped,
+    /// and the underexposure bits never change.
+    #[test]
+    fn overexposure_display_follows_the_exposure_correction() {
+        // RGGB, black 512, white 16383. Columns of blocks ramp from 4 EV below saturation
+        // to saturation; the last row of blocks is deep shadow (underexposed).
+        let (w, h) = (256usize, 8usize);
+        let (black, white) = (512.0f32, 16383.0f32);
+        let mut data = vec![0u16; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let bx = x / 2;
+                let ev_below = 4.0 * (1.0 - bx as f32 / (w / 2 - 1) as f32);
+                let v = if y >= h - 2 { black + 20.0 } else { black + (white - black) * 2f32.powf(-ev_below) };
+                data[y * w + x] = v.round() as u16;
+            }
+        }
+        let b = Bayer {
+            data,
+            stride: w,
+            rows: h,
+            crop: [0, 0, w, h],
+            ch: [[0, 1], [1, 2]],
+            black: BlackModel { rows: 2, cols: 2, values: vec![black; 4], row_deltas: vec![], col_deltas: vec![] },
+            white,
+            white_exact: true,
+            render_white: None,
+            as_shot: Some([2.0, 1.0, 1.5]),
+            daylight: None,
+            cam_to_srgb: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            baseline_ev: 0.0,
+            decoder: "test",
+            decode_ms: 0.0,
+        };
+        let d = b.develop(WbMode::Asshot, UE_EV, Instant::now()).unwrap();
+        let oe = d.oe.expect("Bayer developments keep their levels");
+        // No correction: exactly the developed mask.
+        assert_eq!(mask_for_ev(&d, Some(&b), 0.0).unwrap(), d.mask);
+        let marked = |m: &[u8], c: usize| m.iter().filter(|v| *v & (1 << c) != 0).count();
+        let under = |m: &[u8]| m.iter().map(|v| v >> MASK_UNDER_SHIFT).collect::<Vec<_>>();
+        let mut last = [0usize; 3];
+        for ev in [-3.0f32, -1.0, -0.33, 0.0, 0.33, 1.0, 2.0] {
+            let m = mask_for_ev(&d, Some(&b), ev).unwrap();
+            assert_eq!(under(&m), under(&d.mask), "underexposure must not move ({ev} EV)");
+            for c in 0..3 {
+                // Every block at or above the level is marked, none below it.
+                let lvl = oe.display_level(c, ev);
+                let hw = w / 2;
+                for (i, v) in m.iter().enumerate() {
+                    let (bx, by) = (i % hw, i / hw);
+                    let (dx, dy) = match c {
+                        0 => (0, 0),
+                        1 => (1, 0),
+                        _ => (1, 1),
+                    };
+                    let mut s = b.data[(by * 2 + dy) * w + bx * 2 + dx] as f32;
+                    if c == 1 {
+                        s = s.max(b.data[(by * 2 + 1) * w + bx * 2] as f32);
+                    }
+                    assert_eq!(v & (1 << c) != 0, s >= lvl, "channel {c} at {ev} EV, block {bx},{by}");
+                }
+                let n = marked(&m, c);
+                assert!(n >= last[c], "more exposure never marks less (channel {c}, {ev} EV)");
+                last[c] = n;
+            }
+        }
+        // Much less exposure: only what is clipped in the RAW data stays marked.
+        let m = mask_for_ev(&d, Some(&b), -5.0).unwrap();
+        for c in 0..3 {
+            assert_eq!(oe.display_level(c, -5.0), oe.clip[c]);
+            assert!(marked(&m, c) > 0, "clipped samples stay marked");
+        }
+        // Without the sensor data a Bayer development cannot be moved.
+        assert!(mask_for_ev(&d, None, 1.0).is_err());
+    }
+
+    /// Images a decoder developed itself move with the correction on their processed values.
+    #[test]
+    fn processed_overexposure_follows_the_exposure_correction() {
+        let (w, h) = (4usize, 1usize);
+        let vals = [0.2f32, 0.5, 0.9, 1.0];
+        let rgb: Vec<u16> = vals.iter().flat_map(|&v| [f16_bits(v); 3]).collect();
+        let d = finish_processed(rgb, w, h, UE_EV, 0.0, Instant::now(), 0.0, "test");
+        assert!(d.oe.is_none() && d.approximate);
+        let count = |m: &[u8]| m.iter().filter(|v| *v & 7 == 7).count();
+        assert_eq!(mask_for_ev(&d, None, 0.0).unwrap(), d.mask);
+        assert_eq!(count(&d.mask), 1);
+        assert_eq!(count(&mask_for_ev(&d, None, 0.2).unwrap()), 2, "0.9 x 2^0.2 reaches white");
+        assert_eq!(count(&mask_for_ev(&d, None, 1.0).unwrap()), 3, "0.5 x 2 reaches white");
+        assert_eq!(count(&mask_for_ev(&d, None, 2.5).unwrap()), 4);
+        assert_eq!(count(&mask_for_ev(&d, None, -2.0).unwrap()), 1, "white stays clipped");
     }
 
     /// A pulled-ISO frame: the sky clips at 13050 in every channel, the nominal white
