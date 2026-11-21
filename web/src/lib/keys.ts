@@ -142,7 +142,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['next2', 'Jump +2'], ['prev2', 'Jump −2'], ['next3', 'Jump +3'], ['prev3', 'Jump −3'],
     ['pageDown', 'Page down (single view: +10)'], ['pageUp', 'Page up (single view: −10)'], ['up', 'Row up (compare: previous photo in the pane)'], ['down', 'Row down (compare: next photo in the pane)'],
     ['toggleGrid', 'Grid / single view'], ['compare', 'Compare the selected photos (2–4)'], ['open', 'Open photo'],
-    ['escape', 'Back / exit fullscreen'], ['fullscreen', 'Full screen'],
+    ['escape', 'Back · twice quickly in the library: leave full screen'], ['fullscreen', 'Full screen'],
   ]],
   ['View', [
     ['source', 'Switch RAW / embedded JPEG'], ['zoomToggle', 'Fit / 100% at the mouse'], ['zoomCycle', 'Fit / 100% at the mouse (grid: open photo)'], ['fit', 'Fit to window'], ['zoomIn', 'Zoom in'], ['zoomOut', 'Zoom out'],

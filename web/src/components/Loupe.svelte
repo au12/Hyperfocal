@@ -7,6 +7,7 @@
   import { DetailLayer, imageDetailSpec, type DetailPath } from '../lib/viewer/detail';
   import { MaskLoader } from '../lib/viewer/mask';
   import { viewerCtl, toggleFullscreen, ZOOM_STEPS } from '../lib/ctl';
+  import { fullscreen } from '../lib/fullscreen.svelte';
   import { pointerOver } from '../lib/pointer';
   import Icon from './Icon.svelte';
   import Histogram from './Histogram.svelte';
@@ -731,6 +732,19 @@
     return (x > 0 ? '+' : '−') + (whole || !frac ? whole : '') + frac;
   }
   let evWheelAt = 0;
+  /** The EV readout: a click turns the correction on/off, a double click resets it to
+   * 0.0 EV. The double click's first click has already toggled, which is invisible at
+   * 0 EV (with no correction, on and off render the same). */
+  function evClick(e: MouseEvent) {
+    if (e.detail >= 2) evReset();
+    else store.setViewer('evOn', !store.viewer.evOn);
+  }
+  function evReset() {
+    store.viewer.ev = 0;
+    store.viewer.evOn = true;
+    store.persist();
+  }
+
   function onEvWheel(e: WheelEvent) {
     e.preventDefault();
     const d = e.deltaY || e.deltaX;
@@ -797,9 +811,9 @@
             class="btn sm evval tnum"
             class:on={store.viewer.ev !== 0 && store.viewer.evOn}
             class:off={store.viewer.ev !== 0 && !store.viewer.evOn}
-            onclick={() => store.setViewer('evOn', !store.viewer.evOn)}
-            oncontextmenu={(e) => { e.preventDefault(); store.setViewer('ev', 0); }}
-            title={'Exposure correction on/off' + store.keyHint('evToggle') + ' · scroll to adjust · right-click to reset' + store.keyHint('evReset')}
+            onclick={evClick}
+            oncontextmenu={(e) => { e.preventDefault(); evReset(); }}
+            title={'Exposure correction on/off' + store.keyHint('evToggle') + ' · scroll to adjust · double-click or right-click to reset' + store.keyHint('evReset')}
           >{fmtEv(store.viewer.ev)} EV</button>
           <button class="btn sm icon" onclick={() => store.bumpEv(EV_STEP)} title={'Exposure +⅓ EV' + store.keyHint('evUp')}><Icon name="plus" /></button>
         </div>
@@ -829,7 +843,7 @@
           <Icon name={inReject ? 'restore' : 'reject'} /> {inReject ? 'Restore' : 'Reject'}
         </button>
         <button class="btn sm icon" class:on={store.panels.info} onclick={() => { store.panels.info = !store.panels.info; store.persist(); }} title="Info (I / F3)"><Icon name="info" /></button>
-        <button class="btn sm icon" onclick={toggleFullscreen} title={'Full screen' + store.keyHint('fullscreen')}><Icon name="fullscreen" /></button>
+        <button class="btn sm icon" class:on={fullscreen.on} onclick={toggleFullscreen} title={(fullscreen.on ? 'Leave full screen' : 'Full screen') + store.keyHint('fullscreen')}><Icon name={fullscreen.on ? 'fullscreen-exit' : 'fullscreen'} /></button>
       {:else}
         <button class="btn ghost icon" class:on={store.panels.histogram} onclick={() => (store.panels.histogram = !store.panels.histogram)} aria-label="Histogram"><Icon name="histogram" /></button>
         {#if people.enabled}
@@ -972,9 +986,9 @@
         </div>
         <div class="evrow">
           <button class="btn" onclick={() => store.bumpEv(-EV_STEP)} aria-label="Exposure −⅓ EV"><Icon name="minus" /></button>
-          <button class="btn ghost tnum evval" class:off={store.viewer.ev !== 0 && !store.viewer.evOn} onclick={() => store.setViewer('evOn', !store.viewer.evOn)}>{fmtEv(store.viewer.ev)} EV</button>
+          <button class="btn ghost tnum evval" class:off={store.viewer.ev !== 0 && !store.viewer.evOn} onclick={evClick}>{fmtEv(store.viewer.ev)} EV</button>
           <button class="btn" onclick={() => store.bumpEv(EV_STEP)} aria-label="Exposure +⅓ EV"><Icon name="plus" /></button>
-          <button class="btn ghost" onclick={() => store.setViewer('ev', 0)}>Reset</button>
+          <button class="btn ghost" onclick={evReset}>Reset</button>
         </div>
       </div>
     {/if}

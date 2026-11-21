@@ -3,6 +3,7 @@
   import { store } from '../lib/store.svelte';
   import { ImageCache } from '../lib/viewer/loader';
   import { compareCtl, toggleFullscreen } from '../lib/ctl';
+  import { fullscreen } from '../lib/fullscreen.svelte';
   import { keysFor, prettyKey } from '../lib/keys';
   import ComparePane, { type PaneView, type PaneCtl } from './ComparePane.svelte';
   import Icon from './Icon.svelte';
@@ -89,7 +90,7 @@
     </div>
     <div class="right">
       {#if !store.mobile}
-        <button class="btn ghost icon" onclick={toggleFullscreen} title={'Full screen' + store.keyHint('fullscreen')} aria-label="Full screen"><Icon name="fullscreen" /></button>
+        <button class="btn ghost icon" class:on={fullscreen.on} onclick={toggleFullscreen} title={(fullscreen.on ? 'Leave full screen' : 'Full screen') + store.keyHint('fullscreen')} aria-label="Full screen"><Icon name={fullscreen.on ? 'fullscreen-exit' : 'fullscreen'} /></button>
       {/if}
     </div>
   </header>

@@ -1,3 +1,5 @@
+import { fullscreen } from './fullscreen.svelte';
+
 /** The zoom levels Space steps through (screen px per image px) before going back to fit. */
 export const ZOOM_STEPS = [1];
 
@@ -36,6 +38,5 @@ export const uiCtl = {
 };
 
 export function toggleFullscreen() {
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  else document.documentElement.requestFullscreen?.().catch(() => {});
+  fullscreen.toggle();
 }

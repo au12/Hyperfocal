@@ -3,6 +3,7 @@
   import { store, LABELS } from './lib/store.svelte';
   import { actionFor, type Action } from './lib/keys';
   import { gridCtl, uiCtl, viewerCtl, compareCtl, toggleFullscreen } from './lib/ctl';
+  import { fullscreen } from './lib/fullscreen.svelte';
   import Shell from './components/Shell.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import Toolbar from './components/Toolbar.svelte';
@@ -58,10 +59,8 @@
       case 'prev': store.setCompareActive((store.compareActive + c.length - 1) % c.length); return true;
       case 'down': store.compareStep(1); return true;
       case 'up': store.compareStep(-1); return true;
-      case 'escape':
-        if (document.fullscreenElement) toggleFullscreen();
-        else store.closeCompare();
-        return true;
+      // Esc never leaves full screen here (see lib/fullscreen.svelte.ts).
+      case 'escape': store.closeCompare(); return true;
       case 'compare': case 'toggleGrid': store.closeCompare(); return true;
       case 'open': {
         const i = store.index.get(c[store.compareActive]);
@@ -117,10 +116,14 @@
       case 'down': if (inLoupe) return false; gridCtl.vertical(1); break;
       case 'open': if (!inLoupe) store.openLoupe(store.cursor); break;
       case 'escape':
-        if (document.fullscreenElement) toggleFullscreen();
-        else if (inLoupe) store.closeLoupe();
-        else if (store.selected.size) store.clearSelection();
-        else if (store.query) store.search('');
+        // Esc does not leave full screen: on the library page a quick double press does.
+        if (inLoupe) store.closeLoupe();
+        else fullscreen.libraryEsc(e, () => {
+          if (store.selected.size) store.clearSelection();
+          else if (store.query) store.search('');
+          else return false;
+          return true;
+        });
         break;
       case 'toggleGrid': inLoupe ? store.closeLoupe() : store.openLoupe(store.cursor); break;
       case 'compare': store.openCompare(); break;
@@ -227,13 +230,14 @@
         break;
       }
     }
-    void e;
     return true;
   }
 
   function onKey(e: KeyboardEvent) {
     const t = e.target as HTMLElement | null;
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+    // Only Esc presses on the library page itself count towards the quick double press.
+    if (e.key === 'Escape' && (typing || store.dialog || albums.picking || store.needLogin || store.compare || store.loupe || store.view === 'people')) fullscreen.resetEsc();
     if (typing) {
       if (e.key === 'Escape') (t as HTMLElement).blur();
       return;

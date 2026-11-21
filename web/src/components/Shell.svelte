@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { store, applyTheme } from '../lib/store.svelte';
   import { uiCtl } from '../lib/ctl';
+  import { fullscreen } from '../lib/fullscreen.svelte';
   import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
   import { pop, fade } from '../lib/motion';
@@ -166,6 +167,9 @@
       </button>
       <button class="btn ghost icon" onclick={() => (store.dialog = 'help')} title={'Keyboard shortcuts' + store.keyHint('help')}><Icon name="keyboard" /></button>
       <button class="btn ghost icon" onclick={() => (store.dialog = 'settings')} title="Settings"><Icon name="settings" /></button>
+      {#if fullscreen.supported()}
+        <button class="btn ghost icon" class:on={fullscreen.on} onclick={fullscreen.toggle} title={(fullscreen.on ? 'Leave full screen · Esc twice quickly' : 'Full screen') + store.keyHint('fullscreen')}><Icon name={fullscreen.on ? 'fullscreen-exit' : 'fullscreen'} /></button>
+      {/if}
     </div>
   {/if}
   {#if indexing}<span class="scanline" aria-hidden="true"></span>{/if}

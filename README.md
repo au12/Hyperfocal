@@ -412,6 +412,7 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | --- | --- | --- |
 | Next / previous photo | `→` / `←` `Backspace` | same |
 | Open / back to grid | `Enter` / `Esc`, `G` | same |
+| Full screen on / off (`Esc` keeps it on; in the library, `Esc` twice quickly leaves it) | `F` | same |
 | RAW ↔ embedded JPEG | `J` | `J` |
 | Fit ↔ 100 % at the mouse (grid: open photo) | `Z` or `Space` | same |
 | Compare the selected photos (2–4) | `C` or `N` | same |
@@ -421,7 +422,7 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | Overexposure / underexposure | `O` / `U` | `O` / `Shift+U` |
 | Shadow boost / highlight inspection / linear | `Shift+S` / `Shift+H` / `Shift+L` | same |
 | Invert colours | `Shift+I` | same |
-| Exposure ±⅓ EV, ±1 EV, on/off | `Alt+=` `Alt+-`, `Ctrl+Alt+=` `Ctrl+Alt+-`, `A` | same |
+| Exposure ±⅓ EV, ±1 EV, on/off, reset (or double-click the EV readout) | `Alt+=` `Alt+-`, `Ctrl+Alt+=` `Ctrl+Alt+-`, `A`, `Shift+A` | same |
 | Histogram / info panel | `H` / `I` | same |
 | Rating | `0`–`5` | `0`–`5` |
 | Colour label | `6` red, `7` yellow, `8` green, `9` blue | same |
@@ -438,6 +439,8 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | Keep the best of the series, reject the others | `Ctrl+Shift+K` | `Ctrl+Shift+K` |
 | Add to the last album / to an album… / take out of the album | `B` / `Shift+B` / `Alt+B` | same |
 | Search | `/` | `/` |
+
+Full screen works like a desktop app: `Esc` keeps its usual meaning and does not leave it. Chromium browsers (Chrome, Edge, Brave, Arc) allow this over HTTPS or on localhost; holding `Esc` for two seconds still leaves, which the browser does not let pages change. Firefox always leaves on `Esc` unless `browser.fullscreen.exit_on_escape` is set to `false` in about:config. Safari always leaves.
 
 ## Configuration
 

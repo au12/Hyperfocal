@@ -479,6 +479,7 @@ class Store {
     // At most four at once: the oldest goes first.
     this.toasts = [...this.toasts.slice(-3), { id, kind, text, action, ms }];
     setTimeout(() => (this.toasts = this.toasts.filter((t) => t.id !== id)), ms);
+    return id;
   };
 
   // ------------------------------------------------------------ boot
