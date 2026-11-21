@@ -34,6 +34,8 @@ pub enum Event {
     Collections,
     /// The albums changed: their list, counts or members.
     Albums,
+    /// Progress of search by content: photos looked at, of how many.
+    Visual { phase: String, done: i64, total: i64 },
     /// Progress of a background change.
     Job(crate::ops::JobStatus),
     /// The archive integrity problems changed: how many of each there are now.
@@ -81,6 +83,8 @@ pub struct AppState {
     pub people: crate::people::People,
     /// The perceptual-hash worker behind the Duplicates report.
     pub dupes: crate::dupes::Dupes,
+    /// Search by content: image embeddings of the photos.
+    pub visual: crate::visual::Visual,
 }
 
 impl AppState {

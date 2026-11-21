@@ -42,6 +42,14 @@
     store.persist();
   }
 
+  const smart = $derived(store.smartOn());
+  const placeholder = $derived(smart ? 'Describe what is in the photo: a dog on the beach, candles on a cake…' : 'Search file names, folders, titles, keywords, places, cameras…');
+
+  function toggleSmart() {
+    store.setSmartSearch(!store.settings.smartSearch);
+    input?.focus();
+  }
+
   const p = $derived(store.status?.progress);
   const indexing = $derived(p && p.phase !== 'idle' && p.phase !== 'starting');
   const folderName = $derived(
@@ -70,9 +78,12 @@
   {#if store.mobile}
     <button class="btn ghost icon" onclick={onmenu} aria-label="Folders"><Icon name="menu" /></button>
     {#if mobileSearch || store.query}
-      <div class="search grow" in:pop={{ y: 0, scale: 0.98 }}>
-        <Icon name="search" size={16} />
-        <input bind:this={input} bind:value={q} oninput={onInput} placeholder="Search photos" enterkeyhint="search" />
+      <div class="search grow" class:smart in:pop={{ y: 0, scale: 0.98 }}>
+        <Icon name={smart ? 'sparkles' : 'search'} size={16} />
+        <input bind:this={input} bind:value={q} oninput={onInput} placeholder={smart ? 'Describe the photo' : 'Search photos'} enterkeyhint="search" />
+        {#if store.visualReady()}
+          <button class="smart-toggle" class:on={smart} onclick={toggleSmart} aria-label="Search by what the photos show" aria-pressed={smart}><Icon name="sparkles" size={16} /></button>
+        {/if}
         <button class="clear" onclick={clear} aria-label="Clear search"><Icon name="x" size={16} /></button>
       </div>
     {:else}
@@ -91,10 +102,19 @@
       <img class="logo" src="./logo.png" alt="" width="28" height="28" />
       <span class="name">Hyperfocal</span>
     </div>
-    <div class="search">
-      <Icon name="search" size={15} />
-      <input bind:this={input} bind:value={q} oninput={onInput} placeholder="Search file names, folders, titles, keywords, places, cameras…" />
+    <div class="search" class:smart>
+      {#key smart}<span class="lead" in:pop={{ scale: 0.6, y: 0, duration: 260 }}><Icon name={smart ? 'sparkles' : 'search'} size={15} /></span>{/key}
+      <input bind:this={input} bind:value={q} oninput={onInput} {placeholder} />
       {#if q}<button class="clear" onclick={clear} aria-label="Clear search" in:pop><Icon name="x" size={15} /></button>{:else}<kbd>/</kbd>{/if}
+      {#if store.visualReady()}
+        <button
+          class="smart-toggle"
+          class:on={smart}
+          onclick={toggleSmart}
+          aria-pressed={smart}
+          title={smart ? 'Searching by what the photos show. Click for names, keywords and places.' : 'Search by what the photos show (people, things, scenes, colours, in your words)'}
+        ><Icon name="sparkles" size={15} /><span class="lbl">{smart ? 'AI' : ''}</span></button>
+      {/if}
     </div>
     <div class="right">
       {#if indexing}
@@ -268,6 +288,73 @@
   }
   .search kbd {
     margin-right: 0.25rem;
+  }
+  .lead {
+    display: flex;
+  }
+  /* Search by content: the field takes the logo's spectrum. */
+  .search.smart {
+    background:
+      linear-gradient(var(--field), var(--field)) padding-box,
+      linear-gradient(var(--shell-solid), var(--shell-solid)) padding-box,
+      var(--spectrum) border-box;
+    border: 1px solid transparent;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  .search.smart:focus-within {
+    background:
+      linear-gradient(var(--surface), var(--surface)) padding-box,
+      var(--spectrum) border-box;
+    box-shadow:
+      0 0 0 4px rgba(163, 91, 255, 0.14),
+      0 10px 30px -12px rgba(255, 79, 139, 0.4);
+  }
+  .search.smart .lead {
+    color: #c287ff;
+  }
+  .smart-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.1875rem;
+    height: 1.5rem;
+    padding: 0 0.375rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    font-size: var(--fs-xs);
+    font-weight: 750;
+    letter-spacing: 0.04em;
+    transition:
+      color var(--dur-fast),
+      background-color var(--dur-fast),
+      transform var(--dur) var(--ease-spring);
+  }
+  .smart-toggle:hover {
+    color: var(--text);
+    background: var(--surface-3);
+    transform: rotate(-8deg) scale(1.06);
+  }
+  .smart-toggle.on {
+    color: #fff;
+    background: var(--spectrum);
+    box-shadow: 0 2px 10px -2px rgba(255, 79, 139, 0.55);
+  }
+  .smart-toggle.on :global(svg) {
+    animation: twinkle 2.4s var(--ease-in-out) infinite;
+  }
+  @keyframes twinkle {
+    0%,
+    100% {
+      transform: scale(1) rotate(0);
+    }
+    50% {
+      transform: scale(1.12) rotate(12deg);
+    }
+  }
+  .smart-toggle .lbl:empty {
+    display: none;
   }
   .clear {
     border: 0;

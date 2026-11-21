@@ -88,3 +88,41 @@ def test_http_service_round_trip():
         assert e.value.code in (400, 415, 422)
     finally:
         srv.shutdown()
+
+
+def test_batches_split_into_their_images():
+    from hyperfocal_ml.server import split_batch
+
+    a, b = b"\xff\xd8one", b"\xff\xd8second"
+    body = len(a).to_bytes(4, "little") + a + len(b).to_bytes(4, "little") + b
+    assert split_batch(body) == [a, b]
+    with pytest.raises(ValueError):
+        split_batch(body[:-2])
+    with pytest.raises(ValueError):
+        split_batch(b"\x05\x00")
+
+
+HAVE_SEARCH = all((MODELS / f).exists() for f in ("siglip2-vision.onnx", "siglip2-text.onnx", "siglip2-tokenizer.json"))
+
+
+@pytest.mark.skipif(not HAVE_SEARCH, reason="search models not available")
+def test_search_embeddings_match_images_with_descriptions():
+    import onnxruntime as ort
+
+    from hyperfocal_ml.search import DIM, Siglip
+
+    sess = lambda p: ort.InferenceSession(str(p), providers=["CPUExecutionProvider"])  # noqa: E731
+    s = Siglip(MODELS, sess)
+    # The tokens SigLIP 2 was trained on: lower case, <eos> (1), padded with <pad> (0) to 64.
+    ids = s.tokens(["A Red Car"])
+    assert ids.shape == (1, 64) and 1 in ids[0] and ids[0, -1] == 0
+    red = np.zeros((240, 320, 3), np.uint8)
+    red[:, :] = (220, 30, 30)
+    blue = np.zeros((240, 320, 3), np.uint8)
+    blue[:, :] = (30, 60, 220)
+    img = s.embed_images([red, blue])
+    txt = s.embed_texts(["a red picture", "a blue picture"])
+    assert img.shape == (2, DIM) and txt.shape == (2, DIM)
+    assert np.allclose(np.linalg.norm(img, axis=1), 1, atol=1e-4)
+    sim = txt @ img.T
+    assert sim[0, 0] > sim[0, 1] and sim[1, 1] > sim[1, 0]

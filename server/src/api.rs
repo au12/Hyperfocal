@@ -193,6 +193,7 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
         "decoders": state.decoders,
         "integrity": state.cfg.integrity,
         "immich": crate::immich::status(&state),
+        "visual": crate::visual::status_json(&state),
         "auth": state.cfg.password.is_some(),
         "logged_in": true,
     })))
@@ -263,6 +264,28 @@ pub struct ListQuery {
     ids: Option<String>,
     /// Only the photos of this album.
     album: Option<i64>,
+    /// Search by content: a description of what the photos show.
+    vq: Option<String>,
+    /// Search by content: photos that look like this one.
+    like: Option<i64>,
+}
+
+impl ListQuery {
+    /// A search by content: its hits are staged in `temp.vq` before the query runs.
+    fn visual(&self) -> bool {
+        self.vq.as_deref().is_some_and(|s| !s.trim().is_empty()) || self.like.is_some()
+    }
+}
+
+/// The hits of a search by content (blocking: may ask the ML service), staged for SQL
+/// on this connection.
+fn stage_visual(st: &AppState, c: &Connection, q: &ListQuery) -> anyhow::Result<()> {
+    let hits = match (&q.vq, q.like) {
+        (_, Some(id)) => crate::visual::search_like(st, id)?,
+        (Some(text), None) => crate::visual::search_text(st, text)?,
+        _ => Vec::new(),
+    };
+    crate::visual::stage_hits(c, &hits)
 }
 
 /// SQL for "this folder and everything below it" on `f.path`, as an index range (paths
@@ -382,6 +405,9 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
         w.push("p.id IN (SELECT photo_id FROM album_photos WHERE album_id = ? AND photo_id IS NOT NULL)".into());
         a.push(Box::new(album));
     }
+    if q.visual() {
+        w.push("p.id IN (SELECT id FROM temp.vq)".into());
+    }
     if let Some(text) = q.q.as_deref() {
         let s = crate::db::search_query(text, trigram);
         if let Some(fq) = s.prefix {
@@ -406,6 +432,10 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
 fn order_by(q: &ListQuery) -> String {
     let desc = q.desc.unwrap_or(0) == 1;
     let d = if desc { "DESC" } else { "ASC" };
+    // A search by content: best match first, unless another order is asked for.
+    if q.visual() && matches!(q.sort.as_deref(), None | Some("relevance")) {
+        return format!("(SELECT r FROM temp.vq WHERE id = p.id) {}, p.id", if desc { "ASC" } else { "DESC" });
+    }
     match q.sort.as_deref() {
         Some("name") => format!("p.name COLLATE NOCASE {d}"),
         Some("rating") => format!("p.rating {}, COALESCE(p.taken, p.mtime / 1000) ASC, p.name", if desc { "ASC" } else { "DESC" }),
@@ -539,6 +569,9 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
     let st = state.clone();
     let body = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
         let c = st.db.get()?;
+        if q.visual() {
+            stage_visual(&st, &c, &q)?;
+        }
         let (wh, args) = build_where(&c, &q, st.trigram_ready())?;
         if count_only {
             let n: i64 = c.query_row(
@@ -827,6 +860,9 @@ async fn geo_clusters(State(state): St, Query(q): Query<ListQuery>) -> ApiResult
             q2.east = Some(180.0);
             q2.south = Some(-90.0);
             q2.north = Some(90.0);
+        }
+        if q2.visual() {
+            stage_visual(&st, &c, &q2)?;
         }
         let (wh, mut args) = build_where(&c, &q2, st.trigram_ready())?;
         let sql = format!(

@@ -89,9 +89,11 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - The map view shows the whole library, clustered.
 - **Geotag from a track.** Load GPX, KML, TCX or NMEA files, or a phone's location history (Google Takeout's Records or Timeline export), and Hyperfocal matches capture times against them. The camera's time zone is detected, clock drift can be corrected, and the result is previewed on a map before anything is written to the sidecars.
 - **Archive integrity monitor.** Every original gets a content hash when it is first indexed and is verified again over time (a full pass every 90 days by default), in a nightly window and at a gentle read rate, so array disks are not kept spinning. Originals that changed, went missing or became unreadable are reported in the app and, optionally, through ntfy, Gotify or a webhook. For JPEG, HEIC and TIFF/DNG only the image data is hashed, so a metadata edit by another app is not reported as damage. A file moved to another folder is recognised by its hash. Report-only: nothing is ever repaired or deleted.
-- **Duplicates report.** Three searches, each for the whole library, one folder, or a folder against the rest of the library (Excire's scopes):
+- **Search by content.** Turn on the ✦ AI switch in the search field and describe what is in the photo — "dog on the beach", "candles on a cake", "red car at night", in English or the other languages SigLIP 2 learned — and the best matches come first, combined with any filter, folder or album. *Find similar* (single view, info panel, selection menu) shows the photos that look most like one. Every photo is looked at once in the background by the companion ML container (newest first; the header says how far it has got), from its thumbnail, and nothing leaves your network.
+- **Duplicates report.** Four searches, each for the whole library, one folder, or a folder against the rest of the library (Excire's scopes):
   - *Exact copies* come from the integrity monitor's content hashes. For JPEG, HEIC, TIFF and DNG only the image data is hashed, so a copy that another app wrote a caption or keywords into still counts as a copy; a whole-file comparison (Excire's exact mode) misses those.
-  - *Near-duplicates* are resized, recompressed or re-exported copies and light edits, found by a 64-bit perceptual hash of each photo's thumbnail, made in the background. Strict, normal and loose levels.
+  - *Near-duplicates* are resized, recompressed or re-exported copies and light edits, found by a 64-bit perceptual hash of each photo's thumbnail, made in the background, and turned or mirrored copies, found through the hashes of each photo's seven turned and mirrored versions. Strict, normal and loose levels.
+  - *Look-alikes* (with the ML container) are found by what the photos show: crops, edits, other renderings and mirror images that pixel fingerprints miss, each with how alike it is. Over the whole library this uses an inverted-file index, a few seconds for 300,000 photos.
   - *Series* are bursts and brackets: one camera, one folder, a few seconds apart, cut where the scene changes.
   - Each group suggests a keeper (RAW over JPEG, then the most pixels, then the most metadata; in a series the frame you rated or picked, else the sharpest) and says why. Click another photo to keep it instead, open the group in the compare view, mark it "not duplicates", or move the others to `_Rejected` with one click, journaled and undoable like any reject. A RAW and its JPEG twin count as one photo.
 - **Send to Immich.** Select photos (or an album) and send them to your Immich server, into a new or existing Immich album. Photos Immich already has are used as they are, never uploaded twice: found by path when Immich reads this library as an external library, or by content when the same file was uploaded before. RAW files go as a full-size JPEG by default (the camera's own JPEG of a RAW+JPEG pair, or the JPEG inside the RAW, carrying capture time, camera, lens, GPS, rating and keywords), or as the original with its sidecar. Progress shows in the header; nothing in the library changes, and nothing in Immich is changed or deleted besides adding to the album. See [Send to Immich](#send-to-immich).
@@ -178,6 +180,7 @@ Going the other way, named face regions that Lightroom, digiKam or another app w
 | `HFML_ANIMAL_DETECTOR` | `auto` | `rfdetr-small.onnx`, or `rfdetr-nano.onnx`: fewer small or half-hidden pets found, about 0.3 s a photo faster on a weak CPU |
 | `HFML_FACE_SCALES` | `1600,640,320` | Sizes faces are looked for at (long side, px) |
 | `HFML_GPU_MEM_MB` | – | Cap on the GPU memory ONNX Runtime takes |
+| `HFML_SEARCH` | `1` | `0` turns search by content off (the SigLIP 2 models are not loaded: about 1 GB less memory) |
 | `HFML_LOG` | `info` | `debug` for a line per photo |
 
 ### Speed
@@ -196,6 +199,7 @@ Every model is licensed for commercial use, downloaded when the image is built a
 | [AuraFace v1](https://huggingface.co/fal/AuraFace-v1) (ResNet100, ArcFace loss) | tells faces apart | Apache-2.0 |
 | [RF-DETR](https://github.com/roboflow/rf-detr) Small / Nano (COCO) | finds dogs and cats | Apache-2.0 |
 | [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) | tells pets apart | Apache-2.0 |
+| [SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-224) base (Google; ONNX by onnx-community) | search by content, Find similar and look-alikes: image and text embeddings in one space | Apache-2.0 |
 
 The face models most self-hosted apps use (InsightFace's `buffalo_l` and friends) are for non-commercial research only, so they are not used. AuraFace was trained on commercially licensed data and is a little less accurate than those on the hardest benchmarks; the matching thresholds were tuned on two weddings' worth of photos (crowds, veils, masks, profiles) to make few wrong suggestions rather than many groups.
 
@@ -474,7 +478,7 @@ On the same VM, the LibRaw helper starts in a few milliseconds, and a LibRaw dev
 - LibRaw 0.21, the version in the Docker image, has no colour data for some cameras released after 2022. FlashRaw handles those, but if LibRaw has to take over for one, its RAW view can look flat in colour.
 - People & pets needs the companion container, and a first analysis takes a while on a CPU (see [Speed](#speed)). Telling apart two pets of the same breed and colour is harder than telling people apart: expect more suggestions to review.
 - Hyperfocal does no AI keywording or similarity search yet. Keep Excire for those for now.
-- Near-duplicates compare a perceptual hash of each thumbnail: resized, recompressed, re-exported and lightly edited copies are found, crops, rotations and mirror images are not (that needs image embeddings, see the [Roadmap](ROADMAP.md)). The series keeper's "sharpest" is an estimate from the thumbnail: it catches shake and a missed focus, not critical focus.
+- Near-duplicates compare a perceptual hash of each thumbnail (and of it turned and mirrored): resized, recompressed, re-exported, lightly edited, turned and mirrored copies are found; crops are found by look-alikes, which need the ML container. The series keeper's "sharpest" is an estimate from the thumbnail: it catches shake and a missed focus, not critical focus.
 
 ## Troubleshooting a file
 

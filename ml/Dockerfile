@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Hyperfocal ML: face and pet detection and recognition for Hyperfocal.
+# Hyperfocal ML: face and pet detection and recognition, and search by content, for Hyperfocal.
 #   docker build -f ml/Dockerfile -t hyperfocal-ml .                         (CPU)
 #   docker build -f ml/Dockerfile --build-arg VARIANT=cuda -t hyperfocal-ml:cuda .   (NVIDIA)
 
@@ -35,7 +35,7 @@ ENV HFML_MODELS=/models \
     HOME=/tmp
 
 LABEL org.opencontainers.image.title="Hyperfocal ML" \
-      org.opencontainers.image.description="Face and pet detection and recognition for Hyperfocal (ONNX Runtime, CPU or NVIDIA GPU)" \
+      org.opencontainers.image.description="Face and pet recognition and search by content for Hyperfocal (ONNX Runtime, CPU or NVIDIA GPU)" \
       org.opencontainers.image.source="https://github.com/au12/Hyperfocal" \
       org.opencontainers.image.licenses="MIT"
 

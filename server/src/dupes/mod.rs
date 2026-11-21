@@ -59,7 +59,22 @@ pub fn migrate(c: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS originals_hash_ok ON originals(hash) WHERE status = 0;
         "#,
     )?;
+    // The hashes of each photo turned and mirrored (7 x 8 bytes, little-endian), for
+    // copies that were turned or mirrored. Photos hashed before get them on the next pass.
+    let has_dih = c.prepare("PRAGMA table_info(phashes)")?.query_map([], |r| r.get::<_, String>(1))?.filter_map(|r| r.ok()).any(|n| n == "dih");
+    if !has_dih {
+        c.execute_batch("ALTER TABLE phashes ADD COLUMN dih BLOB;")?;
+    }
     Ok(())
+}
+
+/// The seven variant hashes as stored.
+pub fn dih_to_blob(d: &[u64; 7]) -> Vec<u8> {
+    d.iter().flat_map(|h| h.to_le_bytes()).collect()
+}
+
+pub fn dih_from_blob(b: &[u8]) -> Option<[u64; 7]> {
+    (b.len() == 56).then(|| std::array::from_fn(|i| u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap())))
 }
 
 /// What the Duplicates report shows about the background hashing.

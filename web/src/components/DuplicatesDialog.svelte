@@ -11,11 +11,12 @@
   let sentinel = $state<HTMLDivElement>();
 
   /** Mode, its name, a shorter one for phones, its icon. */
-  const MODES: [DupeMode, string, string, string][] = [
+  const MODES = $derived<[DupeMode, string, string, string][]>([
     ['exact', 'Exact copies', 'Exact', 'copy'],
     ['near', 'Near-duplicates', 'Similar', 'layers'],
+    ...(store.visualReady() || dupes.mode === 'visual' ? ([['visual', 'Look-alikes', 'Alike', 'sparkles']] as [DupeMode, string, string, string][]) : []),
     ['series', 'Series', 'Series', 'film'],
-  ];
+  ]);
 
   const r = $derived(dupes.report);
   const groups = $derived(dupes.groups);
@@ -111,6 +112,7 @@
     const n = g.members.length;
     if (dupes.mode === 'exact') return plural(n, 'exact copy', 'exact copies');
     if (dupes.mode === 'near') return plural(n, 'similar photo');
+    if (dupes.mode === 'visual') return plural(n, 'look-alike');
     return plural(n, 'frame');
   }
 
@@ -201,7 +203,7 @@
   const headline = $derived.by(() => {
     if (!r) return '';
     const n = groups.length;
-    if (!n) return dupes.mode === 'exact' ? 'No exact copies' : dupes.mode === 'near' ? 'No near-duplicates' : 'No series';
+    if (!n) return dupes.mode === 'exact' ? 'No exact copies' : dupes.mode === 'near' ? 'No near-duplicates' : dupes.mode === 'visual' ? 'No look-alikes' : 'No series';
     const g = dupes.mode === 'series' ? plural(n, 'series', 'series') : plural(n, 'group');
     const x = dupes.mode === 'series' ? plural(extra, 'other frame') : plural(extra, dupes.mode === 'exact' ? 'extra copy' : 'other photo', dupes.mode === 'exact' ? 'extra copies' : 'other photos');
     return `${g} · ${x} · ${fmtSize(extraBytes)}`;
@@ -228,7 +230,7 @@
           <option value="folder" disabled={!folder}>{folder ? `“${folder.name}” and its sub-folders` : 'A folder (open one first)'}</option>
           {#if dupes.mode !== 'series'}<option value="against" disabled={!folder}>{folder ? `“${folder.name}” against the rest of the library` : 'A folder against the library'}</option>{/if}
         </select>
-        {#if dupes.mode === 'near'}
+        {#if dupes.mode === 'near' || dupes.mode === 'visual'}
           <div class="seg" role="radiogroup" aria-label="How alike">
             {#each [['strict', 'Strict'], ['normal', 'Normal'], ['loose', 'Loose']] as [v, label] (v)}
               <button role="radio" aria-checked={dupes.level === v} class:on={dupes.level === v} onclick={() => { dupes.level = v as typeof dupes.level; dupes.load(); }}>{label}</button>
@@ -259,7 +261,9 @@
                 {#if dupes.mode === 'exact'}
                   Same image data, even when the metadata differs. The copy marked Keep stays; the others can go to {store.status?.reject_dir ?? '_Rejected'}.
                 {:else if dupes.mode === 'near'}
-                  Resized, recompressed or re-exported copies and light edits{dupes.level === 'loose' ? ', and frames that hardly differ' : ''}. Look before you reject: these are not identical files.
+                  Resized, recompressed, re-exported, turned or mirrored copies and light edits{dupes.level === 'loose' ? ', and frames that hardly differ' : ''}. Look before you reject: these are not identical files.
+                {:else if dupes.mode === 'visual'}
+                  Found by what the photos show, so crops, edits, other renderings and mirror images count too{dupes.level === 'loose' ? ', and the same scene from another angle' : ''}. Look before you reject: these are not identical files.
                 {:else}
                   Photos one camera took in quick succession in one folder. Keep suggests the frame you rated or picked, else the sharpest.
                 {/if}
@@ -271,12 +275,14 @@
           {:else if partial}
             <div class="facts small">
               <div class="fact">
-                <span class="dim">{dupes.mode === 'exact' ? 'Files hashed' : 'Photos fingerprinted'}</span>
+                <span class="dim">{dupes.mode === 'exact' ? 'Files hashed' : dupes.mode === 'visual' ? 'Photos looked at' : 'Photos fingerprinted'}</span>
                 <span class="tnum">{r.covered.toLocaleString()} of {r.eligible.toLocaleString()} ({coveredPct < 99.95 ? coveredPct.toFixed(1) : '100'}%)</span>
               </div>
               <div class="bar"><div style:width={`${coveredPct}%`}></div></div>
               {#if dupes.mode === 'exact'}
                 <div class="dim">The rest are hashed by the integrity monitor's nightly check. <button class="link" onclick={openIntegrity}>Archive integrity</button> can run it now.</div>
+              {:else if dupes.mode === 'visual'}
+                <div class="dim">Search by content looks at every photo once in the background, the newest first ({store.status?.visual?.phase === 'offline' ? 'the ML service is not answering' : 'see the search field'}).</div>
               {:else if status && !status.enabled}
                 <div class="dim">Fingerprinting is off (<code>HYPERFOCAL_DUPES=false</code>): only photos fingerprinted before are compared.</div>
               {:else if hashing}
@@ -335,7 +341,7 @@
                     <span class="dim facts1">
                       {#if m.rating > 0}<span class="stars" title="{m.rating} stars">{'★'.repeat(m.rating)}</span>{/if}
                       {#if m.lcolor}<span class="label-dot label-{m.lcolor}"></span>{/if}
-                      {#if dupes.mode === 'series'}<span class="tnum">{time(m.taken)}</span>{:else if !keep && m.d != null}<span>{alike(m.d)}</span>{/if}
+                      {#if dupes.mode === 'series'}<span class="tnum">{time(m.taken)}</span>{:else if dupes.mode === 'visual' && !keep && m.alike != null}<span class="tnum">{m.alike}% alike</span>{:else if !keep && m.turned}<span class="turned">{m.turned}</span>{:else if !keep && m.d != null}<span>{alike(m.d)}</span>{/if}
                     </span>
                   </span>
                 </button>
@@ -661,5 +667,9 @@
     .tile {
       width: 8.25rem;
     }
+  }
+  .turned {
+    color: var(--accent);
+    font-weight: 600;
   }
 </style>

@@ -18,6 +18,9 @@ pub enum Mode {
     Exact,
     Near,
     Series,
+    /// Look-alikes: photos whose image embeddings (search by content) are very close:
+    /// crops, edits, other renderings and mirror images that pixel fingerprints miss.
+    Visual,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +40,13 @@ pub const NORMAL: u32 = 7;
 /// Also frames of one moment that hardly differ (and the odd look-alike).
 pub const LOOSE: u32 = 10;
 
+/// Look-alike levels: the cosine of two photos' image embeddings, at least. Crops and
+/// edits of one photo stay above 0.95; frames of one moment 0.92 to 0.98; photos of
+/// one scene from another angle 0.88 to 0.92.
+pub const ALIKE_STRICT: f32 = 0.95;
+pub const ALIKE_NORMAL: f32 = 0.92;
+pub const ALIKE_LOOSE: f32 = 0.88;
+
 /// Pairs looked at, at most: a library of near-identical frames could have many more.
 const MAX_PAIRS: usize = 4_000_000;
 
@@ -46,6 +56,8 @@ pub struct Params {
     pub scope: Scope,
     /// Near-duplicates: bits apart, at most.
     pub radius: u32,
+    /// Look-alikes: cosine, at least.
+    pub alike: f32,
     pub series: bursts::Rules,
     /// Groups returned, at most (the totals count them all).
     pub limit: usize,
@@ -53,7 +65,7 @@ pub struct Params {
 
 impl Default for Params {
     fn default() -> Params {
-        Params { mode: Mode::Exact, scope: Scope::Library, radius: NORMAL, series: bursts::Rules::default(), limit: 2000 }
+        Params { mode: Mode::Exact, scope: Scope::Library, radius: NORMAL, alike: ALIKE_NORMAL, series: bursts::Rules::default(), limit: 2000 }
     }
 }
 
@@ -82,12 +94,21 @@ pub struct Member {
     /// Perceptual-hash bits that differ from the keeper's (near-duplicates and series).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub d: Option<u8>,
+    /// How alike it looks to the keeper, in percent (look-alikes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alike: Option<u8>,
+    /// A turned or mirrored copy of the keeper: how ("Turned 90°", "Mirrored").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turned: Option<&'static str>,
     /// In the folder (folder against the library).
     pub inside: bool,
     #[serde(skip)]
     pub mtime: i64,
     #[serde(skip)]
     pub hash: Option<u64>,
+    /// Its turned and mirrored hashes.
+    #[serde(skip)]
+    pub dih: Option<[u64; 7]>,
     #[serde(skip)]
     pub sharp: Option<f64>,
     #[serde(skip)]
@@ -249,6 +270,12 @@ pub fn exact_groups(rows: &[(String, i64)], allow: &dyn Fn(i64) -> bool, ignored
 /// then the next among those left. Returns the groups and whether the pair limit cut
 /// the search short.
 pub fn near_groups(rows: &[(i64, u64)], allow: &dyn Fn(i64) -> bool, ignored: &HashSet<(i64, i64)>, radius: u32) -> (Vec<Vec<i64>>, bool) {
+    near_groups_turned(rows, &HashMap::new(), allow, ignored, radius)
+}
+
+/// `near_groups`, where a photo also matches another when one of its turned or mirrored
+/// versions (`turned`: by photo) is near the other's upright hash.
+pub fn near_groups_turned(rows: &[(i64, u64)], turned: &HashMap<i64, [u64; 7]>, allow: &dyn Fn(i64) -> bool, ignored: &HashSet<(i64, i64)>, radius: u32) -> (Vec<Vec<i64>>, bool) {
     let mut rows: Vec<(u64, i64)> = rows.iter().filter(|r| r.1 != phash::FLAT && allow(r.0)).map(|&(id, h)| (h, id)).collect();
     rows.sort_unstable();
     // Identical hashes once: a thousand frames that hash alike are one entry, not a
@@ -270,6 +297,35 @@ pub fn near_groups(rows: &[(i64, u64)], allow: &dyn Fn(i64) -> bool, ignored: &H
     for &(a, b, d) in &found.pairs {
         adj[a as usize].push((b, d));
         adj[b as usize].push((a, d));
+    }
+    // Turned and mirrored copies: each distinct hash's variants against every upright one.
+    if !turned.is_empty() {
+        use rayon::prelude::*;
+        let index = mih::Index::new(&uniq);
+        let masks = mih::Index::masks(radius);
+        let extra: Vec<(u32, u32, u8)> = (0..uniq.len())
+            .into_par_iter()
+            .with_min_len(256)
+            .flat_map_iter(|u| {
+                let mut out = Vec::new();
+                let Some(vs) = members[u].clone().find_map(|r| turned.get(&rows[r].1)) else { return out };
+                let mut hits = Vec::new();
+                for &v in vs.iter().filter(|&&v| v != phash::FLAT) {
+                    hits.clear();
+                    index.query(v, radius, &masks, &mut hits);
+                    out.extend(hits.iter().filter(|&&(w, _)| w as usize != u).map(|&(w, d)| (u as u32, w, d)));
+                }
+                out
+            })
+            .collect();
+        for (a, b, d) in extra {
+            adj[a as usize].push((b, d));
+            adj[b as usize].push((a, d));
+        }
+        for list in &mut adj {
+            list.sort_unstable_by_key(|&(v, d)| (v, d));
+            list.dedup_by_key(|x| x.0);
+        }
     }
     let size = |u: usize| members[u].len();
     let weight: Vec<usize> = (0..uniq.len()).map(|u| size(u) - 1 + adj[u].iter().map(|&(v, _)| size(v as usize)).sum::<usize>()).collect();
@@ -296,6 +352,63 @@ pub fn near_groups(rows: &[(i64, u64)], allow: &dyn Fn(i64) -> bool, ignored: &H
         }
     }
     (out, found.truncated)
+}
+
+/// Look-alikes: photos whose embeddings have a cosine of at least `floor`, grouped like
+/// near-duplicates (around the photo with the most look-alikes; each member is that
+/// close to it). `ids[i]` owns `vectors[i * dim..]`.
+pub fn visual_groups(ids: &[i64], vectors: &[i8], norms: &[f32], dim: usize, allow: &dyn Fn(i64) -> bool, ignored: &HashSet<(i64, i64)>, floor: f32) -> (Vec<Vec<i64>>, bool) {
+    // Only the photos in scope (a copy only when the scope is narrower than the library).
+    let keep: Vec<usize> = (0..ids.len()).filter(|&i| allow(ids[i])).collect();
+    let (ids, vectors, norms): (Vec<i64>, std::borrow::Cow<[i8]>, std::borrow::Cow<[f32]>) = if keep.len() == ids.len() {
+        (ids.to_vec(), std::borrow::Cow::Borrowed(vectors), std::borrow::Cow::Borrowed(norms))
+    } else {
+        let mut v = Vec::with_capacity(keep.len() * dim);
+        for &i in &keep {
+            v.extend_from_slice(&vectors[i * dim..(i + 1) * dim]);
+        }
+        (keep.iter().map(|&i| ids[i]).collect(), std::borrow::Cow::Owned(v), std::borrow::Cow::Owned(keep.iter().map(|&i| norms[i]).collect()))
+    };
+    let n = ids.len();
+    if n < 2 {
+        return (Vec::new(), false);
+    }
+    // All pairs for a folder; an inverted file (approximate, a few seconds for 300,000
+    // photos) for the library.
+    let (pairs, truncated) = if n <= 12_000 {
+        (crate::ann::pairs_exact(&vectors, &norms, dim, floor), false)
+    } else {
+        let ivf = crate::ann::Ivf::build(&vectors, &norms, dim, 0);
+        ivf.pairs(&vectors, &norms, floor, 4, MAX_PAIRS)
+    };
+    let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
+    for &(a, b, s) in &pairs {
+        if ignored.contains(&pair(ids[a as usize], ids[b as usize])) {
+            continue;
+        }
+        adj[a as usize].push((b, s));
+        adj[b as usize].push((a, s));
+    }
+    let mut order: Vec<usize> = (0..n).filter(|&u| !adj[u].is_empty()).collect();
+    order.sort_unstable_by(|&a, &b| adj[b].len().cmp(&adj[a].len()).then(ids[a].cmp(&ids[b])));
+    let mut taken = vec![false; n];
+    let mut out = Vec::new();
+    for u in order {
+        if taken[u] {
+            continue;
+        }
+        let mut nb = adj[u].clone();
+        nb.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let mut group = vec![u];
+        group.extend(nb.into_iter().map(|(v, _)| v as usize).filter(|&v| !taken[v]));
+        if group.len() > 1 {
+            for &r in &group {
+                taken[r] = true;
+            }
+            out.push(group.into_iter().map(|r| ids[r]).collect());
+        }
+    }
+    (out, truncated)
 }
 
 /// Series, without the ones dismissed (frames dismissed with the first are left out).
@@ -444,7 +557,7 @@ const MEMBER_COLS: &str = "p.id, p.name, f.path, p.folder_id, p.kind, p.ext, p.c
     p.mtime, p.taken, p.rating, p.lcolor, p.pick,
     (p.rating > 0) + (p.label IS NOT NULL) + (p.title IS NOT NULL) + (p.description IS NOT NULL) + (p.keywords IS NOT NULL)
       + (p.lat IS NOT NULL) + (p.creator IS NOT NULL),
-    h.hash, h.sharp";
+    h.hash, h.sharp, h.dih";
 
 /// Everything the report shows and weighs about these photos.
 fn load_members(c: &Connection, ids: &[i64]) -> Result<HashMap<i64, Member>> {
@@ -484,9 +597,12 @@ fn load_members(c: &Connection, ids: &[i64]) -> Result<HashMap<i64, Member>> {
                 pick: r.get(16)?,
                 meta: r.get::<_, i64>(17)?.clamp(0, 255) as u8,
                 d: None,
+                alike: None,
+                turned: None,
                 inside: false,
                 mtime,
                 hash: r.get::<_, Option<i64>>(18)?.map(|h| h as u64),
+                dih: r.get_ref(20)?.as_blob_or_null()?.and_then(super::dih_from_blob),
                 sharp: r.get(19)?,
                 companion: companion.is_some(),
                 copyish: false,
@@ -537,6 +653,19 @@ const SEEN_FROM: &str = "FROM photos p JOIN folders f ON f.id = p.folder_id
      LEFT JOIN phashes h ON h.photo_id = p.id AND h.size = p.size AND h.mtime = p.mtime AND h.orientation = p.orientation
      WHERE p.pair_of IS NULL AND f.is_reject = 0";
 
+/// The turned and mirrored hashes of the photos shown (outside the reject folders).
+fn turned_hashes(c: &Connection) -> Result<HashMap<i64, [u64; 7]>> {
+    let mut st = c.prepare(&format!("SELECT p.id, h.dih {SEEN_FROM} AND h.dih IS NOT NULL"))?;
+    let mut out = HashMap::new();
+    let mut rows = st.query([])?;
+    while let Some(r) = rows.next()? {
+        if let Some(d) = r.get_ref(1)?.as_blob_or_null()?.and_then(super::dih_from_blob) {
+            out.insert(r.get::<_, i64>(0)?, d);
+        }
+    }
+    Ok(out)
+}
+
 fn seen(c: &Connection) -> Result<Vec<Seen>> {
     let mut st = c.prepare(&format!("SELECT p.id, COALESCE(p.taken, p.mtime / 1000), h.hash, h.photo_id IS NOT NULL AND h.hash IS NULL {SEEN_FROM}"))?;
     let v = st
@@ -583,6 +712,11 @@ fn hashed_files(c: &Connection, path: &str) -> Result<(i64, i64)> {
 }
 
 pub fn build(c: &Connection, p: &Params) -> Result<Report> {
+    build_with(c, p, None)
+}
+
+/// The report, with the image embeddings look-alikes need.
+pub fn build_with(c: &Connection, p: &Params, visual: Option<&crate::visual::Index>) -> Result<Report> {
     let t = std::time::Instant::now();
     // A series stays in its folder: "against the library" finds none.
     let scope = match (p.mode, p.scope) {
@@ -627,7 +761,8 @@ pub fn build(c: &Connection, p: &Params) -> Result<Report> {
             let seen = seen(c)?;
             let counts = seen_count(&seen);
             let rows: Vec<(i64, u64)> = seen.iter().filter_map(|s| s.hash.map(|h| (s.id, h))).collect();
-            let (g, cut) = near_groups(&rows, &allow, &ignored, p.radius);
+            let turned = turned_hashes(c)?;
+            let (g, cut) = near_groups_turned(&rows, &turned, &allow, &ignored, p.radius);
             when = seen.iter().map(|s| (s.id, s.time)).collect();
             (g, cut, counts)
         }
@@ -637,6 +772,23 @@ pub fn build(c: &Connection, p: &Params) -> Result<Report> {
             shots.retain(|s| allow(s.id));
             when = seen.iter().map(|s| (s.id, s.time)).collect();
             (series_groups(&mut shots, p.series, &ignored), false, counts)
+        }
+        Mode::Visual => {
+            let seen = seen(c)?;
+            when = seen.iter().map(|s| (s.id, s.time)).collect();
+            match visual {
+                Some(ix) if !ix.is_empty() => {
+                    let (ids, vectors, norms) = ix.parts();
+                    // Photos shown, outside the reject folders, in scope.
+                    let shown: HashSet<i64> = seen.iter().map(|s| s.id).collect();
+                    let ok = |id: i64| shown.contains(&id) && allow(id);
+                    let covered = seen.iter().filter(|s| in_scope(s.id) && ix.contains(s.id)).count() as i64;
+                    let eligible = seen.iter().filter(|s| in_scope(s.id)).count() as i64;
+                    let (g, cut) = visual_groups(ids, vectors, norms, crate::visual::DIM, &ok, &ignored, p.alike);
+                    (g, cut, (covered, eligible, 0))
+                }
+                _ => (Vec::new(), false, (0, seen.iter().filter(|s| in_scope(s.id)).count() as i64, 0)),
+            }
         }
     };
     if let Scope::Against(_) = scope {
@@ -660,6 +812,7 @@ pub fn build(c: &Connection, p: &Params) -> Result<Report> {
         Mode::Exact => "e",
         Mode::Near => "n",
         Mode::Series => "s",
+        Mode::Visual => "v",
     };
     let mut out: Vec<Group> = Vec::with_capacity(keyed.len());
     for (_, first, g) in keyed {
@@ -676,10 +829,32 @@ pub fn build(c: &Connection, p: &Params) -> Result<Report> {
             }
         }
         let reason = choose_keeper(&mut members, series);
-        if p.mode != Mode::Exact {
+        if p.mode == Mode::Visual {
+            if let Some(ix) = visual {
+                let k = ix.vector(members[0].id).map(<[i8]>::to_vec);
+                for m in &mut members {
+                    m.alike = k.as_deref().zip(ix.vector(m.id)).map(|(a, b)| (crate::people::index::cosine(a, b).clamp(0.0, 1.0) * 100.0).round() as u8);
+                }
+            }
+        } else if p.mode != Mode::Exact {
             let kh = members[0].hash.filter(|&h| h != phash::FLAT);
+            let kd = members[0].dih;
             for m in &mut members {
                 m.d = kh.zip(m.hash.filter(|&h| h != phash::FLAT)).map(|(a, b)| phash::distance(a, b) as u8);
+                // Not near upright: a turned or mirrored copy (either way round).
+                if p.mode == Mode::Near && m.d.is_none_or(|d| d as u32 > p.radius) {
+                    let best = (0..7u8)
+                        .filter_map(|k| {
+                            let a = kd.zip(m.hash).map(|(v, h)| phash::distance(v[k as usize], h));
+                            let b = m.dih.zip(kh).map(|(v, h)| phash::distance(v[k as usize], h));
+                            a.into_iter().chain(b).min().map(|d| (d, k + 1))
+                        })
+                        .min();
+                    if let Some((d, k)) = best.filter(|b| b.0 <= p.radius) {
+                        m.d = Some(d as u8);
+                        m.turned = Some(phash::variant_name(k));
+                    }
+                }
             }
         }
         let extra_bytes = members[1..].iter().map(|m| m.bytes).sum();
@@ -719,6 +894,55 @@ pub fn unhashed_below(c: &Connection, folder: i64) -> Result<Vec<i64>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_turned_copy_joins_its_original() {
+        let a: u64 = 0x0123_4567_89ab_cdef;
+        let x: u64 = 0xfedc_ba98_7654_3210 ^ 0x00ff;
+        let rows = vec![(1, a), (2, x ^ 0b101), (3, 0x5555_aaaa_5555_aaaa)];
+        // Photo 1 turned 90 degrees hashes like photo 2 (two bits off).
+        let turned: HashMap<i64, [u64; 7]> = [(1, [x, 1, 2, 3, 4, 5, 6])].into_iter().collect();
+        let none = HashSet::new();
+        let (g, _) = near_groups(&rows, &|_| true, &none, 7);
+        assert!(g.is_empty(), "upright, nothing is near");
+        let (g, _) = near_groups_turned(&rows, &turned, &|_| true, &none, 7);
+        assert_eq!(g.len(), 1);
+        let mut g0 = g[0].clone();
+        g0.sort();
+        assert_eq!(g0, vec![1, 2]);
+    }
+
+    #[test]
+    fn look_alikes_group_around_the_most_alike_photo() {
+        use crate::people::index::{norm, quantize};
+        let dim = 32;
+        let base = |seed: u32| -> Vec<f32> { (0..dim).map(|k| (((k as u32).wrapping_mul(2654435761u32) ^ seed.wrapping_mul(40503)) % 1000) as f32 / 500.0 - 1.0).collect() };
+        let a = base(1);
+        let b = base(2);
+        let near = |v: &[f32], k: usize| -> Vec<f32> { v.iter().enumerate().map(|(i, x)| if i == k { x + 0.15 } else { *x }).collect() };
+        let raw: Vec<(i64, Vec<f32>)> = vec![(1, a.clone()), (2, near(&a, 3)), (3, near(&a, 7)), (4, b.clone()), (5, near(&b, 1)), (6, base(3))];
+        let ids: Vec<i64> = raw.iter().map(|r| r.0).collect();
+        let mut vectors = Vec::new();
+        let mut norms = Vec::new();
+        for (_, v) in &raw {
+            let q = quantize(v);
+            norms.push(norm(&q));
+            vectors.extend(q);
+        }
+        let none = HashSet::new();
+        let (mut g, cut) = visual_groups(&ids, &vectors, &norms, dim, &|_| true, &none, 0.95);
+        assert!(!cut);
+        g.iter_mut().for_each(|x| x.sort_unstable());
+        g.sort();
+        assert_eq!(g, vec![vec![1, 2, 3], vec![4, 5]]);
+        // A pair dismissed as "not duplicates" stays apart; the scope narrows the search.
+        let ign: HashSet<(i64, i64)> = [(4, 5)].into_iter().collect();
+        let (g, _) = visual_groups(&ids, &vectors, &norms, dim, &|_| true, &ign, 0.95);
+        assert_eq!(g.len(), 1);
+        let (g, _) = visual_groups(&ids, &vectors, &norms, dim, &|id| id != 1 && id != 2, &none, 0.95);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].len(), 2);
+    }
+
     use super::*;
 
     fn member(id: i64, kind: Kind, w: i64, h: i64) -> Member {
@@ -727,6 +951,9 @@ mod tests {
             name: format!("IMG_{id}"),
             folder: "a".into(),
             folder_id: 1,
+            alike: None,
+            turned: None,
+            dih: None,
             v: String::new(),
             label: String::new(),
             kind: kind as i32,

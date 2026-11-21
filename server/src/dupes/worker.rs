@@ -28,7 +28,7 @@ const MIN_GAP: Duration = Duration::from_secs(60);
 /// hashed, hashed from another state of the file, or unreadable a while ago.
 const NEEDS: &str = "p.pair_of IS NULL AND f.is_reject = 0
      AND (h.photo_id IS NULL OR h.size != p.size OR h.mtime != p.mtime OR h.orientation != p.orientation
-          OR (h.hash IS NULL AND h.at < ?1))";
+          OR (h.hash IS NULL AND h.at < ?1) OR (h.hash IS NOT NULL AND h.hash != 0 AND h.dih IS NULL))";
 
 pub fn spawn(state: Arc<AppState>) {
     if !state.cfg.dupes {
@@ -109,16 +109,16 @@ fn hash_one(state: &AppState, row: &PhotoRec) -> Result<Outcome> {
     let id = loc.rec.id;
     let label = if loc.folder_path.is_empty() { loc.rec.name.clone() } else { format!("{}/{}", loc.folder_path, loc.rec.name) };
     set_phase(state, "hashing", Some(label));
-    let (hash, sharp, error) = match crate::images::thumb_pixels(state, &loc) {
-        Ok(img) => (Some(phash::phash(&img) as i64), Some(phash::sharpness(&img) as f64), None),
-        Err(e) => (None, None, Some(format!("{e:#}"))),
+    let (hash, dih, sharp, error) = match crate::images::thumb_pixels(state, &loc) {
+        Ok(img) => (Some(phash::phash(&img) as i64), Some(super::dih_to_blob(&phash::dihedral(&img))), Some(phash::sharpness(&img) as f64), None),
+        Err(e) => (None, None, None, Some(format!("{e:#}"))),
     };
     let c = state.db.get()?;
     c.execute(
-        "INSERT INTO phashes(photo_id, size, mtime, orientation, hash, sharp, at, error) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO phashes(photo_id, size, mtime, orientation, hash, dih, sharp, at, error) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(photo_id) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, orientation = excluded.orientation,
-           hash = excluded.hash, sharp = excluded.sharp, at = excluded.at, error = excluded.error",
-        params![id, loc.rec.size, loc.rec.mtime, loc.rec.orientation, hash, sharp, crate::db::now_ms(), error],
+           hash = excluded.hash, dih = excluded.dih, sharp = excluded.sharp, at = excluded.at, error = excluded.error",
+        params![id, loc.rec.size, loc.rec.mtime, loc.rec.orientation, hash, dih, sharp, crate::db::now_ms(), error],
     )
     .map(|_| Outcome::Done)
     // The photo was deleted meanwhile (foreign key).

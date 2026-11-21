@@ -40,6 +40,30 @@
       "what": "Which dog or cat: pet re-identification, DINOv2-base plus a projection trained on CC0 and CC BY data",
       "license": "Apache-2.0",
       "home": "https://huggingface.co/open-noodle/pet-recognition-base"
+    },
+    {
+      "file": "siglip2-vision.onnx",
+      "url": "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/vision_model.onnx",
+      "sha256": "c0573e3f4140c3a7c4e9cc5912bd6b26a033b46a6a8e8af26cbea262b163bcad",
+      "what": "Search by content: SigLIP 2 base (patch 16, 224 px), image tower",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/google/siglip2-base-patch16-224"
+    },
+    {
+      "file": "siglip2-text.onnx",
+      "url": "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/text_model_fp16.onnx",
+      "sha256": "711da56ada0a4aa11c7dd3320df741081a3cae4f0ae1b5e5c6d5b294738d0eb0",
+      "what": "Search by content: SigLIP 2 base, text tower (float16)",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/google/siglip2-base-patch16-224"
+    },
+    {
+      "file": "siglip2-tokenizer.json",
+      "url": "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/tokenizer.json",
+      "sha256": "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322",
+      "what": "Search by content: SigLIP 2 tokenizer (Gemma, 256,000 words)",
+      "license": "Apache-2.0",
+      "home": "https://huggingface.co/google/siglip2-base-patch16-224"
     }
   ]
 }

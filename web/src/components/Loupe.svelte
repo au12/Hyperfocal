@@ -810,6 +810,9 @@
         <button class="btn sm icon" onclick={() => store.rotate(-90)} title={'Rotate left' + store.keyHint('rotateCcw')}><Icon name="rotate-ccw" /></button>
         <button class="btn sm icon" onclick={() => store.rotate(90)} title={'Rotate right' + store.keyHint('rotateCw')}><Icon name="rotate-cw" /></button>
         <button class="btn sm icon" onclick={() => store.openLocation()} title={'Set location' + store.keyHint('location')}><Icon name="pin" /></button>
+        {#if store.visualReady()}
+          <button class="btn sm icon" onclick={() => store.findSimilar()} title="Find photos that look like this one"><Icon name="sparkles" /></button>
+        {/if}
         {#if store.status?.immich}
           <button class="btn sm icon" onclick={() => store.openImmich(undefined, albums.current?.name)} title="Send to Immich"><Icon name="send" /></button>
         {/if}
@@ -953,6 +956,9 @@
           <button class="tool" onclick={() => { sheet = null; albums.pick(); }}><Icon name="album-plus" /><span>Album</span></button>
           {#if store.status?.immich}
             <button class="tool" onclick={() => { sheet = null; store.openImmich(undefined, albums.current?.name); }}><Icon name="send" /><span>Immich</span></button>
+          {/if}
+          {#if store.visualReady()}
+            <button class="tool" onclick={() => { sheet = null; store.findSimilar(); }}><Icon name="sparkles" /><span>Similar</span></button>
           {/if}
         </div>
         <div class="evrow">

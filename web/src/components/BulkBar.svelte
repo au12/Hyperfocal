@@ -31,6 +31,9 @@
         <button class="btn sm icon" class:on={open} onclick={toggle} title="More" aria-label="More actions"><Icon name="more" /></button>
       {/snippet}
       {#snippet children(close)}
+        {#if n === 1 && store.visualReady()}
+          <button class="menu-item" onclick={() => { close(); store.findSimilar([...store.selected][0]); }}><Icon name="sparkles" />Find similar photos</button>
+        {/if}
         <button class="menu-item" onclick={() => { close(); store.openLocation(); }}><Icon name="pin" />Set location…</button>
         {#if store.status?.immich}
           <button class="menu-item" onclick={() => { close(); store.openImmich(undefined, albums.current?.name); }}><Icon name="send" />Send to Immich…</button>

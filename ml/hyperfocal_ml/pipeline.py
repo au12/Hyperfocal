@@ -5,6 +5,7 @@ Faces:  YuNet (OpenCV Zoo, MIT) at three scales, so a face from about 0.6% to 95
         (Apache-2.0) embedding from the full-resolution pixels.
 Pets:   RF-DETR (Roboflow, Apache-2.0) for dogs and cats, then a pet re-identification
         embedding (open-noodle pet-recognition, Apache-2.0) of each animal.
+Search: SigLIP 2 (Google, Apache-2.0) image and text embeddings in one space (search.py).
 
 Every coordinate in the answer is normalized to the image that was sent (0..1, origin
 top left), which must be upright: EXIF orientation is ignored.
@@ -25,6 +26,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 import onnxruntime as ort
+
+from . import search
 
 log = logging.getLogger("hyperfocal_ml")
 
@@ -128,6 +131,8 @@ class Config:
     face_norm_low: float = field(default_factory=lambda: float(env("HFML_FACE_NORM_LOW", "12")))
     face_norm_high: float = field(default_factory=lambda: float(env("HFML_FACE_NORM_HIGH", "24")))
     animal_threshold: float = field(default_factory=lambda: float(env("HFML_ANIMAL_THRESHOLD", "0.35")))
+    # Search by content (SigLIP 2): on when its models are there, unless HFML_SEARCH=0.
+    search: bool = field(default_factory=lambda: env("HFML_SEARCH", "1").lower() not in ("0", "false", "no", "off"))
 
 
 class Pipeline:
@@ -157,6 +162,11 @@ class Pipeline:
             "animal_detector": {"file": animal, "id": fingerprint(d / animal), "size": self.animal_size},
             "pet_embedder": {"file": self.cfg.pet_emb, "id": fingerprint(d / self.cfg.pet_emb), "dim": 512},
         }
+        self.siglip = None
+        if self.cfg.search and search.available(d):
+            self.siglip = search.Siglip(d, self._session)
+            self.models["image_embedder"] = {"file": search.VISION, "id": fingerprint(d / search.VISION), "dim": search.DIM}
+            self.models["text_embedder"] = {"file": search.TEXT, "id": fingerprint(d / search.TEXT), "dim": search.DIM}
         self._warm()
 
     # ------------------------------------------------------------------ runtime
@@ -214,6 +224,8 @@ class Pipeline:
         self.analyze(buf.tobytes())
         self.face_emb.run(None, {self.face_emb_input: np.zeros((1, 3, 112, 112), np.float32)})
         self.pet_emb.run(None, {self.pet_emb_input: np.zeros((1, 3, 224, 224), np.float32)})
+        if self.siglip is not None:
+            self.siglip.embed_images([img[:, :, ::-1]])
         log.info("models ready on %s in %.1fs", self.device, time.time() - t)
 
     # ------------------------------------------------------------------ faces
@@ -376,6 +388,34 @@ class Pipeline:
             out.append(self.pet_emb.run(None, {self.pet_emb_input: np.ascontiguousarray(x[i : i + 16], dtype=np.float32)})[0])
         e = np.concatenate(out).astype(np.float32)
         return e / np.maximum(np.linalg.norm(e, axis=1, keepdims=True), 1e-9)
+
+    # ------------------------------------------------------------------ search
+
+    def embed_images(self, images: list[bytes], lock: threading.Semaphore | None = None) -> list[str | None]:
+        """SigLIP 2 embeddings (base64 float16) of encoded images; None for one that
+        does not decode."""
+        if self.siglip is None:
+            raise RuntimeError("search is off (no SigLIP 2 models, or HFML_SEARCH=0)")
+        rgbs: list[np.ndarray] = []
+        idx: list[int] = []
+        for i, data in enumerate(images):
+            bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+            if bgr is not None:
+                rgbs.append(np.ascontiguousarray(bgr[:, :, ::-1]))
+                idx.append(i)
+        out: list[str | None] = [None] * len(images)
+        if rgbs:
+            with lock or _NOLOCK:
+                embs = self.siglip.embed_images(rgbs)
+            for i, e in zip(idx, embs):
+                out[i] = b64_f16(e)
+        return out
+
+    def embed_texts(self, texts: list[str], lock: threading.Semaphore | None = None) -> list[str]:
+        if self.siglip is None:
+            raise RuntimeError("search is off (no SigLIP 2 models, or HFML_SEARCH=0)")
+        with lock or _NOLOCK:
+            return [b64_f16(e) for e in self.siglip.embed_texts(texts)]
 
     # ------------------------------------------------------------------ entry point
 

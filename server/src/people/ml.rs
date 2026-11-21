@@ -96,6 +96,67 @@ impl Client {
     }
 }
 
+impl Client {
+    /// SigLIP 2 embeddings of encoded images (None for one the service could not
+    /// decode), normalized.
+    pub fn embed_images(&self, images: &[Vec<u8>]) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {
+        let mut body = Vec::with_capacity(images.iter().map(|i| i.len() + 4).sum());
+        for img in images {
+            body.extend_from_slice(&(img.len() as u32).to_le_bytes());
+            body.extend_from_slice(img);
+        }
+        let v = self.post_for_embs("/v1/embed", "application/x-hfml-batch", &body)?;
+        if v.len() != images.len() {
+            return Err(MlError::Rejected(format!("the ML service answered {} embeddings for {} images", v.len(), images.len())));
+        }
+        Ok(v)
+    }
+
+    /// SigLIP 2 embeddings of texts, in the images' space.
+    pub fn embed_texts(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, MlError> {
+        let body = serde_json::json!({ "texts": texts }).to_string();
+        let v = self.post_for_embs("/v1/text", "application/json", body.as_bytes())?;
+        v.into_iter().map(|e| e.ok_or_else(|| MlError::Rejected("the ML service sent no embedding for a text".into()))).collect()
+    }
+
+    fn post_for_embs(&self, path: &str, ctype: &str, body: &[u8]) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {
+        let mut r = self
+            .auth(self.agent.post(&format!("{}{path}", self.base)))
+            .content_type(ctype)
+            .send(body)
+            .map_err(|e| MlError::Unreachable(format!("{}: {e}", self.base)))?;
+        let status = r.status();
+        let text = r.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| MlError::Unreachable(e.to_string()))?;
+        if !status.is_success() {
+            let msg = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(text);
+            let msg = format!("the ML service answered {status}: {msg}");
+            // 501: the service has no search models. 4xx: this request. 5xx: the service.
+            return Err(if status.is_client_error() && status.as_u16() != 501 { MlError::Rejected(msg) } else { MlError::Unreachable(msg) });
+        }
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| MlError::Rejected(format!("unexpected answer from the ML service: {e}")))?;
+        let embs = v["embs"].as_array().ok_or_else(|| MlError::Rejected("unexpected answer from the ML service".into()))?;
+        Ok(embs.iter().map(|e| e.as_str().and_then(|s| decode_f16(s, crate::visual::DIM).ok())).collect())
+    }
+}
+
+/// A normalized vector sent as base64 of little-endian float16.
+pub fn decode_f16(b64: &str, dim: usize) -> Result<Vec<f32>> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim())?;
+    if bytes.len() != dim * 2 {
+        return Err(anyhow!("a vector of {} bytes (expected {})", bytes.len(), dim * 2));
+    }
+    let mut v: Vec<f32> = bytes.chunks_exact(2).map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32()).collect();
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if !n.is_finite() || n == 0.0 {
+        bail!("an empty vector");
+    }
+    for x in &mut v {
+        *x /= n;
+    }
+    Ok(v)
+}
+
 #[derive(Debug)]
 pub enum MlError {
     /// The service is down or failing: try again later.

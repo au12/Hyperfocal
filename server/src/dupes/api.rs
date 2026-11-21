@@ -41,7 +41,8 @@ fn params(q: &ReportQuery) -> ApiResult<Params> {
         "exact" => Mode::Exact,
         "near" => Mode::Near,
         "series" => Mode::Series,
-        _ => return Err(bad("mode: exact, near or series")),
+        "visual" => Mode::Visual,
+        _ => return Err(bad("mode: exact, near, series or visual")),
     };
     let scope = match (q.scope.as_deref().unwrap_or("library"), q.folder) {
         ("library", _) => Scope::Library,
@@ -56,8 +57,13 @@ fn params(q: &ReportQuery) -> ApiResult<Params> {
         "loose" => report::LOOSE,
         _ => return Err(bad("level: strict, normal or loose")),
     };
+    let alike = match q.level.as_deref().unwrap_or("normal") {
+        "strict" => report::ALIKE_STRICT,
+        "loose" => report::ALIKE_LOOSE,
+        _ => report::ALIKE_NORMAL,
+    };
     let series = Rules { max_gap: q.gap.unwrap_or(2).clamp(0, 60), min_len: q.min.unwrap_or(2).clamp(2, 50), ..Rules::default() };
-    Ok(Params { mode, scope, radius, series, limit: q.limit.unwrap_or(2000).clamp(1, 5000) })
+    Ok(Params { mode, scope, radius, alike, series, limit: q.limit.unwrap_or(2000).clamp(1, 5000) })
 }
 
 async fn get_report(State(state): St, Query(q): Query<ReportQuery>) -> ApiResult<Json<Value>> {
@@ -67,12 +73,17 @@ async fn get_report(State(state): St, Query(q): Query<ReportQuery>) -> ApiResult
         let c = st.db.get()?;
         let t = std::time::Instant::now();
         // A folder asked about is hashed before the rest of the library.
-        if p.mode != Mode::Exact && st.cfg.dupes {
+        if matches!(p.mode, Mode::Near | Mode::Series) && st.cfg.dupes {
             if let Scope::Folder(f) | Scope::Against(f) = p.scope {
                 st.dupes.prioritize(&report::unhashed_below(&c, f)?);
             }
         }
-        let r = report::build(&c, &p)?;
+        let r = if p.mode == Mode::Visual {
+            let ix = st.visual.index.read();
+            report::build_with(&c, &p, Some(&ix))?
+        } else {
+            report::build(&c, &p)?
+        };
         tracing::debug!("duplicates report ({:?}, {:?}): {} groups in {} ms", p.mode, p.scope, r.total_groups, t.elapsed().as_millis());
         let mut v = serde_json::to_value(&r)?;
         v["status"] = serde_json::to_value(&*st.dupes.status.read())?;

@@ -2,6 +2,7 @@
 //! Hyperfocal: fast, self-hosted RAW photo culling and library management.
 
 pub mod albums;
+pub mod ann;
 pub mod api;
 pub mod config;
 pub mod db;
@@ -26,6 +27,7 @@ pub mod scan;
 pub mod sets;
 pub mod state;
 pub mod tracks;
+pub mod visual;
 #[cfg(test)]
 mod safety_tests;
 
@@ -146,6 +148,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
     let session_key = load_session_key(&cfg.config_dir);
     let people = people::People::new(&cfg)?;
     let dupes = dupes::Dupes::new(&cfg);
+    let visual = visual::Visual::new(&cfg);
     let state = Arc::new(AppState {
         cfg,
         db: pool,
@@ -166,6 +169,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
         integrity: Default::default(),
         people,
         dupes,
+        visual,
     });
     if !readonly {
         match state.exiftool.lock().await.version().await {
@@ -206,6 +210,7 @@ async fn run() -> Result<()> {
     integrity::spawn(state.clone());
     people::worker::spawn(state.clone());
     dupes::worker::spawn(state.clone());
+    visual::worker::spawn(state.clone());
     match &cfg.ml_url {
         Some(u) => tracing::info!("people and pets: ML service at {u}"),
         None => tracing::info!("people and pets: no ML service configured (HYPERFOCAL_ML_URL); names from other apps are still read"),

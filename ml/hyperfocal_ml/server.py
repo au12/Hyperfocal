@@ -4,6 +4,10 @@
     GET  /v1/info       device, models (with content ids) and limits
     POST /v1/analyze    body: an upright JPEG or PNG; query: faces=0, animals=0 to skip
                         either. Answers the faces and animals found (see pipeline.py).
+    POST /v1/embed      body: an image, or several as application/x-hfml-batch (each one
+                        a 4-byte little-endian length, then its bytes). Answers
+                        {"embs": [...]}: a SigLIP 2 embedding (base64 float16) per image.
+    POST /v1/text       body: {"texts": [...]}. Answers {"embs": [...]} in the same space.
 
 Set HFML_TOKEN to require "Authorization: Bearer <token>" on /v1/ (for a service
 reachable from more than the Docker network).
@@ -54,6 +58,7 @@ class Service:
             "models": p.models,
             "face_scales": list(self.cfg.face_scales),
             "thresholds": {"face": self.cfg.face_threshold, "animal": self.cfg.animal_threshold},
+            "search": p.siglip is not None,
             "analyzed": self.analyzed,
             "uptime_s": round(time.time() - self.started),
             "avg_ms": round(self.busy_ms / self.analyzed, 1) if self.analyzed else None,
@@ -97,6 +102,8 @@ def make_handler(svc: Service):
 
         def do_POST(self) -> None:  # noqa: N802
             u = urlparse(self.path)
+            if u.path in ("/v1/embed", "/v1/text"):
+                return self._search(u.path)
             if u.path != "/v1/analyze":
                 return self._json(404, {"error": "not found"})
             if not self._authorized():
@@ -129,7 +136,60 @@ def make_handler(svc: Service):
                 svc.busy_ms += (time.perf_counter() - t) * 1000
             self._json(200, res)
 
+        def _body(self) -> bytes | None:
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                n = 0
+            if n <= 0 or n > MAX_BODY:
+                self.close_connection = True
+                self._json(413 if n > MAX_BODY else 400, {"error": "send the request body (at most 64 MB)"})
+                return None
+            return self.rfile.read(n)
+
+        def _search(self, path: str) -> None:
+            if not self._authorized():
+                return self._json(401, {"error": "unauthorized"})
+            data = self._body()
+            if data is None:
+                return
+            if svc.pipeline.siglip is None:
+                return self._json(501, {"error": "search is off (no SigLIP 2 models, or HFML_SEARCH=0)"})
+            t = time.perf_counter()
+            try:
+                if path == "/v1/text":
+                    texts = json.loads(data).get("texts") or []
+                    if not isinstance(texts, list) or not texts or len(texts) > 64 or not all(isinstance(x, str) for x in texts):
+                        return self._json(400, {"error": "texts: 1 to 64 strings"})
+                    embs = svc.pipeline.embed_texts(texts, lock=svc.lock)
+                else:
+                    images = split_batch(data) if self.headers.get("Content-Type", "").startswith("application/x-hfml-batch") else [data]
+                    if not images or len(images) > 64:
+                        return self._json(400, {"error": "1 to 64 images a request"})
+                    embs = svc.pipeline.embed_images(images, lock=svc.lock)
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            except Exception as e:
+                log.exception("embedding failed")
+                return self._json(500, {"error": f"embedding failed: {e}"})
+            self._json(200, {"embs": embs, "ms": round((time.perf_counter() - t) * 1000, 1)})
+
     return Handler
+
+
+def split_batch(data: bytes) -> list[bytes]:
+    """The images of an application/x-hfml-batch body."""
+    out, i = [], 0
+    while i < len(data):
+        if i + 4 > len(data):
+            raise ValueError("a truncated batch")
+        n = int.from_bytes(data[i : i + 4], "little")
+        i += 4
+        if n <= 0 or i + n > len(data):
+            raise ValueError("a truncated batch")
+        out.append(data[i : i + n])
+        i += n
+    return out
 
 
 def main() -> int:

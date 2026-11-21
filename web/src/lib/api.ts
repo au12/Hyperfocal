@@ -29,6 +29,8 @@ export interface Status {
   integrity?: boolean;
   /** Send to Immich is set up: Immich's address, and whether it reads this library. */
   immich?: { url: string; library: boolean } | null;
+  /** Search by content: whether it can run, and how many photos it has looked at. */
+  visual?: { enabled: boolean; phase: string; done: number; total: number; error: string | null };
   auth: boolean;
   logged_in: boolean;
 }
@@ -332,7 +334,7 @@ export interface IntegritySummary extends IntegrityCounts {
   alert: { host: string; format: string } | null;
 }
 
-export type DupeMode = 'exact' | 'near' | 'series';
+export type DupeMode = 'exact' | 'near' | 'series' | 'visual';
 export type DupeScope = 'library' | 'folder' | 'against';
 export type DupeLevel = 'strict' | 'normal' | 'loose';
 
@@ -360,6 +362,10 @@ export interface DupeMember {
   meta: number;
   /** Perceptual-hash bits that differ from the keeper's (of 64). */
   d?: number;
+  /** How alike it looks to the keeper, percent (look-alikes). */
+  alike?: number;
+  /** A turned or mirrored copy of the keeper: how. */
+  turned?: string;
   /** In the folder (folder against the library). */
   inside: boolean;
 }

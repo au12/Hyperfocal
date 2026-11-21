@@ -141,6 +141,55 @@ pub fn pairs(hashes: &[u64], radius: u32, cap: usize) -> Pairs {
     Pairs { pairs, truncated: full.load(Ordering::Relaxed) }
 }
 
+/// The four tables, for looking up hashes that are not in the set (a photo's turned and
+/// mirrored versions against everyone's upright hash).
+pub struct Index {
+    tables: Vec<Table>,
+}
+
+impl Index {
+    pub fn new(hashes: &[u64]) -> Index {
+        Index { tables: (0..PIECES).into_par_iter().map(|t| Table::new(hashes, t)).collect() }
+    }
+
+    /// The hashes of the set at most `radius` bits from `h`: (index, distance), each once.
+    pub fn query(&self, h: u64, radius: u32, masks: &[usize], out: &mut Vec<(u32, u8)>) {
+        let radius = radius.min(32);
+        let s = radius / PIECES as u32;
+        let start = out.len();
+        for (t, table) in self.tables.iter().enumerate() {
+            let v = piece(h, t);
+            for m in std::iter::once(0usize).chain(masks.iter().copied()) {
+                if (m as u32).count_ones() > s {
+                    continue;
+                }
+                for &(b, j) in table.bucket(v ^ m) {
+                    let d = (h ^ b).count_ones();
+                    if d <= radius {
+                        out.push((j, d as u8));
+                    }
+                }
+            }
+        }
+        // A hash found through several tables is listed once.
+        let tail = &mut out[start..];
+        tail.sort_unstable();
+        let mut w = start;
+        for r in start..out.len() {
+            if w == start || out[w - 1].0 != out[r].0 {
+                out[w] = out[r];
+                w += 1;
+            }
+        }
+        out.truncate(w);
+    }
+
+    /// The 16-bit masks a query at `radius` needs.
+    pub fn masks(radius: u32) -> Vec<usize> {
+        masks(radius.min(32) / PIECES as u32)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

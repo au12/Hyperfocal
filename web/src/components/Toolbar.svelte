@@ -87,7 +87,16 @@
     ['modified', 'File date'],
   ];
   const album = $derived(albums.current);
-  const sorts = $derived<[SortKey, string][]>(albums.currentId != null ? [['album', 'Album order'], ...baseSorts] : baseSorts);
+  const visual = $derived(store.visualShown());
+  const sorts = $derived<[SortKey, string][]>([
+    ...(visual ? ([['relevance', 'Relevance']] as [SortKey, string][]) : []),
+    ...(albums.currentId != null ? ([['album', 'Album order']] as [SortKey, string][]) : []),
+    ...baseSorts,
+  ]);
+  /** The sort in effect (a search by content is in order of relevance until another is chosen). */
+  const sortNow = $derived<SortKey>(visual && store.relevance ? 'relevance' : f.sort);
+  const vis = $derived(store.status?.visual);
+  const looking = $derived(visual && vis && vis.total > 0 && vis.done < vis.total);
 
   // The album shown: rename in place, a note, delete.
   let editing = $state(false);
@@ -126,6 +135,8 @@
         <button class="crumb" onclick={() => (store.dialog = 'duplicates')} title="Back to the Duplicates report"><Icon name="copy" size={14} /> Duplicates</button>
         <Icon name="chevron" size={14} class="sep" />
         <span class="crumb current">{coll.name}</span>
+      {:else if coll.id === 'like'}
+        <span class="crumb current smart-crumb" title="Photos that look like this one, most alike first"><Icon name="sparkles" size={15} /> {coll.name}</span>
       {:else if albums.currentId != null}
         {#if editing}
           <!-- svelte-ignore a11y_autofocus -->
@@ -172,7 +183,7 @@
       {/if}
     {:else if store.query}
       {#if store.dateRange}<button class="crumb" onclick={() => store.search('')}>{store.dateRange.label}</button><Icon name="chevron" size={14} class="sep" />{/if}
-      <span class="crumb current"><Icon name="search" size={14} /> “{store.query}”</span>
+      <span class="crumb current" class:smart-crumb={visual}><Icon name={visual ? 'sparkles' : 'search'} size={14} /> “{store.query}”</span>
       <button class="btn sm ghost" onclick={() => store.search('')}>Clear</button>
     {:else if store.dateRange}
       <span class="crumb"><Icon name="calendar" size={14} /> Timeline</span>
@@ -190,6 +201,9 @@
       <span class="chip who" title="Photos with this person or pet"><Icon name="user" size={12} /><span class="ellipsis">{store.subjLabels[sid] ?? 'Person'}</span><button onclick={() => store.setFilter('subj', f.subj.filter((x) => x !== sid))} aria-label="Remove"><Icon name="x" size={12} /></button></span>
     {/each}
     <span class="count tnum">{Math.round(shown.current).toLocaleString()} {count === 1 ? 'photo' : 'photos'}</span>
+    {#if looking && vis}
+      <span class="chip looking" title="Search by content looks at every photo once, in the background (the newest first): results grow as it goes"><span class="spinner"></span>{vis.done.toLocaleString()} of {vis.total.toLocaleString()} looked at</span>
+    {/if}
     {#if albums.arranging && !store.mobile && count > 1}<span class="hint-arrange" title="Drag photos (or a selection) to put them in order"><Icon name="grip" size={13} /><span class="txt">Drag to arrange</span></span>{/if}
     {#if store.loading}<span class="spinner"></span>{/if}
   </div>
@@ -204,10 +218,10 @@
   {/if}
 
   <div class="tools">
-    {#if !store.query && store.mobile && albums.currentId == null}
+    {#if !store.query && store.mobile && albums.currentId == null && f.like == null}
       <button class="btn sm icon" class:on={store.recursive} onclick={() => { store.recursive = !store.recursive; store.reload(); }} title="Include sub folders" aria-label="Include sub folders"><Icon name="layers" /></button>
     {/if}
-    {#if !store.query && !store.mobile && albums.currentId == null}
+    {#if !store.query && !store.mobile && albums.currentId == null && f.like == null}
       <label class="check" title="Include photos in sub folders">
         <input type="checkbox" checked={store.recursive} onchange={(e) => { store.recursive = (e.target as HTMLInputElement).checked; store.reload(); }} />
         Sub folders
@@ -320,12 +334,12 @@
 
     <Popover align="right">
       {#snippet trigger(toggle, open)}
-        <button class="btn sm" class:on={open} onclick={toggle} title="Sort"><Icon name="sort" />{store.mobile ? '' : sorts.find((s) => s[0] === f.sort)?.[1]}</button>
+        <button class="btn sm" class:on={open} onclick={toggle} title="Sort"><Icon name="sort" />{store.mobile ? '' : sorts.find((s) => s[0] === sortNow)?.[1]}</button>
       {/snippet}
       {#snippet children(close)}
         {#each sorts as [k, label]}
-          <button class="menu-item" class:active={f.sort === k} onclick={() => { store.setFilter('sort', k); close(); }}>
-            {label}{#if f.sort === k}<Icon name="check" />{/if}
+          <button class="menu-item" class:active={sortNow === k} onclick={() => { store.setFilter('sort', k); close(); }}>
+            {label}{#if sortNow === k}<Icon name="check" />{/if}
           </button>
         {/each}
         <div class="menu-sep"></div>
@@ -414,6 +428,18 @@
     font-size: 1.0625rem;
     font-weight: 650;
     width: min(20rem, 50vw);
+  }
+  .smart-crumb :global(svg) {
+    color: #c287ff;
+  }
+  .chip.looking {
+    margin-left: 0.5rem;
+    font-size: var(--fs-xs);
+    color: var(--text-2);
+  }
+  .chip.looking .spinner {
+    width: 0.75rem;
+    height: 0.75rem;
   }
   .chip.missing {
     margin-left: 0.25rem;

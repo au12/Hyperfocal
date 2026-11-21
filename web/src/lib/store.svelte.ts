@@ -37,7 +37,7 @@ export const LABELS: { color: LabelColor; name: string; key: string }[] = [
 
 type CullPatch = Pick<Patch, 'rating' | 'label' | 'pick'>;
 
-export type SortKey = 'taken' | 'name' | 'rating' | 'modified' | 'album';
+export type SortKey = 'taken' | 'name' | 'rating' | 'modified' | 'album' | 'relevance';
 
 export interface Filters {
   rmin: number;
@@ -62,6 +62,8 @@ export interface Filters {
   ids: number[];
   /** Only the photos of this album (an album shown). */
   album?: number | null;
+  /** Photos that look like this one (Find similar). */
+  like?: number | null;
 }
 
 export const DEFAULT_FILTERS: Filters = {
@@ -140,9 +142,15 @@ export function viewParams(v: {
   dateRange: DateRange | null;
   /** A collection's scope applies to its search; a plain search covers the whole library. */
   scoped: boolean;
+  /** The search describes what the photos show (search by content). */
+  smart?: boolean;
+  /** A search by content in order of relevance (false: in the order chosen). */
+  relevance?: boolean;
 }): Record<string, unknown> {
   const f = v.filters;
   const q = v.query.trim();
+  const smart = !!v.smart && q.length > 0;
+  const visual = smart || f.like != null;
   const wide = q.length > 0 && !v.scoped;
   let from: number | undefined;
   let to: number | undefined;
@@ -171,11 +179,19 @@ export function viewParams(v: {
     subj: f.subj?.length ? f.subj.join(',') : undefined,
     ids: f.ids?.length ? f.ids.join(',') : undefined,
     album: f.album ?? undefined,
+    like: f.like ?? undefined,
+    vq: smart ? q : undefined,
     nodate: d?.nodate ? 1 : undefined,
     from,
     to,
-    q: q || undefined,
-    sort: f.sort === 'taken' || (f.sort === 'album' && f.album == null) ? undefined : f.sort,
+    q: smart ? undefined : q || undefined,
+    sort: visual
+      ? v.relevance !== false || f.sort === 'relevance'
+        ? undefined
+        : f.sort
+      : f.sort === 'taken' || f.sort === 'relevance' || (f.sort === 'album' && f.album == null)
+        ? undefined
+        : f.sort,
     desc: f.desc,
   };
 }
@@ -200,6 +216,8 @@ export interface Settings {
   keymap: 'frv' | 'lr';
   rowHeight: number;
   showNames: boolean;
+  /** The search field describes what the photos show (search by content). */
+  smartSearch: boolean;
   advanceAfterRate: boolean;
   advanceAfterReject: boolean;
   /** Screen sharpening amounts (unsharp mask, radius 1 / 2 device px). */
@@ -230,6 +248,7 @@ const DEFAULT_SETTINGS: Settings = {
   keymap: 'frv',
   rowHeight: 200,
   showNames: false,
+  smartSearch: false,
   advanceAfterRate: false,
   advanceAfterReject: true,
   sharpen1: 1.05,
@@ -522,6 +541,8 @@ class Store {
         this.loadCollections().catch(() => {});
       } else if (e.type === 'albums') {
         albums.onEvent();
+      } else if (e.type === 'visual') {
+        if (this.status) this.status = { ...this.status, visual: { enabled: this.status.visual?.enabled ?? true, phase: e.phase, done: e.done, total: e.total, error: null } };
       } else if (e.type === 'folder') {
         if (this.affects(e.id)) this.scheduleReload();
         this.scheduleTree();
@@ -782,7 +803,35 @@ class Store {
       filters: this.filters,
       dateRange: this.dateRange,
       scoped: this.collection != null,
+      smart: this.smartOn(),
+      relevance: this.relevance,
     });
+
+  /** Search by content can run (the ML service has its models). */
+  visualReady = () => !!this.status?.visual?.enabled;
+  /** The search field searches by content now. */
+  smartOn = () => this.settings.smartSearch && this.visualReady();
+  /** A search by content or a Find similar is shown. */
+  visualShown = () => (this.smartOn() && this.query.trim() !== '') || this.filters.like != null;
+  /** Results of a search by content in order of relevance (until another order is chosen). */
+  relevance = $state(true);
+
+  setSmartSearch = (on: boolean) => {
+    this.settings.smartSearch = on;
+    this.relevance = true;
+    this.persist();
+    if (this.query.trim()) this.reload();
+  };
+
+  /** Photos that look like this one, across the library, most alike first. */
+  findSimilar = (id?: number) => {
+    const pid = id ?? this.targets()[0];
+    if (pid == null) return;
+    const name = this.list.n[this.index.get(pid) ?? -1] ?? this.detail?.name ?? 'this photo';
+    this.relevance = true;
+    this.view = 'grid';
+    return this.applyCollection({ id: 'like', name: `Like ${name}`, spec: { folder: '', rec: true, filters: { like: pid, sort: 'relevance', desc: false } } });
+  };
 
   // ------------------------------------------------------------ timeline & collections
   /** Browse one period of the timeline across every folder. */
@@ -977,12 +1026,14 @@ class Store {
   };
 
   setFilter = <K extends keyof Filters>(k: K, v: Filters[K]) => {
+    if (k === 'sort') this.relevance = v === 'relevance';
     this.filters[k] = v;
     this.persist();
     this.reload();
   };
 
   search = (q: string) => {
+    if (q.trim() !== this.query.trim()) this.relevance = true;
     this.query = q;
     this.loupe = false;
     this.compare = null;

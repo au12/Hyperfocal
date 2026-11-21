@@ -8,8 +8,10 @@
 //! of 0 never happens and marks an image too flat to compare instead (a black frame, a
 //! lens cap): those are left out of the near-duplicate search.
 //!
-//! Crops, rotations and mirror images change the hash completely: finding those needs
-//! image embeddings (see ROADMAP.md).
+//! A photo turned or mirrored has a completely different hash, so each photo also gets
+//! the hashes of its seven turned and mirrored versions (`dihedral`): a copy that was
+//! turned is near one of them. Crops change the hash too: image embeddings find those
+//! (look-alikes, `visual`).
 
 use crate::images::jpeg::Rgb;
 use std::sync::OnceLock;
@@ -98,7 +100,53 @@ pub fn phash(img: &Rgb) -> u64 {
     if img.w == 0 || img.h == 0 || img.px.len() < img.w * img.h * 3 {
         return FLAT;
     }
+    hash_grey(&grey32(img))
+}
+
+/// The image's 32 x 32 grey grid turned and mirrored: variant `k` of the dihedral group
+/// (1, 2, 3: turned 90°, 180°, 270° clockwise; 4: mirrored left to right; 5, 6, 7:
+/// mirrored, then turned like 1, 2, 3).
+fn variant(g: &[f32], k: usize) -> Vec<f32> {
+    let n = SIDE;
+    let mut out = vec![0f32; n * n];
+    for r in 0..n {
+        for c in 0..n {
+            // Mirrored first (k >= 4), then turned (k % 4) quarter turns clockwise.
+            let (mut sr, mut sc) = (r, c);
+            for _ in 0..(k % 4) {
+                // Turning clockwise: the output's (r, c) comes from the source's (n-1-c, r).
+                (sr, sc) = (n - 1 - sc, sr);
+            }
+            if k >= 4 {
+                sc = n - 1 - sc;
+            }
+            out[r * n + c] = g[sr * n + sc];
+        }
+    }
+    out
+}
+
+/// The hashes of the image's seven turned and mirrored versions (see `variant`), in
+/// variant order 1..=7. All [`FLAT`] for an image too flat to compare.
+pub fn dihedral(img: &Rgb) -> [u64; 7] {
+    if img.w == 0 || img.h == 0 || img.px.len() < img.w * img.h * 3 {
+        return [FLAT; 7];
+    }
     let g = grey32(img);
+    std::array::from_fn(|i| hash_grey(&variant(&g, i + 1)))
+}
+
+/// What a variant is, for people.
+pub fn variant_name(k: u8) -> &'static str {
+    match k {
+        1 | 3 => "Turned 90°",
+        2 => "Turned 180°",
+        4 => "Mirrored",
+        _ => "Mirrored and turned",
+    }
+}
+
+fn hash_grey(g: &[f32]) -> u64 {
     let n = g.len() as f32;
     let mean = g.iter().sum::<f32>() / n;
     let var = g.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n;
@@ -172,6 +220,45 @@ pub fn sharpness(img: &Rgb) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_turned_or_mirrored_copy_matches_a_variant() {
+        // A non-symmetric test image: a gradient with a bright block off-centre.
+        let (w, h) = (96usize, 64usize);
+        let mut px = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                let mut v = (x * 2 + y) as u8;
+                if x > 60 && y < 20 {
+                    v = 250;
+                }
+                px[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&[v, v / 2, 255 - v]);
+            }
+        }
+        let img = Rgb { w, h, px: px.clone() };
+        // Turned 90° clockwise: (x, y) -> (h-1-y, x), a h x w image.
+        let mut t = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                let (nx, ny) = (h - 1 - y, x);
+                t[(ny * h + nx) * 3..(ny * h + nx) * 3 + 3].copy_from_slice(&px[(y * w + x) * 3..(y * w + x) * 3 + 3]);
+            }
+        }
+        let turned = Rgb { w: h, h: w, px: t };
+        // Mirrored left to right.
+        let mut m = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                let nx = w - 1 - x;
+                m[(y * w + nx) * 3..(y * w + nx) * 3 + 3].copy_from_slice(&px[(y * w + x) * 3..(y * w + x) * 3 + 3]);
+            }
+        }
+        let mirrored = Rgb { w, h, px: m };
+        let d = dihedral(&img);
+        assert!(distance(phash(&img), phash(&turned)) > 12, "turning changes the plain hash");
+        assert!(distance(d[0], phash(&turned)) <= 2, "variant 1 is the turned copy");
+        assert!(distance(d[3], phash(&mirrored)) <= 2, "variant 4 is the mirror image");
+    }
+
     use super::*;
     use crate::images::jpeg;
 

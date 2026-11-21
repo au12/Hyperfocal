@@ -83,7 +83,12 @@
   {:else}
     <div class="head">
       <div class="big ellipsis" title={d.name}>{d.name}</div>
-      <button class="link ellipsis" onclick={() => store.openFolder(d.folder_id)} title="Open folder">{d.folder || 'Library'}</button>
+      <div class="row head-links">
+        <button class="link ellipsis" onclick={() => store.openFolder(d.folder_id)} title="Open folder">{d.folder || 'Library'}</button>
+        {#if store.visualReady()}
+          <button class="link similar" onclick={() => store.findSimilar(d.id)} title="Photos that look like this one"><Icon name="sparkles" size={13} />Similar</button>
+        {/if}
+      </div>
     </div>
 
     <section>
@@ -367,6 +372,21 @@
   }
   .wrap {
     flex-wrap: wrap;
+  }
+  .head-links {
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .link.similar {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: #b07cff;
+    font-weight: 600;
+  }
+  .link.similar:hover {
+    color: #c99bff;
   }
   .gap-s {
     gap: 0.375rem;

@@ -36,7 +36,7 @@ class Dupes {
           mode: this.mode,
           scope: folder == null ? 'library' : this.scope,
           folder,
-          level: this.mode === 'near' ? this.level : undefined,
+          level: this.mode === 'near' || this.mode === 'visual' ? this.level : undefined,
           gap: this.mode === 'series' ? this.gap : undefined,
         },
         ctl.signal,
