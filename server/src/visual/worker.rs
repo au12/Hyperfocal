@@ -76,15 +76,33 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<PhotoRec> {
     Ok(PhotoRec { id: r.get(0)?, size: r.get(1)?, mtime: r.get(2)?, orientation: r.get(3)?, ..Default::default() })
 }
 
-/// The next photos that need an embedding, below `cursor` (newest first).
-fn next_batch(c: &Connection, cursor: i64) -> Result<Vec<PhotoRec>> {
+/// The photos a pass looks at (ids: 8 bytes each, a few MB for a whole library), newest
+/// folders first: Year/Event paths sorted descending put 2026 before 2008, as the first
+/// scan indexes them, and new imports go ahead of the archive. Within a folder, in the
+/// order they were indexed. The photos are read in table order (CROSS JOIN keeps them
+/// the outer loop) and the few that need work sorted after: a pass over a library with
+/// nothing to do costs one sequential scan.
+fn pass_list(c: &Connection) -> Result<VecDeque<i64>> {
     let sql = format!(
-        "SELECT p.id, p.size, p.mtime, p.orientation FROM photos p JOIN folders f ON f.id = p.folder_id
-         LEFT JOIN clip c ON c.photo_id = p.id WHERE p.id < ?2 AND {NEEDS} ORDER BY p.id DESC LIMIT {BATCH}"
+        "SELECT p.id FROM photos p CROSS JOIN folders f ON f.id = p.folder_id
+         LEFT JOIN clip c ON c.photo_id = p.id WHERE {NEEDS} ORDER BY f.path DESC, p.id"
     );
-    let mut st = c.prepare_cached(&sql)?;
-    let rows = st.query_map(params![crate::db::now_ms() - RETRY_MS, cursor], row)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let mut st = c.prepare(&sql)?;
+    let rows = st.query_map(params![crate::db::now_ms() - RETRY_MS], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<VecDeque<i64>>>()?)
+}
+
+/// The next photos of the pass that still need an embedding, as they are now (one asked
+/// for meanwhile is done; a changed one is taken as it is now).
+fn next_batch(c: &Connection, queue: &mut VecDeque<i64>) -> Vec<PhotoRec> {
+    let mut b = Vec::new();
+    while b.len() < BATCH as usize {
+        let Some(id) = queue.pop_front() else { break };
+        if let Ok(Some(now)) = needs(c, id) {
+            b.push(now);
+        }
+    }
+    b
 }
 
 fn needs(c: &Connection, id: i64) -> Result<Option<PhotoRec>> {
@@ -168,7 +186,7 @@ fn worker(state: &Arc<AppState>) {
         }
         update_counts(state);
         // Work until the service goes away.
-        let mut cursor = i64::MAX;
+        let mut queue: Option<VecDeque<i64>> = None;
         let mut counted = Instant::now();
         loop {
             // Photos asked for first, then the next of the pass.
@@ -186,17 +204,21 @@ fn worker(state: &Arc<AppState>) {
             let batch = if !first.is_empty() {
                 first
             } else {
-                let b = match state.db.get().map_err(anyhow::Error::from).and_then(|c| next_batch(&c, cursor)) {
-                    Ok(b) => b,
+                match state.db.get() {
+                    Ok(c) => {
+                        let q = queue.get_or_insert_with(|| {
+                            pass_list(&c).unwrap_or_else(|e| {
+                                tracing::warn!("search: {e:#}");
+                                VecDeque::new()
+                            })
+                        });
+                        next_batch(&c, q)
+                    }
                     Err(e) => {
                         tracing::warn!("search: {e:#}");
                         Vec::new()
                     }
-                };
-                if let Some(last) = b.last() {
-                    cursor = last.id;
                 }
-                b
             };
             if batch.is_empty() {
                 update_counts(state);
@@ -304,4 +326,26 @@ fn embed_batch(state: &AppState, client: &Client, batch: &[PhotoRec]) -> Result<
     }
     tx.commit()?;
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pass_goes_newest_folders_first() {
+        let t = tempfile::tempdir().unwrap();
+        let pool = crate::db::open(&t.path().join("i.db")).unwrap();
+        let c = pool.get().unwrap();
+        c.execute_batch(
+            "INSERT INTO folders(id, parent_id, path, name) VALUES(1, NULL, '', 'Library'), (2, 1, '2008/Trip', 'Trip'), (3, 1, '2026/01 New', 'New');
+             INSERT INTO photos(id, folder_id, name, stem, ext, kind, size, mtime) VALUES
+                (1, 2, 'A.CR2', 'A', 'cr2', 1, 1, 1), (2, 3, 'B.CR3', 'B', 'cr3', 1, 1, 1), (3, 3, 'C.CR3', 'C', 'cr3', 1, 1, 1);",
+        )
+        .unwrap();
+        let mut q = pass_list(&c).unwrap();
+        assert_eq!(q.iter().copied().collect::<Vec<_>>(), vec![2, 3, 1]);
+        let b: Vec<i64> = next_batch(&c, &mut q).iter().map(|r| r.id).collect();
+        assert_eq!(b, vec![2, 3, 1]);
+    }
 }

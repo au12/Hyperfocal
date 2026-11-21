@@ -100,12 +100,32 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<PhotoRec> {
     Ok(PhotoRec { id: r.get(0)?, size: r.get(1)?, mtime: r.get(2)?, orientation: r.get(3)?, ..Default::default() })
 }
 
-fn next_batch(c: &Connection, mode: Mode, cursor: i64) -> Result<Vec<PhotoRec>> {
-    let sql = format!("SELECT p.id, p.size, p.mtime, p.orientation FROM {FROM} WHERE p.id < ?4 AND {NEEDS} ORDER BY p.id DESC LIMIT {BATCH}");
+/// The photos a pass measures (ids: 8 bytes each, a few MB for a whole library), newest
+/// folders first: Year/Event paths sorted descending put 2026 before 2008, as the first
+/// scan indexes them, and new imports go ahead of the archive. Within a folder, in the
+/// order they were indexed. The photos are read in table order (CROSS JOIN keeps them
+/// the outer loop) and the few that need work sorted after: a pass over a library with
+/// nothing to do costs one sequential scan, as before.
+fn pass_list(c: &Connection, mode: Mode) -> Result<VecDeque<i64>> {
+    let from = FROM.replacen("JOIN folders", "CROSS JOIN folders", 1);
+    let sql = format!("SELECT p.id FROM {from} WHERE {NEEDS} ORDER BY f.path DESC, p.id");
     let (a, b, d) = args(mode);
-    let mut st = c.prepare_cached(&sql)?;
-    let rows = st.query_map(params![a, b, d, cursor], row)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let mut st = c.prepare(&sql)?;
+    let rows = st.query_map(params![a, b, d], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<VecDeque<i64>>>()?)
+}
+
+/// The next photos of the pass that still need measuring, as they are now (one asked for
+/// meanwhile is done; a changed one is taken as it is now).
+fn next_batch(c: &Connection, mode: Mode, queue: &mut VecDeque<i64>) -> Vec<PhotoRec> {
+    let mut b = Vec::new();
+    while b.len() < BATCH as usize {
+        let Some(id) = queue.pop_front() else { break };
+        if let Ok(Some(now)) = needs(c, mode, id) {
+            b.push(now);
+        }
+    }
+    b
 }
 
 fn needs(c: &Connection, mode: Mode, id: i64) -> Result<Option<PhotoRec>> {
@@ -159,7 +179,7 @@ fn worker(state: &Arc<AppState>) {
         let mode = current_mode(state, client.as_ref());
         state.cull.status.write().eyes = mode.eyes;
         update_counts(state, mode);
-        let mut cursor = i64::MAX;
+        let mut queue: Option<VecDeque<i64>> = None;
         let mut counted = Instant::now();
         let mut fresh: Vec<i64> = Vec::new();
         let mut told = Instant::now();
@@ -181,17 +201,21 @@ fn worker(state: &Arc<AppState>) {
             let batch = if priority {
                 first
             } else {
-                let b = match state.db.get().map_err(anyhow::Error::from).and_then(|c| next_batch(&c, mode, cursor)) {
-                    Ok(b) => b,
+                match state.db.get() {
+                    Ok(c) => {
+                        let q = queue.get_or_insert_with(|| {
+                            pass_list(&c, mode).unwrap_or_else(|e| {
+                                tracing::warn!("cull: {e:#}");
+                                VecDeque::new()
+                            })
+                        });
+                        next_batch(&c, mode, q)
+                    }
                     Err(e) => {
                         tracing::warn!("cull: {e:#}");
                         Vec::new()
                     }
-                };
-                if let Some(last) = b.last() {
-                    cursor = last.id;
                 }
-                b
             };
             if batch.is_empty() {
                 tell(state, &mut fresh);
@@ -400,3 +424,34 @@ fn save_error(state: &AppState, rec: &PhotoRec, faces_at: i64, err: &str) -> Res
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pass_goes_newest_folders_first() {
+        let t = tempfile::tempdir().unwrap();
+        let pool = crate::db::open(&t.path().join("i.db")).unwrap();
+        let c = pool.get().unwrap();
+        // Indexed oldest first, as an older index or a library that grew over the years.
+        c.execute_batch(
+            "INSERT INTO folders(id, parent_id, path, name) VALUES(1, NULL, '', 'Library'), (2, 1, '2008/Trip', 'Trip'),
+                (3, 1, '2017/Lake', 'Lake'), (4, 1, '2026/01 New', 'New');
+             INSERT INTO photos(id, folder_id, name, stem, ext, kind, size, mtime) VALUES
+                (1, 2, 'A.CR2', 'A', 'cr2', 1, 1, 1), (2, 2, 'B.CR2', 'B', 'cr2', 1, 1, 1),
+                (3, 3, 'C.CR2', 'C', 'cr2', 1, 1, 1), (4, 4, 'D.CR3', 'D', 'cr3', 1, 1, 1), (5, 4, 'E.CR3', 'E', 'cr3', 1, 1, 1);
+             INSERT INTO cull(photo_id, size, mtime, orientation, at) VALUES(3, 1, 1, 1, 1);",
+        )
+        .unwrap();
+        let mode = Mode { eyes: false, wait_for_people: false };
+        let mut q = pass_list(&c, mode).unwrap();
+        let ids: Vec<i64> = q.iter().copied().collect();
+        // C is measured already.
+        assert_eq!(ids, vec![4, 5, 1, 2]);
+        // Measured meanwhile (asked for): skipped when its turn comes.
+        c.execute("INSERT INTO cull(photo_id, size, mtime, orientation, at) VALUES(5, 1, 1, 1, 1)", []).unwrap();
+        let b: Vec<i64> = next_batch(&c, mode, &mut q).iter().map(|r| r.id).collect();
+        assert_eq!(b, vec![4, 1, 2]);
+        assert!(q.is_empty());
+    }
+}

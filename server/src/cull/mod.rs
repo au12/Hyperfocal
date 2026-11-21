@@ -20,6 +20,9 @@ use std::collections::VecDeque;
 
 /// How photos are measured: a new version measures every photo again.
 pub const VERSION: i64 = 1;
+/// How the issues follow from the measurements (the thresholds below): a new version
+/// works them out again from what is stored, without measuring anything.
+pub const RULES: i64 = 2;
 
 /// Sharpness (0..1, `focus::score`) below which a subject is blurry.
 pub const BLURRY: f64 = 0.3;
@@ -27,8 +30,10 @@ pub const BLURRY: f64 = 0.3;
 pub const SHARP: f64 = 0.7;
 /// Eyes count as closed from this score (0 open .. 1 closed, see ml/hyperfocal_ml/eyes.py).
 pub const CLOSED: f64 = 0.45;
-/// Highlights are clipped when this share of the pixels has a clipped channel.
-pub const CLIPPED_AT: f64 = 0.015;
+/// Highlights are clipped when this share of the pixels has a clipped channel: a blown
+/// sky or window, not the speculars and small lights most good photos have (the overlay
+/// and the info panel show any clipping).
+pub const CLIPPED_AT: f64 = 0.05;
 /// Too dark when this share of the pixels is underexposed (the RAW's own threshold, about
 /// 7.7 stops below white).
 pub const DARK_AT: f64 = 0.5;
@@ -103,6 +108,23 @@ pub fn migrate(c: &Connection) -> Result<()> {
         c.execute_batch("DELETE FROM cull_faces; DELETE FROM cull;")?;
         crate::db::set_meta(c, "cull_version", &VERSION.to_string())?;
     }
+    if crate::db::get_meta(c, "cull_rules").and_then(|v| v.parse::<i64>().ok()) != Some(RULES) {
+        rederive(c)?;
+        crate::db::set_meta(c, "cull_rules", &RULES.to_string())?;
+    }
+    Ok(())
+}
+
+/// Works every stored photo's issues out again from its measurements (as `issues`).
+fn rederive(c: &Connection) -> Result<()> {
+    c.execute(
+        "UPDATE cull SET issues =
+            (CASE WHEN focus IS NOT NULL AND focus < ?1 THEN ?4 ELSE 0 END)
+          | (CASE WHEN closed IS NOT NULL AND closed > 0 THEN ?5 ELSE 0 END)
+          | (CASE WHEN over IS NOT NULL AND over >= ?2 THEN ?6 ELSE 0 END)
+          | (CASE WHEN under IS NOT NULL AND under >= ?3 THEN ?7 ELSE 0 END)",
+        rusqlite::params![BLURRY, CLIPPED_AT, DARK_AT, ISSUE_BLUR, ISSUE_EYES, ISSUE_CLIPPED, ISSUE_DARK],
+    )?;
     Ok(())
 }
 
@@ -273,6 +295,50 @@ mod tests {
         };
         let a = pass(&img.px, true);
         Rgb { w: img.w, h: img.h, px: pass(&a, false) }
+    }
+
+    #[test]
+    fn new_thresholds_rework_the_stored_issues() {
+        let t = tempfile::tempdir().unwrap();
+        let pool = crate::db::open(&t.path().join("i.db")).unwrap();
+        let c = pool.get().unwrap();
+        c.execute("INSERT INTO folders(id, path, name) VALUES(1, '', 'Library')", []).unwrap();
+        // focus, closed eyes, clipped, underexposed; all stored with every issue set.
+        type Row = (Option<f64>, Option<i64>, Option<f64>, Option<f64>);
+        let rows: [Row; 7] = [
+            (Some(0.9), Some(0), Some(0.02), Some(0.1)),
+            (Some(0.1), None, Some(0.2), Some(0.6)),
+            (None, None, None, None),
+            (Some(0.5), Some(2), Some(0.0), Some(0.0)),
+            (Some(0.29), Some(1), Some(0.05), Some(0.5)),
+            (Some(0.3), Some(0), Some(0.049), Some(0.49)),
+            (Some(0.8), None, Some(0.016), None),
+        ];
+        for (i, (f, cl, o, u)) in rows.iter().enumerate() {
+            let id = i as i64 + 1;
+            c.execute(
+                "INSERT INTO photos(id, folder_id, name, stem, ext, kind, size, mtime) VALUES(?1, 1, ?2, ?2, 'jpg', 1, 1, 1)",
+                rusqlite::params![id, format!("P{id}")],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cull(photo_id, size, mtime, orientation, at, focus, over, under, closed, issues) VALUES(?1, 1, 1, 1, 1, ?2, ?3, ?4, ?5, 15)",
+                rusqlite::params![id, f, o, u, cl],
+            )
+            .unwrap();
+        }
+        crate::db::set_meta(&c, "cull_rules", "1").unwrap();
+        super::migrate(&c).unwrap();
+        for (i, (f, cl, o, u)) in rows.iter().enumerate() {
+            let got: i64 = c.query_row("SELECT issues FROM cull WHERE photo_id = ?1", [i as i64 + 1], |r| r.get(0)).unwrap();
+            assert_eq!(got, super::issues(*f, *cl, *o, *u), "row {i}");
+        }
+        // 1.6% clipped was a possible reject before; now it takes a blown sky or window.
+        assert_eq!(super::issues(Some(0.8), None, Some(0.016), None), 0);
+        assert_eq!(crate::db::get_meta(&c, "cull_rules").as_deref(), Some(super::RULES.to_string().as_str()));
+        // Measurements are kept: nothing is measured again.
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM cull", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, rows.len() as i64);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

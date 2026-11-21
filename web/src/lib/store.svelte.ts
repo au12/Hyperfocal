@@ -38,7 +38,7 @@ export const LABELS: { color: LabelColor; name: string; key: string }[] = [
 
 type CullPatch = Pick<Patch, 'rating' | 'label' | 'pick'>;
 
-export type SortKey = 'taken' | 'name' | 'rating' | 'modified' | 'album' | 'relevance' | 'focus';
+export type SortKey = 'taken' | 'name' | 'rating' | 'modified' | 'size' | 'album' | 'relevance' | 'focus';
 
 export interface Filters {
   rmin: number;

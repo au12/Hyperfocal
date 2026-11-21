@@ -99,6 +99,7 @@
     ['name', 'File name'],
     ['rating', 'Rating'],
     ['modified', 'File date'],
+    ['size', 'File size'],
     ['focus', 'Sharpness'],
   ];
 
@@ -223,9 +224,10 @@
       <span class="crumb current">{store.dateRange.label}</span>
     {:else if !(f.subj?.length && crumbs.length === 1)}
       {#each crumbs as c, i (c.id)}
+        {@const last = i === crumbs.length - 1}
         {#if i > 0}<Icon name="chevron" size={14} class="sep" />{/if}
-        <button class="crumb" class:current={i === crumbs.length - 1} onclick={() => store.openFolder(c.id)}>
-          {i === 0 ? 'Library' : c.name}
+        <button class="crumb" class:current={last} class:root={i === 0 && !last} onclick={() => store.openFolder(c.id)} title={i === 0 ? 'Library' : c.name}>
+          {#if i === 0 && !last}<Icon name="library" size={15} class="root-icon" /><span class="root-label">Library</span>{:else}{i === 0 ? 'Library' : c.name}{/if}
         </button>
       {/each}
     {/if}
@@ -281,7 +283,7 @@
     {#if !store.query && !store.mobile && albums.currentId == null && f.like == null}
       <label class="check" title="Include photos in sub folders">
         <input type="checkbox" checked={store.recursive} onchange={(e) => { store.recursive = (e.target as HTMLInputElement).checked; store.reload(); }} />
-        <span class="t">Sub folders</span><span class="t-short">Subs</span>
+        <span class="t lo">Sub folders</span><span class="t-short lo">Subs</span>
       </label>
     {/if}
 
@@ -442,8 +444,8 @@
     {#if !store.mobile}
       <input class="size" type="range" min="110" max="420" step="10" value={store.settings.rowHeight} oninput={setRow} title="Thumbnail size" />
       <div class="seg" use:segmented>
-        <button class:on={store.view === 'grid'} onclick={() => (store.view = 'grid')} title="Grid"><Icon name="grid" /><span class="t">Grid</span></button>
-        <button class:on={store.view === 'map'} onclick={() => (store.view = 'map')} title="Map"><Icon name="map" /><span class="t">Map</span></button>
+        <button class:on={store.view === 'grid'} onclick={() => (store.view = 'grid')} title="Grid"><Icon name="grid" /><span class="t lo">Grid</span></button>
+        <button class:on={store.view === 'map'} onclick={() => (store.view = 'map')} title="Map"><Icon name="map" /><span class="t lo">Map</span></button>
       </div>
     {/if}
   </div>
@@ -470,6 +472,13 @@
   @container toolbar (max-width: 64rem) {
     .tools .size {
       width: 4.5rem;
+    }
+    /* The labels that say least go first, so the folder path keeps its room. */
+    .tools .t.lo {
+      display: none;
+    }
+    .tools .t-short.lo {
+      display: inline;
     }
   }
   @container toolbar (max-width: 56rem) {
@@ -677,6 +686,23 @@
   .crumb.current {
     flex-shrink: 0;
     max-width: 100%;
+  }
+  /* The library at the start of a path: its name, or only its icon when room is short. */
+  button.crumb.root {
+    display: inline-flex;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+  .crumb.root :global(.root-icon) {
+    display: none;
+  }
+  @container (max-width: 34rem) {
+    .crumb.root :global(.root-icon) {
+      display: block;
+    }
+    .crumb.root .root-label {
+      display: none;
+    }
   }
   .crumb:hover {
     background: var(--surface-2);

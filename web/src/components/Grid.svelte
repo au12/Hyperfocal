@@ -791,6 +791,9 @@
       {@const sk = store.list.sk?.[i] ?? 0}
       {@const sn = store.list.sn?.[i] ?? 0}
       {@const unfolded = sk !== 0 && cull.open.has(sk)}
+      {@const pill = sk !== 0 && (!unfolded || firstOfOpen(i, sk))}
+      {@const best = unfolded && store.list.sb?.[i] === 1}
+      {@const narrow = t.w < 150}
       <!-- Keyboard culling is handled by the global key map (arrows, ratings, P/X…). -->
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
@@ -803,8 +806,10 @@
         class:arrangeable={albums.arranging}
         class:stacked={sk !== 0 && !unfolded}
         class:unfolded
-        class:best={unfolded && store.list.sb?.[i] === 1}
+        class:best
         class:poor={cq > 0}
+        class:narrow
+        class:pilled={pill || best}
         style:transform={`translate3d(${t.x}px, ${t.y}px, 0)`}
         style:width={`${t.w}px`}
         style:height={`${t.h}px`}
@@ -834,20 +839,23 @@
           {#if store.list.p[i] === 1}<span class="flag"><Icon name="flag" size={14} fill /></span>{/if}
         </div>
         {#if store.selected.has(id)}<span class="check"><Icon name="check" size={13} stroke={3} /></span>{/if}
-        {#if sk !== 0 && (!unfolded || firstOfOpen(i, sk))}
-          <button
-            class="stack-pill"
-            class:open={unfolded}
-            class:shifted={store.selected.has(id)}
-            onclick={(e) => { e.stopPropagation(); cull.toggleStack(sk); }}
-            ondblclick={(e) => e.stopPropagation()}
-            onpointerdown={(e) => e.stopPropagation()}
-            title={unfolded ? `Fold the series back to its best frame${store.keyHint('stack')}` : `A series of ${sn}: this is its best frame. Show them all${store.keyHint('stack')}`}
-          >
-            <Icon name="stack" size={12} stroke={2.2} /><span class="tnum">{sn}</span>{#if unfolded}<Icon name="chevron-left" size={11} stroke={2.4} />{/if}
-          </button>
+        {#if pill || best}
+          <div class="pills" class:shifted={store.selected.has(id)}>
+            {#if pill}
+              <button
+                class="stack-pill"
+                class:open={unfolded}
+                onclick={(e) => { e.stopPropagation(); cull.toggleStack(sk); }}
+                ondblclick={(e) => e.stopPropagation()}
+                onpointerdown={(e) => e.stopPropagation()}
+                title={unfolded ? `Fold the series back to its best frame${store.keyHint('stack')}` : `A series of ${sn}: this is its best frame. Show them all${store.keyHint('stack')}`}
+              >
+                <Icon name="stack" size={12} stroke={2.2} /><span class="tnum">{sn}</span>{#if unfolded && !narrow}<Icon name="chevron-left" size={11} stroke={2.4} />{/if}
+              </button>
+            {/if}
+            {#if best}<span class="best-pill" title="The best frame of the series">Best</span>{/if}
+          </div>
         {/if}
-        {#if unfolded && store.list.sb?.[i] === 1}<span class="best-pill" class:after={firstOfOpen(i, sk)} title="The best frame of the series">Best</span>{/if}
         <div class="meta">
           {#if store.list.r[i] > 0}<span class="stars" use:bump={store.list.r[i]}>{stars(store.list.r[i])}</span>{:else if store.list.r[i] < 0}<span class="rej-r">✕</span>{/if}
           <span class="grow"></span>
@@ -1123,7 +1131,7 @@
     top: 2.5px;
     opacity: 0.85;
   }
-  .tile.stacked .stack-pill,
+  .tile.stacked .pills,
   .tile.stacked .corner,
   .tile.stacked .check {
     margin-top: 7px;
@@ -1132,10 +1140,23 @@
   .tile.stacked .lc {
     top: 7px;
   }
-  .stack-pill {
+  /* Top left: the series (its size, or that this frame is its best). */
+  .pills {
     position: absolute;
     top: 0.375rem;
     left: 0.375rem;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    pointer-events: none;
+    transition: left 0.2s var(--ease-out);
+    z-index: 2;
+  }
+  .pills.shifted {
+    left: 2.125rem;
+  }
+  .stack-pill {
+    pointer-events: auto;
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
@@ -1154,9 +1175,7 @@
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
     transition:
       background 0.15s,
-      transform 0.18s var(--ease-spring),
-      left 0.2s var(--ease-out);
-    z-index: 2;
+      transform 0.18s var(--ease-spring);
   }
   .stack-pill:hover {
     background: var(--accent-strong);
@@ -1165,13 +1184,7 @@
   .stack-pill.open {
     background: var(--accent-strong);
   }
-  .stack-pill.shifted {
-    left: 2.125rem;
-  }
   .best-pill {
-    position: absolute;
-    top: 0.375rem;
-    left: 0.375rem;
     height: 1.375rem;
     display: inline-flex;
     align-items: center;
@@ -1185,8 +1198,17 @@
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
     animation: issue-in 0.34s var(--ease-spring);
   }
-  .best-pill.after {
-    left: 3.75rem;
+  /* Narrow tiles (a phone, small thumbnails): the pills keep the top row to themselves,
+     and what may be wrong goes under them on the right. */
+  .tile.narrow .stack-pill {
+    gap: 0.1875rem;
+    padding: 0 0.375rem 0 0.3125rem;
+  }
+  .tile.narrow .best-pill {
+    padding: 0 0.375rem;
+  }
+  .tile.narrow.pilled .corner {
+    top: 2rem;
   }
   /* The frames of an unfolded series: a rail joins them along the bottom. */
   .rail {
