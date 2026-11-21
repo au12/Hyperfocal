@@ -79,9 +79,9 @@ Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever reject
 - **Sharpness of the subject, from the RAW.** Sharpness is measured where it matters: on the faces, else on the sharpest part of the frame, on the RAW's half-size development (one pixel per 2×2 sensor quad, so no demosaicing detail is invented). It compares how much each edge's energy drops when it is blurred a little more (a sharp edge loses a lot, a soft one hardly anything), along the strongest edges in four directions, with the sensor noise measured and taken out first so high ISO does not pass for detail. Scores are scaled to the same print size, so a 45 MP and a 20 MP frame compare fairly. Sort by *Sharpness* for the sharpest frames first, or reverse it for the softest.
 - **Closed eyes.** With the ML container, every face large enough gets MediaPipe's face landmarks and blink scores; a photo where someone blinked or looked down is marked. Faces turned away are judged from the eye that is visible.
 - **Faces side by side.** `V` in the single view lines up a close-up of every face across all frames of the series, each with its sharpness and eyes, the frame on screen outlined. The best frame for every person shows at a glance; click a face to go to its frame.
-- **Clipping from the RAW data**, per channel, the same measurement as the over- and underexposure overlays.
+- **Clipping from the RAW data:** the share of the photo with a clipped channel, counted as the RAW histogram counts it. It is flagged from 5% (a blown sky or window, not a few speculars); the info panel shows any amount.
 - **People filters.** How many people are in the photo (none, 1, 2, 3–5, 6+), portraits (one person, close) or groups (three or more), eyes open or closed. Faces too small to matter (under 2.5% of the frame's height) and doubtful detections, such as statues, are not counted.
-- **Measurements in the info panel:** sharpness in words and as a score, which faces were measured, clipping, and the series a photo belongs to with its frames.
+- **Measurements in the info panel:** sharpness in words and as a score, and what it was measured on (the faces, a pet or the sharpest part); closed eyes; clipping and deep shadows; and the series the photo belongs to, its frames and its best one.
 
 ### Library management (Excire-style)
 
