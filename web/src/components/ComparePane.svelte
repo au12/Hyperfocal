@@ -260,7 +260,7 @@
     const [ax, ay] = lastPointer ?? [cw / 2, ch / 2];
     onview(view.fit || curScale < 0.99 ? zoomed(1, ax, ay) : { fit: true, scale: fitScale, nx: 0.5, ny: 0.5 });
   }
-  /** Space: 50% → 100% → fit, about the centre (as in the single view). */
+  /** Space: fit → 100% → fit, about the centre (as in the single view). */
   function zoomCycle() {
     const next = ZOOM_STEPS.find((z) => z > fitScale * 1.0001 && z > curScale * 1.001);
     onview(next == null ? { fit: true, scale: fitScale, nx: 0.5, ny: 0.5 } : zoomed(next));

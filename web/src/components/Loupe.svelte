@@ -338,7 +338,7 @@
     } else setFit();
   }
 
-  /** Space: 50% → 100% → fit, about the centre. Steps not above fit are skipped, and from
+  /** Space: fit → 100% → fit, about the centre. Steps not above fit are skipped, and from
    * any zoom past the last step it goes back to fit. */
   function zoomCycle() {
     const next = ZOOM_STEPS.find((z) => z > fitScale * 1.0001 && z > curScale * 1.001);
