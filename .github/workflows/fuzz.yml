@@ -35,6 +35,15 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
+      # cargo-fuzz builds for the platform it was itself built for unless told otherwise,
+      # and the prebuilt binary that install-action gets through cargo-binstall is the musl
+      # one: AddressSanitizer can't work with musl's static libc, and that target isn't
+      # installed. So every cargo fuzz command gets the runner's own target.
+      - name: Fuzzing target
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          test -n "$host"
+          echo "FUZZ_TARGET=$host" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server/fuzz
@@ -46,7 +55,7 @@ jobs:
           restore-keys: fuzz-corpus-
       - name: Build the targets
         working-directory: server/fuzz
-        run: cargo fuzz build
+        run: cargo fuzz build --target "$FUZZ_TARGET"
       - name: Run each target
         working-directory: server/fuzz
         run: |
@@ -54,13 +63,13 @@ jobs:
           for t in $(cargo fuzz list); do
             mkdir -p corpus/$t
             echo "::group::$t"
-            if ! cargo fuzz run $t corpus/$t seeds/$t -- -max_total_time=$SECONDS_PER_TARGET -rss_limit_mb=2048 -timeout=10 -print_final_stats=1; then
+            if ! cargo fuzz run --target "$FUZZ_TARGET" $t corpus/$t seeds/$t -- -max_total_time=$SECONDS_PER_TARGET -rss_limit_mb=2048 -timeout=10 -print_final_stats=1; then
               echo "::error title=Fuzz crash::$t found a crash (see the artifacts)"
               status=1
             fi
             echo "::endgroup::"
             # Keep the corpus small: only inputs that add coverage.
-            cargo fuzz cmin $t corpus/$t > /dev/null 2>&1 || true
+            cargo fuzz cmin --target "$FUZZ_TARGET" $t corpus/$t > /dev/null 2>&1 || true
           done
           exit $status
       - name: Save the corpus
