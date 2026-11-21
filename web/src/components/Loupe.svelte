@@ -7,6 +7,7 @@
   import { DetailLayer, imageDetailSpec, type DetailPath } from '../lib/viewer/detail';
   import { MaskLoader } from '../lib/viewer/mask';
   import { viewerCtl, toggleFullscreen, ZOOM_STEPS } from '../lib/ctl';
+  import { pointerOver } from '../lib/pointer';
   import Icon from './Icon.svelte';
   import Histogram from './Histogram.svelte';
   import InfoPanel from './InfoPanel.svelte';
@@ -347,20 +348,23 @@
     requestDraw();
   }
 
-  let lastPointer: [number, number] | null = null;
-  function zoomToggle() {
-    if (fit || curScale < 0.99) {
-      const [ax, ay] = lastPointer ?? [cw / 2, ch / 2];
-      zoomTo(1, ax, ay);
-    } else setFit();
+  /** Where the zoom keys zoom about: the mouse when it is over the photo, else the middle. */
+  function keyAnchor(): [number, number] {
+    return pointerOver(canvas) ?? [cw / 2, ch / 2];
   }
 
-  /** Space: fit → 100% → fit, about the centre. Steps not above fit are skipped, and from
-   * any zoom past the last step it goes back to fit. */
+  /** Z, a double click or a double tap: fit ↔ 100%, about the mouse or the tap. */
+  function zoomToggle([ax, ay] = keyAnchor()) {
+    if (fit || curScale < 0.99) zoomTo(1, ax, ay);
+    else setFit();
+  }
+
+  /** Space: fit → 100% → fit, about the mouse like Z. Steps not above fit are skipped, and
+   * from any zoom past the last step it goes back to fit. */
   function zoomCycle() {
     const next = ZOOM_STEPS.find((z) => z > fitScale * 1.0001 && z > curScale * 1.001);
     if (next == null) setFit();
-    else zoomTo(next);
+    else zoomTo(next, ...keyAnchor());
   }
 
   /** Where the photo sits on screen at fit (CSS px), for the zoom from and to the grid. */
@@ -415,7 +419,7 @@
         glError = (e as Error).message;
       }
     }
-    viewerCtl.zoomToggle = zoomToggle;
+    viewerCtl.zoomToggle = () => zoomToggle();
     viewerCtl.zoomCycle = zoomCycle;
     viewerCtl.fit = setFit;
     viewerCtl.zoomIn = () => zoomTo(curScale * 1.5);
@@ -630,9 +634,8 @@
   }
 
   function onPointerMove(e: PointerEvent) {
-    const [x, y] = devXY(e);
-    lastPointer = [x, y];
     if (!pointers.has(e.pointerId)) return;
+    const [x, y] = devXY(e);
     pointers.set(e.pointerId, { x, y });
     if (pinch && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
@@ -667,8 +670,7 @@
       } else if (!moved && e.pointerType !== 'mouse') {
         const now = performance.now();
         if (now - lastTap < 300) {
-          lastPointer = [x, y];
-          zoomToggle();
+          zoomToggle([x, y]);
           lastTap = 0;
         } else {
           lastTap = now;
@@ -687,7 +689,6 @@
   function onWheel(e: WheelEvent) {
     e.preventDefault();
     const [x, y] = devXY(e);
-    lastPointer = [x, y];
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
       const k = Math.exp(-(e.deltaY || e.deltaX) * (e.deltaMode === 1 ? 0.05 : 0.0025));
       zoomTo(curScale * k, x, y);
@@ -706,8 +707,7 @@
   }
 
   function onDbl(e: MouseEvent) {
-    lastPointer = devXY(e);
-    zoomToggle();
+    zoomToggle(devXY(e));
   }
 
   // ---------------------------------------------------------------- ui helpers

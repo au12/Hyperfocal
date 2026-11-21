@@ -411,8 +411,7 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | Next / previous photo | `→` / `←` `Backspace` | same |
 | Open / back to grid | `Enter` / `Esc`, `G` | same |
 | RAW ↔ embedded JPEG | `J` | `J` |
-| Fit ↔ 100 % | `Z` | `Z` |
-| Fit ↔ 100 % about the centre (grid: open photo) | `Space` | same |
+| Fit ↔ 100 % at the mouse (grid: open photo) | `Z` or `Space` | same |
 | Compare the selected photos (2–4) | `C` or `N` | same |
 | Compare: active photo / step it through the folder | `←` `→` / `↑` `↓` | same |
 | Screen sharpening (off / 1 / 2) | `S` | `S` |

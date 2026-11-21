@@ -8,11 +8,13 @@
     ny: number;
   }
 
-  /** Zoom commands for the active pane (keyboard shortcuts). */
+  /** Zoom commands for a pane (keyboard shortcuts). */
   export interface PaneCtl {
     zoomToggle: () => void;
     zoomCycle: () => void;
     zoomBy: (f: number) => void;
+    /** The mouse is over this pane. */
+    hovered: () => boolean;
   }
 </script>
 
@@ -20,6 +22,7 @@
   import { onMount, untrack } from 'svelte';
   import { store, LABELS, SHARPEN_SIGMA } from '../lib/store.svelte';
   import { ZOOM_STEPS } from '../lib/ctl';
+  import { pointerOver } from '../lib/pointer';
   import { api, urls, type Pyramid, type RawInfo } from '../lib/api';
   import { GLView, hexToRgb } from '../lib/viewer/gl';
   import { type ImageCache, type Decoded } from '../lib/viewer/loader';
@@ -268,17 +271,25 @@
     return { fit: false, scale: s1, nx: (ix - (ax - cw / 2) / s1) / dispW, ny: (iy - (ay - ch / 2) / s1) / dispH };
   }
 
-  let lastPointer: [number, number] | null = null;
-  function zoomToggle() {
-    const [ax, ay] = lastPointer ?? [cw / 2, ch / 2];
+  /** Where the zoom keys zoom about: the mouse when it is over this pane, else the middle. */
+  function keyAnchor(): [number, number] {
+    return pointerOver(canvas) ?? [cw / 2, ch / 2];
+  }
+  /** Z or a double tap: fit ↔ 100%, about the mouse or the tap. */
+  function zoomToggle([ax, ay] = keyAnchor()) {
     onview(view.fit || curScale < 0.99 ? zoomed(1, ax, ay) : { fit: true, scale: fitScale, nx: 0.5, ny: 0.5 });
   }
-  /** Space: fit → 100% → fit, about the centre (as in the single view). */
+  /** Space: fit → 100% → fit, about the mouse like Z (as in the single view). */
   function zoomCycle() {
     const next = ZOOM_STEPS.find((z) => z > fitScale * 1.0001 && z > curScale * 1.001);
-    onview(next == null ? { fit: true, scale: fitScale, nx: 0.5, ny: 0.5 } : zoomed(next));
+    onview(next == null ? { fit: true, scale: fitScale, nx: 0.5, ny: 0.5 } : zoomed(next, ...keyAnchor()));
   }
-  ctl = { zoomToggle, zoomCycle, zoomBy: (f: number) => onview(zoomed(curScale * f)) };
+  ctl = {
+    zoomToggle: () => zoomToggle(),
+    zoomCycle,
+    zoomBy: (f: number) => onview(zoomed(curScale * f)),
+    hovered: () => pointerOver(canvas) != null,
+  };
 
   function devXY(e: PointerEvent | WheelEvent | MouseEvent): [number, number] {
     const r = canvas!.getBoundingClientRect();
@@ -307,9 +318,8 @@
   }
 
   function onPointerMove(e: PointerEvent) {
-    const [x, y] = devXY(e);
-    lastPointer = [x, y];
     if (!pointers.has(e.pointerId)) return;
+    const [x, y] = devXY(e);
     pointers.set(e.pointerId, { x, y });
     if (pinch && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
@@ -332,8 +342,7 @@
       if (!wasDrag) {
         const now = performance.now();
         if (now - lastTap < 320) {
-          lastPointer = [x, y];
-          zoomToggle();
+          zoomToggle([x, y]);
           lastTap = 0;
         } else lastTap = now;
       }
@@ -347,7 +356,6 @@
     e.preventDefault();
     if (!active) onactivate();
     const [x, y] = devXY(e);
-    lastPointer = [x, y];
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
       onview(zoomed(curScale * Math.exp(-(e.deltaY || e.deltaX) * (e.deltaMode === 1 ? 0.05 : 0.0025)), x, y));
       return;

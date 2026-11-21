@@ -10,7 +10,8 @@ export const viewerCtl = {
   zoomIn: () => {},
   zoomOut: () => {},
 };
-/** The compare view's zoom commands (the active pane, or all when synced). */
+/** The compare view's zoom commands (the active pane, or all when synced; Z and Space
+ * zoom the pane under the mouse when there is one). */
 export const compareCtl = {
   zoomToggle: () => {},
   /** Fit → 100% → fit (from past 100%, back to fit). */

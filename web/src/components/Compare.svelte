@@ -41,10 +41,13 @@
   }
 
   const active = () => ctls[store.compareActive];
+  /** Z and Space zoom where the mouse is: the pane under it (all of them when synced),
+   * else the active pane about its middle. */
+  const pointed = () => ctls.find((c) => c?.hovered()) ?? active();
 
   onMount(() => {
-    compareCtl.zoomToggle = () => active()?.zoomToggle();
-    compareCtl.zoomCycle = () => active()?.zoomCycle();
+    compareCtl.zoomToggle = () => pointed()?.zoomToggle();
+    compareCtl.zoomCycle = () => pointed()?.zoomCycle();
     compareCtl.fit = fitAll;
     compareCtl.zoomIn = () => active()?.zoomBy(1.5);
     compareCtl.zoomOut = () => active()?.zoomBy(1 / 1.5);
