@@ -85,6 +85,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/photo/{id}/rawinfo", get(raw_info))
         .route("/photo/{id}/rawtile", get(raw_tile))
         .route("/photo/{id}/cfatile", get(cfa_tile))
+        .route("/photo/{id}/pyramid", get(pyramid_info))
+        .route("/photo/{id}/ptile", get(pyramid_tile))
         .route("/lut", get(view_lut))
         .route("/meta", post(write_meta))
         .route("/reject", post(reject))
@@ -926,6 +928,8 @@ struct ImgQuery {
     /// Full-resolution tile column and row.
     tx: Option<usize>,
     ty: Option<usize>,
+    /// Pyramid level of a zoom tile (0: full size).
+    l: Option<usize>,
 }
 
 async fn thumb(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
@@ -1002,6 +1006,26 @@ async fn cfa_tile(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuer
     let (Some(tx), Some(ty)) = (q.tx, q.ty) else { return Err(bad("tx and ty are required")) };
     let bytes = state.images.cfa_tile(&state, &loc, q.wb.unwrap_or_default(), tx, ty).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
     Ok(image_response(bytes.as_ref().clone(), "application/octet-stream", q.v.is_some()))
+}
+
+/// The zoom pyramid of the non-RAW view (a JPEG, HEIC, TIFF or PNG, or a RAW file's
+/// embedded JPEG): full size, levels, tile size and apron.
+async fn pyramid_info(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
+    let loc = load(&state, id).await?;
+    let p = state.images.pyramid(&state, &loc).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
+    let mut resp = Json(json!(p)).into_response();
+    if q.v.is_some() {
+        resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=31536000, immutable"));
+    }
+    Ok(resp)
+}
+
+/// A zoom tile of the non-RAW view: level `l`, column `tx`, row `ty` (JPEG).
+async fn pyramid_tile(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
+    let loc = load(&state, id).await?;
+    let (Some(l), Some(tx), Some(ty)) = (q.l, q.tx, q.ty) else { return Err(bad("l, tx and ty are required")) };
+    let bytes = state.images.pyramid_tile(&state, &loc, l, tx, ty).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
+    Ok(image_response(bytes.as_ref().clone(), "image/jpeg", q.v.is_some()))
 }
 
 /// The tone curve of a RAW view (65536 bytes: the display value of every f16 pattern

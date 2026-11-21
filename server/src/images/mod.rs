@@ -7,6 +7,7 @@ pub mod canon;
 pub mod color;
 pub mod demosaic;
 pub mod jpeg;
+pub mod pyramid;
 pub mod raw;
 pub mod simd;
 pub mod thumbstore;
@@ -194,7 +195,36 @@ pub struct Images {
     tile_sem: tokio::sync::Semaphore,
     /// Clipping masks with the overexposure display moved by an exposure correction (PNG).
     ev_masks: Mutex<Lru<(DevKey, i32), Arc<Vec<u8>>>>,
+    /// Zoom tiles of the non-RAW view (see `pyramid`): sources, level images, tiles.
+    pyr_sources: Mutex<Lru<(i64, u64), Arc<PyrSource>>>,
+    pyr_levels: Mutex<Lru<(i64, u64, usize), Arc<Rgb>>>,
+    pyr_inflight: Mutex<HashMap<(i64, u64, usize), PyrInflight>>,
+    pyr_tiles: Mutex<Lru<(i64, u64, usize, usize, usize), Arc<Vec<u8>>>>,
 }
+
+/// What a photo's zoom tiles are cut from: a JPEG (decoded per level with DCT scaling),
+/// or pixels (HEIC, TIFF, PNG).
+pub enum PyrSource {
+    Jpeg { data: Vec<u8>, w: usize, h: usize },
+    Pixels(Rgb),
+}
+
+impl PyrSource {
+    fn dims(&self) -> (usize, usize) {
+        match self {
+            PyrSource::Jpeg { w, h, .. } => (*w, *h),
+            PyrSource::Pixels(img) => (img.w, img.h),
+        }
+    }
+    fn bytes(&self) -> usize {
+        match self {
+            PyrSource::Jpeg { data, .. } => data.len(),
+            PyrSource::Pixels(img) => img.px.len(),
+        }
+    }
+}
+
+type PyrInflight = Arc<tokio::sync::Mutex<Option<std::result::Result<Arc<Rgb>, String>>>>;
 
 /// The preview sizes (long edge) the API serves.
 pub const PREVIEW_SIZES: [usize; 6] = [1024, 1600, 2048, 2560, 3200, 4096];
@@ -360,6 +390,10 @@ impl Images {
             tiles: Mutex::new(Lru::new(96 * 1024 * 1024)),
             tile_sem: tokio::sync::Semaphore::new(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 16)),
             ev_masks: Mutex::new(Lru::new(48 * 1024 * 1024)),
+            pyr_sources: Mutex::new(Lru::new(192 * 1024 * 1024)),
+            pyr_levels: Mutex::new(Lru::new(448 * 1024 * 1024)),
+            pyr_inflight: Mutex::new(HashMap::new()),
+            pyr_tiles: Mutex::new(Lru::new(64 * 1024 * 1024)),
         })
     }
 
@@ -663,6 +697,109 @@ impl Images {
         let png = Arc::new(res??);
         self.ev_masks.lock().put(key, png.clone(), png.len());
         Ok(png)
+    }
+
+    /// What a photo's zoom tiles are cut from (cached for the photos being viewed).
+    async fn pyr_source(&self, state: &AppState, loc: &Located) -> Result<Arc<PyrSource>> {
+        let key = (loc.rec.id, sig(&loc.rec));
+        if let Some(s) = self.pyr_sources.lock().get(&key) {
+            return Ok(s);
+        }
+        let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
+        let kind = Kind::from_i32(loc.rec.kind);
+        let source = tokio::task::spawn_blocking(move || -> Result<PyrSource> {
+            match kind {
+                Kind::Raw => {
+                    let data = full_embedded_jpeg(&src).ok_or_else(|| anyhow!("no full-size embedded JPEG"))?;
+                    let (w, h) = jpeg::dims(&data)?;
+                    Ok(PyrSource::Jpeg { data, w, h })
+                }
+                Kind::Jpeg => {
+                    let data = std::fs::read(&src)?;
+                    let (w, h) = jpeg::dims(&data)?;
+                    Ok(PyrSource::Jpeg { data, w, h })
+                }
+                Kind::Heic => Ok(PyrSource::Pixels(native::heic_decode(&src, 0)?.0)),
+                Kind::Tiff | Kind::Png => Ok(PyrSource::Pixels(load_display_rgb(&src, kind, 0)?)),
+            }
+        })
+        .await??;
+        let source = Arc::new(source);
+        let n = source.bytes();
+        self.pyr_sources.lock().put(key, source.clone(), n);
+        Ok(source)
+    }
+
+    /// The zoom pyramid of a photo's non-RAW view: full size and number of levels.
+    pub async fn pyramid(&self, state: &AppState, loc: &Located) -> Result<pyramid::Pyramid> {
+        let src = self.pyr_source(state, loc).await?;
+        let (w, h) = src.dims();
+        Ok(pyramid::Pyramid::new(w, h))
+    }
+
+    /// Level `l` of a photo's pyramid as pixels (single-flight, memory cached).
+    async fn pyr_level(&self, state: &AppState, loc: &Located, l: usize) -> Result<Arc<Rgb>> {
+        let key = (loc.rec.id, sig(&loc.rec), l);
+        if let Some(img) = self.pyr_levels.lock().get(&key) {
+            return Ok(img);
+        }
+        let cell = self.pyr_inflight.lock().entry(key).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None))).clone();
+        let mut slot = cell.lock().await;
+        if let Some(r) = slot.as_ref() {
+            return r.clone().map_err(|e| anyhow!(e));
+        }
+        if let Some(img) = self.pyr_levels.lock().get(&key) {
+            return Ok(img);
+        }
+        let res = async {
+            let src = self.pyr_source(state, loc).await?;
+            let _permit = self.gate.acquire(true).await;
+            tokio::task::spawn_blocking(move || -> Result<Rgb> {
+                match src.as_ref() {
+                    PyrSource::Jpeg { data, .. } => pyramid::decode_jpeg_level(data, l),
+                    PyrSource::Pixels(img) => pyramid::halve_to(img, l),
+                }
+            })
+            .await?
+        }
+        .await
+        .map(Arc::new)
+        .map_err(|e| format!("{e:#}"));
+        if let Ok(img) = &res {
+            self.pyr_levels.lock().put(key, img.clone(), img.px.len());
+        }
+        *slot = Some(res.clone());
+        drop(slot);
+        self.pyr_inflight.lock().remove(&key);
+        res.map_err(|e| anyhow!(e))
+    }
+
+    /// Zoom tile (tx, ty) of level `l` of a photo's non-RAW view, as JPEG.
+    pub async fn pyramid_tile(&self, state: &AppState, loc: &Located, l: usize, tx: usize, ty: usize) -> Result<Arc<Vec<u8>>> {
+        let key = (loc.rec.id, sig(&loc.rec), l, tx, ty);
+        if let Some(b) = self.pyr_tiles.lock().get(&key) {
+            return Ok(b);
+        }
+        let busy = Busy::new(&self.interactive);
+        let res = async {
+            let p = self.pyramid(state, loc).await?;
+            let rect = p.tile_rect(l, tx, ty)?;
+            let img = self.pyr_level(state, loc, l).await?;
+            let _p = self.tile_sem.acquire().await?;
+            tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+                // A level decoded at a slightly different size than its header promised.
+                if rect[0] + rect[2] > img.w || rect[1] + rect[3] > img.h {
+                    return Err(anyhow!("tile outside the decoded image"));
+                }
+                jpeg::encode(&pyramid::cut(&img, rect), 90, true)
+            })
+            .await?
+        }
+        .await;
+        drop(busy);
+        let bytes = Arc::new(res?);
+        self.pyr_tiles.lock().put(key, bytes.clone(), bytes.len());
+        Ok(bytes)
     }
 
     /// A tile's demosaic input for the viewer's GPU path (`raw::cfa_tile`).

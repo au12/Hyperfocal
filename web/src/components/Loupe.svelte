@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { store, LABELS, fmtSettings, cameraName, SHARPEN_SIGMA } from '../lib/store.svelte';
-  import { api, urls, type RawInfo } from '../lib/api';
+  import { api, urls, type Pyramid, type RawInfo } from '../lib/api';
   import { GLView, hexToRgb } from '../lib/viewer/gl';
   import { ImageCache, type Decoded } from '../lib/viewer/loader';
-  import { DetailLayer, type DetailPath } from '../lib/viewer/detail';
+  import { DetailLayer, imageDetailSpec, type DetailPath } from '../lib/viewer/detail';
   import { MaskLoader } from '../lib/viewer/mask';
   import { viewerCtl, toggleFullscreen, ZOOM_STEPS } from '../lib/ctl';
   import Icon from './Icon.svelte';
@@ -37,6 +37,11 @@
   let loadError = $state('');
   const masks = new MaskLoader(() => gl, () => requestDraw());
   let rawInfo = $state<RawInfo | null>(null);
+  /** The zoom pyramid of the current photo's non-RAW view: 'loading' until known, null
+   * when there is none (zooming in then loads the full-size image whole). */
+  let pyr = $state<{ id: number; v: string; p: Pyramid | null } | 'loading' | null>(null);
+  /** The pyramid level the zoom tiles of the non-RAW view come from (-1: none). */
+  let imgLevel = $state(-1);
   let jpegHist = $state<Uint32Array[] | null>(null);
   let chrome = $state(true);
   /** Where the image is on screen (CSS px in the stage), for the face overlay. */
@@ -86,8 +91,35 @@
       const size = need > 4096 * 1.05 ? 0 : (SIZES.find((s) => s >= need) ?? 0);
       return { url: urls.raw(pid, L.v[idx], { w: size, mode: store.viewer.tone, ev, wb: store.viewer.wb }), kind: 'raw' };
     }
+    // The photo on screen, zoomed in: zoom tiles show the detail (syncDetail), so the base
+    // stays a preview of at most 4096 px. Without tiles, the full-size image loads whole.
+    if (idx === i && forScale > 0 && tilesUsable()) return { url: urls.preview(pid, L.v[idx], SIZES.find((s) => s >= need) ?? 4096), kind: 'preview' };
     if (need > 2600 || forScale > 0) return { url: urls.jpeg(pid, L.v[idx]), kind: 'full' };
     return { url: urls.preview(pid, L.v[idx], SIZES.find((s) => s >= need) ?? 2048), kind: 'preview' };
+  }
+
+  /** Zoom tiles can stand in for the full-size image of the photo on screen (or will,
+   * once its pyramid is known). */
+  function tilesUsable(): boolean {
+    if (!detail || useRaw || id == null) return false;
+    if (pyr === 'loading') return true;
+    return pyr != null && pyr.id === id && pyr.v === v && pyr.p != null && pyr.p.levels > 0;
+  }
+
+  async function loadPyramid() {
+    if (id == null || useRaw || !detail) {
+      pyr = null;
+      return;
+    }
+    const pid = id;
+    const pv = v;
+    pyr = 'loading';
+    try {
+      const p = await api.pyramid(pid, pv);
+      if (id === pid) pyr = { id: pid, v: pv, p };
+    } catch {
+      if (id === pid) pyr = { id: pid, v: pv, p: null };
+    }
   }
 
   function show(d: Decoded, kind: typeof shownKind) {
@@ -243,6 +275,7 @@
     } else clampCenter();
     const s = store.settings;
     if (detail) {
+      if (!useRaw) syncImageDetail();
       detailOn = detail.update({ orientation: o, dispW, dispH, scale: curScale, cx, cy }, cw, ch);
       detailPath = detail.path;
     }
@@ -378,10 +411,24 @@
     });
   });
 
+  /** Zoom tiles of the non-RAW view (see imageDetailSpec). Called on every draw. */
+  function syncImageDetail() {
+    if (!detail) return;
+    const p = pyr !== 'loading' && pyr?.id === id && pyr.v === v ? pyr.p : null;
+    const spec = id == null ? null : imageDetailSpec(p, { id, v, version: store.status?.version ?? '' }, { dispW, dispH, scale: curScale, orientation: o, fit });
+    detail.setSpec(spec);
+    const l = spec?.level ?? -1;
+    if (imgLevel !== l) imgLevel = l;
+  }
+
   function syncDetail() {
     if (!detail) return;
+    if (!useRaw) {
+      syncImageDetail();
+      return;
+    }
     const info = rawInfo;
-    if (!useRaw || id == null || !info?.full || !info.tile) {
+    if (id == null || !info?.full || !info.tile) {
       detail.setSpec(null);
       return;
     }
@@ -466,6 +513,23 @@
     void id;
     void store.viewer.wb;
     untrack(() => loadRawInfo());
+  });
+
+  $effect(() => {
+    void store.settings.rawDetail;
+    void useRaw;
+    void id;
+    void v;
+    untrack(() => loadPyramid());
+  });
+
+  // A pyramid that arrived (or failed) after zooming in: load what the zoom wants now.
+  $effect(() => {
+    void pyr;
+    untrack(() => {
+      if (!fit) load();
+      requestDraw();
+    });
   });
 
   $effect(() => {
@@ -757,7 +821,7 @@
         {#if store.viewer.peaking}<span class="chip">{peakLabel[store.viewer.peaking]}</span>{/if}
         {#if store.viewer.over}<span class="chip">OE{#if !useRaw}{' (JPEG)'}{/if}</span>{/if}
         {#if store.viewer.under}<span class="chip">UE{#if !useRaw}{' (JPEG)'}{/if}</span>{/if}
-        {#if !fit}<span class="chip tnum" title={detailOn ? 'Full sensor resolution, demosaiced ' + (detailPath === 'gpu' ? 'on this device' : 'on the server') : ''}>{zoomPct}%{#if detailOn}{' · full res'}{/if}</span>{/if}
+        {#if !fit}<span class="chip tnum" title={detailOn ? (useRaw ? 'Full sensor resolution, demosaiced ' + (detailPath === 'gpu' ? 'on this device' : 'on the server') : imgLevel === 0 ? 'Full-size tiles of the image' : `Tiles at 1/${2 ** imgLevel} size`) : ''}>{zoomPct}%{#if detailOn}{useRaw || imgLevel === 0 ? ' · full res' : ' · tiled'}{/if}</span>{/if}
         {#if loadError}<span class="chip err" title={loadError}>{shownKind === 'raw' ? 'RAW' : 'Image'} unavailable</span>{/if}
       </div>
       {#if inReject}<div class="rejected-banner">In {store.status?.reject_dir ?? '_Rejected'}</div>{/if}

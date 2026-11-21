@@ -139,6 +139,16 @@ export interface RawInfo {
   apron?: number;
 }
 
+/** The zoom pyramid of a photo's non-RAW view: full size (in the file's orientation),
+ * levels (each half the previous; 0 when previews are as sharp), tile size and apron. */
+export interface Pyramid {
+  w: number;
+  h: number;
+  levels: number;
+  tile: number;
+  apron: number;
+}
+
 export interface Patch {
   rating?: number;
   label?: string | null;
@@ -547,6 +557,7 @@ export const api = {
   deleteCollection: (id: number) => req<{ ok: boolean }>('DELETE', `collections/${id}`),
   photo: (id: number, signal?: AbortSignal) => req<PhotoDetail>('GET', `photo/${id}`, undefined, undefined, signal),
   rawinfo: (id: number, v: string, wb: WbMode, signal?: AbortSignal) => req<RawInfo>('GET', `photo/${id}/rawinfo`, undefined, { v, wb, a: ANALYSIS_REV }, signal),
+  pyramid: (id: number, v: string, signal?: AbortSignal) => req<Pyramid>('GET', `photo/${id}/pyramid`, undefined, { v }, signal),
   facets: () => req<Facets>('GET', 'facets'),
   keywords: (q: string, signal?: AbortSignal) => req<[string, number][]>('GET', 'keywords', undefined, { q }, signal),
   keywordTree: () => req<{ nodes: [string, number][] }>('GET', 'keywords/tree'),
@@ -636,6 +647,8 @@ export const urls = {
   /** A full-resolution tile of the RAW view, demosaiced and tone-mapped on the server (JPEG). */
   rawtile: (id: number, v: string, o: { mode: ToneMode; ev: number; wb: WbMode; tx: number; ty: number }) =>
     apiUrl(`photo/${id}/rawtile`, { v, mode: o.mode === 'normal' ? undefined : o.mode, ev: o.ev ? o.ev.toFixed(2) : undefined, wb: o.wb === 'asshot' ? undefined : o.wb, tx: o.tx, ty: o.ty }),
+  /** A zoom tile of the non-RAW view: pyramid level `l` (0 = full size), column, row. */
+  ptile: (id: number, v: string, l: number, tx: number, ty: number) => apiUrl(`photo/${id}/ptile`, { v, l, tx, ty }),
   /** A tile's sensor samples, for demosaicing on this device's GPU. */
   cfatile: (id: number, v: string, wb: WbMode, tx: number, ty: number) => apiUrl(`photo/${id}/cfatile`, { v, wb: wb === 'asshot' ? undefined : wb, tx, ty }),
   /** The tone curve of a RAW view (65536 bytes), for the GPU path. */

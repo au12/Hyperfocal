@@ -1,13 +1,16 @@
-// Full-resolution RAW detail: when the RAW view is zoomed in to about 1:1 or closer, the
-// visible part of the frame is fetched as full-resolution tiles (demosaiced with RCD) and
-// drawn over the half-size image (gl.ts). Tiles are demosaiced either on the server (JPEG
-// tiles) or on this device's GPU (rcd.ts, from the tile's sensor samples). Tiles nearest
-// the centre of the view come first; ones that scroll away are cancelled; the least
-// recently seen are dropped when the tile memory is full.
+// Detail tiles drawn over the base image (gl.ts) when zoomed in:
+// - RAW view: at about 1:1 or closer, full-resolution tiles demosaiced with RCD, either
+//   on the server (JPEG tiles) or on this device's GPU (rcd.ts, from the tile's sensor
+//   samples), over the half-size image.
+// - Everything else (JPEG, HEIC, TIFF, PNG, a RAW file's embedded JPEG): tiles of a zoom
+//   pyramid (full size and its halvings), at the level that fits the zoom, over the
+//   screen-size preview, so a 45-100 MP image never loads whole.
+// Tiles nearest the centre of the view come first; ones that scroll away are cancelled;
+// the least recently seen are dropped when the tile memory is full.
 
 import type { GLView } from './gl';
 import { RcdGpu, parseCfaTile, type CfaTile } from './rcd';
-import { urls, type ToneMode, type WbMode } from '../api';
+import { urls, type Pyramid, type ToneMode, type WbMode } from '../api';
 
 /** What is shown: the photo, its development and the full-resolution geometry. */
 export interface DetailSpec {
@@ -22,6 +25,10 @@ export interface DetailSpec {
   apron: number;
   /** Server version (for caching the tone curve). */
   version: string;
+  /** 'image': zoom tiles of the non-RAW view at pyramid `level` (`full` is that level's
+   * size); else full-resolution RAW tiles. */
+  kind?: 'raw' | 'image';
+  level?: number;
 }
 
 /** The view, as passed to GLView.draw. */
@@ -95,18 +102,24 @@ export class DetailLayer {
   }
 
   private tone(s: DetailSpec) {
-    return `${s.mode}|${s.ev.toFixed(2)}`;
+    // Image tiles are plain display pixels: the exposure correction is applied on screen.
+    return s.kind === 'image' ? 'image' : `${s.mode}|${s.ev.toFixed(2)}`;
   }
 
-  /** Sets what is shown (null: no RAW detail for the current photo). */
+  /** How tiles of the current spec are made: image tiles always come from the server. */
+  private via(): DetailPath {
+    return this.spec?.kind === 'image' ? 'server' : this.path;
+  }
+
+  /** Sets what is shown (null: no detail for the current photo). */
   setSpec(s: DetailSpec | null) {
-    const base = s ? `${s.id}|${s.v}|${s.wb}|${s.full[0]}x${s.full[1]}|${s.tile}|${s.apron}` : '';
+    const base = s ? `${s.kind ?? 'raw'}|${s.level ?? 0}|${s.id}|${s.v}|${s.kind === 'image' ? '' : s.wb}|${s.full[0]}x${s.full[1]}|${s.tile}|${s.apron}` : '';
     if (base !== this.base) {
       this.reset();
       this.base = base;
     }
     this.spec = s;
-    if (s && this.path === 'gpu') this.loadLut(s);
+    if (s && s.kind !== 'image' && this.path === 'gpu') this.loadLut(s);
   }
 
   private reset() {
@@ -244,7 +257,7 @@ export class DetailLayer {
       if (layer == null) return true;
       // Held but rendered with another tone: server tiles are fetched again (GPU ones
       // are re-rendered when the tone curve arrives).
-      return this.path === 'server' && this.slots[layer]!.tone !== tone;
+      return this.via() === 'server' && this.slots[layer]!.tone !== tone;
     });
     this.pump();
     this.active = true;
@@ -267,13 +280,14 @@ export class DetailLayer {
     const s = this.spec;
     if (!s) return;
     const tone = this.tone(s);
-    while (this.queue.length && this.inflight.size < MAX_INFLIGHT[this.path]) {
+    const via = this.via();
+    while (this.queue.length && this.inflight.size < MAX_INFLIGHT[via]) {
       const w = this.queue.shift()!;
       const f = this.inflight.get(w.key);
       if (f && f.tone === tone) continue;
       // Arrived since the queue was made.
       const held = this.at.get(w.key);
-      if (held != null && (this.path === 'gpu' || this.slots[held]?.tone === tone)) continue;
+      if (held != null && (via === 'gpu' || this.slots[held]?.tone === tone)) continue;
       f?.ctl.abort();
       const ctl = new AbortController();
       this.inflight.set(w.key, { ctl, tone });
@@ -287,7 +301,7 @@ export class DetailLayer {
   private async fetchTile(s: DetailSpec, tx: number, ty: number, key: string, tone: string, ctl: AbortController) {
     const base = this.base;
     try {
-      if (this.path === 'gpu' && this.rcd) {
+      if (s.kind !== 'image' && this.path === 'gpu' && this.rcd) {
         const res = await fetch(urls.cfatile(s.id, s.v, s.wb, tx, ty), { signal: ctl.signal, credentials: 'same-origin' });
         if (!res.ok) throw new TileUnavailable(`tile ${key}: ${res.status}`);
         const cfa = parseCfaTile(await res.arrayBuffer());
@@ -300,7 +314,8 @@ export class DetailLayer {
         this.slots[layer] = { tx, ty, tone: this.rcd.lutKey, used: this.tick, cfa };
         this.gl.detailSetPage(tx, ty, layer);
       } else {
-        const res = await fetch(urls.rawtile(s.id, s.v, { mode: s.mode, ev: s.ev, wb: s.wb, tx, ty }), { signal: ctl.signal, credentials: 'same-origin' });
+        const url = s.kind === 'image' ? urls.ptile(s.id, s.v, s.level ?? 0, tx, ty) : urls.rawtile(s.id, s.v, { mode: s.mode, ev: s.ev, wb: s.wb, tx, ty });
+        const res = await fetch(url, { signal: ctl.signal, credentials: 'same-origin' });
         if (!res.ok) throw new TileUnavailable(`tile ${key}: ${res.status}`);
         const bmp = await createImageBitmap(await res.blob());
         if (ctl.signal.aborted || base !== this.base) return bmp.close();
@@ -349,6 +364,31 @@ export class DetailLayer {
     this.rcd = null;
     this.gl.detailRelease();
   }
+}
+
+/** The largest preview the server makes (long edge): the non-RAW view's base image. */
+export const PREVIEW_MAX = 4096;
+
+/**
+ * Zoom tiles of the non-RAW view for a zoom: the pyramid level that fits it (the coarsest
+ * still at least DETAIL_FROM device px per pixel), once the view needs more than the
+ * largest preview. Null when the preview is as sharp (or when zoomed to fit).
+ */
+export function imageDetailSpec(
+  p: Pyramid | null,
+  photo: { id: number; v: string; version: string },
+  view: { dispW: number; dispH: number; scale: number; orientation: number; fit: boolean },
+): DetailSpec | null {
+  if (!p || p.levels === 0 || view.fit) return null;
+  const base = Math.min(PREVIEW_MAX, Math.max(p.w, p.h));
+  if (Math.max(view.dispW, view.dispH) * view.scale <= base * 1.02) return null;
+  // Device px per full-size px.
+  const fs0 = (view.scale * view.dispW) / (view.orientation >= 5 ? p.h : p.w);
+  const level = Math.min(p.levels - 1, Math.max(0, Math.ceil(Math.log2(DETAIL_FROM / fs0) - 1e-9)));
+  const d = 2 ** level;
+  const full: [number, number] = [Math.ceil(p.w / d), Math.ceil(p.h / d)];
+  if (Math.max(full[0], full[1]) <= base) return null;
+  return { ...photo, kind: 'image', level, full, tile: p.tile, apron: p.apron, mode: 'normal', ev: 0, wb: 'asshot' };
 }
 
 /** EXIF orientation: displayed (0..1) to sensor (0..1) coordinates, as the shader's orient(). */

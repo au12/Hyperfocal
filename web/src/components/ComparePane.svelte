@@ -20,10 +20,10 @@
   import { onMount, untrack } from 'svelte';
   import { store, LABELS, SHARPEN_SIGMA } from '../lib/store.svelte';
   import { ZOOM_STEPS } from '../lib/ctl';
-  import { api, urls, type RawInfo } from '../lib/api';
+  import { api, urls, type Pyramid, type RawInfo } from '../lib/api';
   import { GLView, hexToRgb } from '../lib/viewer/gl';
   import { type ImageCache, type Decoded } from '../lib/viewer/loader';
-  import { DetailLayer, type DetailPath } from '../lib/viewer/detail';
+  import { DetailLayer, imageDetailSpec, type DetailPath } from '../lib/viewer/detail';
   import { MaskLoader } from '../lib/viewer/mask';
   import Icon from './Icon.svelte';
 
@@ -62,6 +62,8 @@
   const masks = new MaskLoader(() => gl, () => requestDraw());
   let rawInfo = $state<RawInfo | null>(null);
   let detailOn = $state(false);
+  /** The zoom pyramid of the non-RAW view (see Loupe): 'loading', or null without one. */
+  let pyr = $state<{ id: number; v: string; p: Pyramid | null } | 'loading' | null>(null);
 
   const L = $derived(store.list);
   const i = $derived(store.index.get(id) ?? -1);
@@ -94,8 +96,32 @@
       const size = need > 4096 * 1.05 ? 0 : (SIZES.find((s) => s >= need) ?? 0);
       return { url: urls.raw(id, v, { w: size, mode: store.viewer.tone, ev, wb: store.viewer.wb }), kind: 'raw' };
     }
+    // Zoomed in with zoom tiles: the base stays a preview of at most 4096 px.
+    if (!view.fit && tilesUsable()) return { url: urls.preview(id, v, SIZES.find((s) => s >= need) ?? 4096), kind: 'preview' };
     if (need > 2600 || !view.fit) return { url: urls.jpeg(id, v), kind: 'full' };
     return { url: urls.preview(id, v, SIZES.find((s) => s >= need) ?? 2048), kind: 'preview' };
+  }
+
+  function tilesUsable(): boolean {
+    if (!detail || useRaw || i < 0) return false;
+    if (pyr === 'loading') return true;
+    return pyr != null && pyr.id === id && pyr.v === v && pyr.p != null && pyr.p.levels > 0;
+  }
+
+  async function loadPyramid() {
+    if (i < 0 || useRaw || !detail) {
+      pyr = null;
+      return;
+    }
+    const pid = id;
+    const pv = v;
+    pyr = 'loading';
+    try {
+      const p = await api.pyramid(pid, pv);
+      if (id === pid) pyr = { id: pid, v: pv, p };
+    } catch {
+      if (id === pid) pyr = { id: pid, v: pv, p: null };
+    }
   }
 
   function show(d: Decoded, raw = false) {
@@ -156,7 +182,11 @@
 
   function syncDetail() {
     if (!detail) return;
-    if (!useRaw || !rawInfo?.full || !rawInfo.tile) return detail.setSpec(null);
+    if (!useRaw) {
+      const p = pyr !== 'loading' && pyr?.id === id && pyr.v === v ? pyr.p : null;
+      return detail.setSpec(imageDetailSpec(p, { id, v, version: store.status?.version ?? '' }, { dispW, dispH, scale: curScale, orientation: o, fit: view.fit }));
+    }
+    if (!rawInfo?.full || !rawInfo.tile) return detail.setSpec(null);
     detail.setSpec({
       id,
       v,
@@ -199,7 +229,10 @@
     const s = store.settings;
     const scale = curScale;
     const [cx, cy] = center(scale);
-    if (detail) detailOn = detail.update({ orientation: o, dispW, dispH, scale, cx, cy }, cw, ch);
+    if (detail) {
+      if (!useRaw) syncDetail();
+      detailOn = detail.update({ orientation: o, dispW, dispH, scale, cx, cy }, cw, ch);
+    }
     gl.draw({
       orientation: o,
       dispW,
@@ -406,6 +439,22 @@
     void store.viewer.wb;
     void ev;
     untrack(() => loadMask());
+  });
+
+  $effect(() => {
+    void store.settings.rawDetail;
+    void useRaw;
+    void id;
+    void v;
+    untrack(() => loadPyramid());
+  });
+
+  $effect(() => {
+    void pyr;
+    untrack(() => {
+      if (!view.fit) load();
+      requestDraw();
+    });
   });
 
   $effect(() => {

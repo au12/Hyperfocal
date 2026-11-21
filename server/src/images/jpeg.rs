@@ -37,6 +37,33 @@ pub fn decode_scaled(data: &[u8], min_long: usize) -> Result<Rgb> {
     Ok(Rgb { w, h, px })
 }
 
+/// Decode a JPEG at 1/`denom` of its size (1, 2, 4 or 8), with libjpeg-turbo's DCT
+/// scaling. Odd sizes round up (`(n + denom - 1) / denom`).
+pub fn decode_factor(data: &[u8], denom: usize) -> Result<Rgb> {
+    if ![1, 2, 4, 8].contains(&denom) {
+        return Err(anyhow!("unsupported scale 1/{denom}"));
+    }
+    let mut d = Decompressor::new()?;
+    let header = d.read_header(data)?;
+    let factor = ScalingFactor::new(1, denom);
+    d.set_scaling_factor(factor)?;
+    let scaled = header.scaled(factor);
+    let (w, h) = (scaled.width, scaled.height);
+    if w == 0 || h == 0 || w * h > 200_000_000 {
+        return Err(anyhow!("unreasonable JPEG size {w}x{h}"));
+    }
+    let mut px = vec![0u8; w * h * 3];
+    d.decompress(data, turbojpeg::Image { pixels: px.as_mut_slice(), width: w, pitch: w * 3, height: h, format: PixelFormat::RGB })?;
+    Ok(Rgb { w, h, px })
+}
+
+/// Width and height of a JPEG, from its header.
+pub fn dims(data: &[u8]) -> Result<(usize, usize)> {
+    let mut d = Decompressor::new()?;
+    let h = d.read_header(data)?;
+    Ok((h.width, h.height))
+}
+
 pub fn encode(img: &Rgb, quality: i32, chroma_full: bool) -> Result<Vec<u8>> {
     let mut c = Compressor::new()?;
     c.set_quality(quality)?;
