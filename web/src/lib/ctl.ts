@@ -1,6 +1,11 @@
+/** The zoom levels Space steps through (screen px per image px) before going back to fit. */
+export const ZOOM_STEPS = [0.5, 1];
+
 // Imperative hooks that components register so global shortcuts can reach them.
 export const viewerCtl = {
   zoomToggle: () => {},
+  /** 50% → 100% → fit (steps at or below fit are skipped). */
+  zoomCycle: () => {},
   fit: () => {},
   zoomIn: () => {},
   zoomOut: () => {},
@@ -8,6 +13,8 @@ export const viewerCtl = {
 /** The compare view's zoom commands (the active pane, or all when synced). */
 export const compareCtl = {
   zoomToggle: () => {},
+  /** 50% → 100% → fit (steps at or below fit are skipped). */
+  zoomCycle: () => {},
   fit: () => {},
   zoomIn: () => {},
   zoomOut: () => {},

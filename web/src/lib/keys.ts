@@ -6,7 +6,7 @@
 
 export type Action =
   | 'next' | 'prev' | 'first' | 'last' | 'next2' | 'prev2' | 'next3' | 'prev3' | 'pageDown' | 'pageUp' | 'up' | 'down'
-  | 'open' | 'escape' | 'toggleGrid' | 'compare' | 'zoomToggle' | 'fit' | 'zoomIn' | 'zoomOut' | 'fullscreen'
+  | 'open' | 'escape' | 'toggleGrid' | 'compare' | 'zoomToggle' | 'zoomCycle' | 'fit' | 'zoomIn' | 'zoomOut' | 'fullscreen'
   | 'source' | 'peaking' | 'sharpen' | 'shadows' | 'highlights' | 'linear' | 'invert' | 'over' | 'under' | 'wb'
   | 'evToggle' | 'evUp' | 'evDown' | 'evUpBig' | 'evDownBig' | 'evReset'
   | 'rate0' | 'rate1' | 'rate2' | 'rate3' | 'rate4' | 'rate5' | 'rateReject' | 'rateUp' | 'rateDown'
@@ -22,7 +22,7 @@ export type KeyOverrides = Partial<Record<Action, string[]>>;
 export type Preset = 'frv' | 'lr';
 
 const FRV: Bindings = {
-  next: ['ArrowRight', 'Space', 'Ctrl+ArrowRight'],
+  next: ['ArrowRight', 'Ctrl+ArrowRight'],
   prev: ['ArrowLeft', 'Backspace', 'Ctrl+ArrowLeft'],
   first: ['Home', 'Ctrl+Shift+ArrowLeft'],
   last: ['End', 'Ctrl+Shift+ArrowRight'],
@@ -39,6 +39,9 @@ const FRV: Bindings = {
   toggleGrid: ['G'],
   compare: ['C', 'N'],
   zoomToggle: ['Z'],
+  // Space steps the zoom 50% → 100% → fit in the single and compare views; in the grid
+  // it still moves to the next photo.
+  zoomCycle: ['Space'],
   fit: ['Ctrl+0'],
   zoomIn: ['Ctrl+Equal', 'Ctrl+Shift+Equal', 'Ctrl+NumpadAdd'],
   zoomOut: ['Ctrl+Minus', 'Ctrl+NumpadSubtract'],
@@ -133,7 +136,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['escape', 'Back / exit fullscreen'], ['fullscreen', 'Full screen'],
   ]],
   ['View', [
-    ['source', 'Switch RAW / embedded JPEG'], ['zoomToggle', 'Fit / 100%'], ['fit', 'Fit to window'], ['zoomIn', 'Zoom in'], ['zoomOut', 'Zoom out'],
+    ['source', 'Switch RAW / embedded JPEG'], ['zoomToggle', 'Fit / 100%'], ['zoomCycle', 'Zoom 50% → 100% → fit (grid: next photo)'], ['fit', 'Fit to window'], ['zoomIn', 'Zoom in'], ['zoomOut', 'Zoom out'],
     ['sharpen', 'Screen sharpening (off / 1 / 2)'], ['peaking', 'Focus peaking (edges / details / both)'],
     ['over', 'Show overexposed areas'], ['under', 'Show underexposed areas'],
     ['shadows', 'Shadow boost'], ['highlights', 'Highlight inspection'], ['linear', 'Linear mode'], ['invert', 'Invert colours'],

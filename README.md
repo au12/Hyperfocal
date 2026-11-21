@@ -351,10 +351,11 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 
 | Action | FastRawViewer preset | Lightroom / Excire preset |
 | --- | --- | --- |
-| Next / previous photo | `→` `Space` / `←` `Backspace` | same |
+| Next / previous photo | `→` / `←` `Backspace` | same |
 | Open / back to grid | `Enter` / `Esc`, `G` | same |
 | RAW ↔ embedded JPEG | `J` | `J` |
 | Fit ↔ 100 % | `Z` | `Z` |
+| Zoom 50 % → 100 % → fit (grid: next photo) | `Space` | same |
 | Compare the selected photos (2–4) | `C` or `N` | same |
 | Compare: active photo / step it through the folder | `←` `→` / `↑` `↓` | same |
 | Screen sharpening (off / 1 / 2) | `S` | `S` |

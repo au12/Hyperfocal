@@ -11,6 +11,7 @@
   /** Zoom commands for the active pane (keyboard shortcuts). */
   export interface PaneCtl {
     zoomToggle: () => void;
+    zoomCycle: () => void;
     zoomBy: (f: number) => void;
   }
 </script>
@@ -18,6 +19,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { store, LABELS, SHARPEN_SIGMA } from '../lib/store.svelte';
+  import { ZOOM_STEPS } from '../lib/ctl';
   import { api, urls, type RawInfo } from '../lib/api';
   import { GLView, hexToRgb } from '../lib/viewer/gl';
   import { type ImageCache, type Decoded } from '../lib/viewer/loader';
@@ -258,7 +260,12 @@
     const [ax, ay] = lastPointer ?? [cw / 2, ch / 2];
     onview(view.fit || curScale < 0.99 ? zoomed(1, ax, ay) : { fit: true, scale: fitScale, nx: 0.5, ny: 0.5 });
   }
-  ctl = { zoomToggle, zoomBy: (f: number) => onview(zoomed(curScale * f)) };
+  /** Space: 50% → 100% → fit, about the centre (as in the single view). */
+  function zoomCycle() {
+    const next = ZOOM_STEPS.find((z) => z > fitScale * 1.0001 && z > curScale * 1.001);
+    onview(next == null ? { fit: true, scale: fitScale, nx: 0.5, ny: 0.5 } : zoomed(next));
+  }
+  ctl = { zoomToggle, zoomCycle, zoomBy: (f: number) => onview(zoomed(curScale * f)) };
 
   function devXY(e: PointerEvent | WheelEvent | MouseEvent): [number, number] {
     const r = canvas!.getBoundingClientRect();

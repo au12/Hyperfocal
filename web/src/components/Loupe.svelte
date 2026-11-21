@@ -5,7 +5,7 @@
   import { GLView, hexToRgb } from '../lib/viewer/gl';
   import { ImageCache, type Decoded } from '../lib/viewer/loader';
   import { DetailLayer, type DetailPath } from '../lib/viewer/detail';
-  import { viewerCtl, toggleFullscreen } from '../lib/ctl';
+  import { viewerCtl, toggleFullscreen, ZOOM_STEPS } from '../lib/ctl';
   import Icon from './Icon.svelte';
   import Histogram from './Histogram.svelte';
   import InfoPanel from './InfoPanel.svelte';
@@ -338,6 +338,14 @@
     } else setFit();
   }
 
+  /** Space: 50% → 100% → fit, about the centre. Steps not above fit are skipped, and from
+   * any zoom past the last step it goes back to fit. */
+  function zoomCycle() {
+    const next = ZOOM_STEPS.find((z) => z > fitScale * 1.0001 && z > curScale * 1.001);
+    if (next == null) setFit();
+    else zoomTo(next);
+  }
+
   onMount(() => {
     if (canvas) {
       try {
@@ -351,6 +359,7 @@
       }
     }
     viewerCtl.zoomToggle = zoomToggle;
+    viewerCtl.zoomCycle = zoomCycle;
     viewerCtl.fit = setFit;
     viewerCtl.zoomIn = () => zoomTo(curScale * 1.5);
     viewerCtl.zoomOut = () => zoomTo(curScale / 1.5);

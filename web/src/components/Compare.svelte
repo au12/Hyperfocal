@@ -44,6 +44,7 @@
 
   onMount(() => {
     compareCtl.zoomToggle = () => active()?.zoomToggle();
+    compareCtl.zoomCycle = () => active()?.zoomCycle();
     compareCtl.fit = fitAll;
     compareCtl.zoomIn = () => active()?.zoomBy(1.5);
     compareCtl.zoomOut = () => active()?.zoomBy(1 / 1.5);
@@ -54,7 +55,7 @@
     return () => {
       ro.disconnect();
       cache.clear();
-      compareCtl.zoomToggle = compareCtl.fit = compareCtl.zoomIn = compareCtl.zoomOut = () => {};
+      compareCtl.zoomToggle = compareCtl.zoomCycle = compareCtl.fit = compareCtl.zoomIn = compareCtl.zoomOut = () => {};
     };
   });
 
