@@ -51,6 +51,10 @@
         ? 'Search'
         : store.collection?.id === 'dupes'
           ? 'Duplicates'
+          : store.collection
+          ? store.collection.name
+          : store.dateRange
+          ? store.dateRange.label
           : store.filters.subj?.length === 1 && store.subjLabels[store.filters.subj[0]]
           ? store.subjLabels[store.filters.subj[0]]
           : (store.folders.get(store.folderId ?? -1)?.name ?? 'Hyperfocal'),

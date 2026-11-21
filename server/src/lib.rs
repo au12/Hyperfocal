@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 //! Hyperfocal: fast, self-hosted RAW photo culling and library management.
 
+pub mod albums;
 pub mod api;
 pub mod config;
 pub mod db;

@@ -231,6 +231,7 @@ pub fn index_text(c: &Connection, id: i64, rec: &PhotoRec, folder_path: &str) ->
 }
 
 pub fn delete_photo(c: &Connection, id: i64) -> Result<()> {
+    crate::albums::photo_leaving(c, id)?;
     c.execute("DELETE FROM photos_fts WHERE rowid = ?1", [id])?;
     c.execute("DELETE FROM photos_tri WHERE rowid = ?1", [id])?;
     c.execute("DELETE FROM photos WHERE id = ?1", [id])?;

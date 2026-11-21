@@ -32,6 +32,8 @@ pub enum Event {
     Photos { ids: Vec<i64> },
     /// The saved collections changed (in another tab or on another device).
     Collections,
+    /// The albums changed: their list, counts or members.
+    Albums,
     /// Progress of a background change.
     Job(crate::ops::JobStatus),
     /// The archive integrity problems changed: how many of each there are now.

@@ -16,7 +16,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-fn double_option<'de, T: Deserialize<'de>, D: Deserializer<'de>>(de: D) -> Result<Option<Option<T>>, D::Error> {
+pub(crate) fn double_option<'de, T: Deserialize<'de>, D: Deserializer<'de>>(de: D) -> Result<Option<Option<T>>, D::Error> {
     Deserialize::deserialize(de).map(Some)
 }
 
@@ -1088,6 +1088,13 @@ async fn undo_in(state: &Arc<AppState>, batch: &str, mut job: Option<Job>) -> Re
             match undo_rename(state, jid, &v).await {
                 Ok(id) => ok.extend(id.or(pid)),
                 Err(e) => err = Some((pid.unwrap_or(0), format!("{e:#}"))),
+            }
+        } else if kind == "album" {
+            let (st, nb, ob) = (state.clone(), new_batch.clone(), batch.to_string());
+            match tokio::task::spawn_blocking(move || crate::albums::undo_entry(&st, jid, &v, &nb, &ob)).await {
+                Ok(Ok(ids)) => ok.extend(ids),
+                Ok(Err(e)) => err = Some((0, format!("{e:#}"))),
+                Err(e) => err = Some((0, format!("{e}"))),
             }
         } else if let Some(pid) = pid {
             match kind.as_str() {

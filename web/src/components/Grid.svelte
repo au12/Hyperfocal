@@ -5,7 +5,9 @@
   import { aspectOf, justify, rowAt } from '../lib/layout';
   import { gridCtl } from '../lib/ctl';
   import { thumb, thumbs } from '../lib/thumbs';
-  import { bump } from '../lib/motion';
+  import { bump, reduced } from '../lib/motion';
+  import { albums } from '../lib/albums.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import Icon from './Icon.svelte';
 
   let scroller: HTMLDivElement | undefined = $state();
@@ -453,6 +455,169 @@
     return out;
   }
 
+  // ------------------------------------------------------------ arranging an album
+  // In an album shown in its own order, a photo dragged by the mouse (with the rest of
+  // the selection, when it is selected) lifts out as a small stack; a marker shows where
+  // it will land, and the grid glides into the new order on release.
+  interface Arrange {
+    sx: number;
+    sy: number;
+    cx: number;
+    cy: number;
+    id: number;
+    ids: number[];
+    active: boolean;
+    raf: number;
+    ghost: HTMLElement | null;
+    before: number | null | undefined;
+  }
+  let arrange: Arrange | null = null;
+  const lifted = new SvelteSet<number>();
+  let marker = $state<{ x: number; y: number; h: number } | null>(null);
+
+  function startArrange(e: PointerEvent, id: number) {
+    arrange = { sx: e.clientX, sy: e.clientY, cx: e.clientX, cy: e.clientY, id, ids: [], active: false, raf: 0, ghost: null, before: undefined };
+    window.addEventListener('pointermove', onArrangeMove);
+    window.addEventListener('pointerup', onArrangeUp);
+    window.addEventListener('pointercancel', cancelArrange);
+    window.addEventListener('blur', cancelArrange);
+  }
+
+  function makeGhost(ids: number[]): HTMLElement {
+    const g = document.createElement('div');
+    g.className = 'arrange-ghost';
+    ids.slice(0, 3).forEach((id, k) => {
+      const i = store.index.get(id);
+      if (i == null) return;
+      const img = document.createElement('img');
+      img.src = urls.thumb(id, store.list.v[i], store.thumbRev[id]);
+      img.alt = '';
+      img.style.setProperty('--k', String(k));
+      img.style.zIndex = String(3 - k);
+      g.appendChild(img);
+    });
+    if (ids.length > 1) {
+      const n = document.createElement('span');
+      n.className = 'n';
+      n.textContent = ids.length.toLocaleString();
+      g.appendChild(n);
+    }
+    document.body.appendChild(g);
+    return g;
+  }
+
+  /** Where a photo dropped at a point would land: before which photo (null: at the
+   * end), and the marker between the tiles. */
+  function slotAt(cx: number, cy: number): { before: number | null; x: number; y: number; h: number } | null {
+    const rows = layout.rows;
+    if (!rows.length || !scroller) return null;
+    const p = toLayout(cx, cy);
+    const row = rows[Math.max(0, Math.min(rows.length - 1, rowAt(rows, p.y)))];
+    const n = row.end - row.start;
+    let k = n;
+    for (let j = 0; j < n; j++) {
+      if (p.x < row.x[j] + row.w[j] / 2) {
+        k = j;
+        break;
+      }
+    }
+    const idx = row.start + k;
+    const before = idx < store.list.id.length ? store.list.id[idx] : null;
+    const x = k < n ? row.x[k] - gap / 2 : row.x[n - 1] + row.w[n - 1] + gap / 2;
+    return { before, x, y: row.top, h: row.height };
+  }
+
+  function onArrangeMove(e: PointerEvent) {
+    const a = arrange;
+    if (!a) return;
+    a.cx = e.clientX;
+    a.cy = e.clientY;
+    if (!a.active) {
+      if (Math.hypot(e.clientX - a.sx, e.clientY - a.sy) < 6) return;
+      a.active = true;
+      // The selection moves together when the photo is part of it.
+      a.ids = store.selected.has(a.id) ? store.list.id.filter((id) => store.selected.has(id)) : [a.id];
+      for (const id of a.ids) lifted.add(id);
+      a.ghost = makeGhost(a.ids);
+      document.body.classList.add('arranging');
+    }
+    if (a.ghost) a.ghost.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 10}px)`;
+    updateSlot();
+    arrangeScroll();
+  }
+
+  function updateSlot() {
+    const a = arrange;
+    if (!a?.active) return;
+    const s = slotAt(a.cx, a.cy);
+    a.before = s?.before;
+    marker = s ? { x: s.x, y: s.y, h: s.h } : null;
+  }
+
+  function arrangeScroll() {
+    const a = arrange;
+    if (!a || !scroller || a.raf) return;
+    const tick = () => {
+      if (!arrange || !scroller) return;
+      arrange.raf = 0;
+      const r = scroller.getBoundingClientRect();
+      let v = 0;
+      if (arrange.cy < r.top + EDGE) v = -Math.min(EDGE, r.top + EDGE - arrange.cy);
+      else if (arrange.cy > r.bottom - EDGE) v = Math.min(EDGE, arrange.cy - (r.bottom - EDGE));
+      if (!v) return;
+      const before = scroller.scrollTop;
+      scroller.scrollTop += v * 0.6;
+      if (scroller.scrollTop !== before) {
+        scrollTop = scroller.scrollTop;
+        updateSlot();
+        arrange.raf = requestAnimationFrame(tick);
+      }
+    };
+    a.raf = requestAnimationFrame(tick);
+  }
+
+  function endArrange(): Arrange | null {
+    const a = arrange;
+    arrange = null;
+    window.removeEventListener('pointermove', onArrangeMove);
+    window.removeEventListener('pointerup', onArrangeUp);
+    window.removeEventListener('pointercancel', cancelArrange);
+    window.removeEventListener('blur', cancelArrange);
+    document.body.classList.remove('arranging');
+    if (a?.raf) cancelAnimationFrame(a.raf);
+    marker = null;
+    lifted.clear();
+    return a;
+  }
+
+  function onArrangeUp() {
+    const a = endArrange();
+    if (!a?.active) return;
+    swallowClick = true;
+    const g = a.ghost;
+    if (a.before !== undefined) {
+      // A drop just before one of the photos moved means "before the next one that stays".
+      let before = a.before;
+      const moving = new Set(a.ids);
+      if (before != null && moving.has(before)) {
+        let i = store.index.get(before) ?? 0;
+        while (i < store.list.id.length && moving.has(store.list.id[i])) i++;
+        before = i < store.list.id.length ? store.list.id[i] : null;
+      }
+      albums.move(a.ids, before);
+    }
+    if (g) {
+      // The stack shrinks into place as the tiles glide.
+      const anim = reduced() ? null : g.animate([{ opacity: 1 }, { opacity: 0, scale: '0.6' }], { duration: 180, easing: 'ease-in', fill: 'forwards' });
+      if (anim) anim.finished.then(() => g.remove(), () => g.remove());
+      else g.remove();
+    }
+  }
+
+  function cancelArrange() {
+    endArrange()?.ghost?.remove();
+  }
+
   function onGridDown(e: PointerEvent) {
     swallowClick = false;
     if (store.mobile || e.pointerType !== 'mouse' || e.button !== 0 || !scroller) return;
@@ -463,6 +628,13 @@
     e.preventDefault();
     const ae = document.activeElement as HTMLElement | null;
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) ae.blur();
+    // An album in its own order: a photo pressed (without Shift or Ctrl) can be dragged
+    // into place; the gaps still start a selection band.
+    const tileEl = (e.target as HTMLElement).closest<HTMLElement>('.tile');
+    if (albums.arranging && tileEl && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      startArrange(e, Number(tileEl.dataset.id));
+      return;
+    }
     const p = toLayout(e.clientX, e.clientY);
     const mode = e.ctrlKey || e.metaKey ? 'toggle' : e.shiftKey ? 'add' : 'replace';
     drag = { x0: p.x, y0: p.y, cx: e.clientX, cy: e.clientY, sx: e.clientX, sy: e.clientY, mode, base: new Set(), active: false, raf: 0, last: [] };
@@ -613,6 +785,8 @@
         class:sel={store.selected.has(id)}
         class:rejected={store.folders.get(store.list.f[i])?.isReject}
         class:leaving={store.leaving.has(id)}
+        class:lifted={lifted.has(id)}
+        class:arrangeable={albums.arranging}
         style:transform={`translate3d(${t.x}px, ${t.y}px, 0)`}
         style:width={`${t.w}px`}
         style:height={`${t.h}px`}
@@ -639,6 +813,9 @@
         </div>
       </div>
     {/each}
+    {#if marker}
+      <div class="drop-marker" style:transform={`translate(${pad + marker.x - 1.5}px, ${pad + marker.y}px)`} style:height={`${marker.h}px`}></div>
+    {/if}
     {#if band}
       <div class="band" style:left={`${pad + band.x}px`} style:top={`${pad + band.y}px`} style:width={`${band.w}px`} style:height={`${band.h}px`}></div>
     {/if}
@@ -683,6 +860,40 @@
       height 0.42s var(--ease-out),
       scale 0.22s var(--ease-out),
       opacity 0.22s var(--ease-out);
+  }
+  /* Being dragged into a new place in the album. */
+  .tile.lifted {
+    scale: 0.94;
+    opacity: 0.32;
+    filter: saturate(0.4);
+  }
+  .tile.arrangeable {
+    cursor: grab;
+  }
+  /* Where the dragged photos will land: a bar between two tiles that slides from gap to
+     gap. */
+  .drop-marker {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 3px;
+    border-radius: 3px;
+    background: var(--accent);
+    box-shadow:
+      0 0 0 3px var(--accent-bg-strong),
+      0 0 18px 2px color-mix(in srgb, var(--accent) 60%, transparent);
+    pointer-events: none;
+    z-index: 5;
+    transition:
+      transform 0.16s var(--ease-out),
+      height 0.16s var(--ease-out);
+    animation: marker-in 0.22s var(--ease-spring);
+  }
+  @keyframes marker-in {
+    from {
+      opacity: 0;
+      scale: 1 0.4;
+    }
   }
   /* On its way to the reject folder (until the server confirms the move). */
   .tile.leaving {

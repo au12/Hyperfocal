@@ -113,6 +113,8 @@ export interface PhotoDetail {
   files: string[];
   error: string | null;
   v: string;
+  /** The albums it is in: [id, name]. */
+  albums?: [number, string][];
 }
 
 export interface RawInfo {
@@ -243,6 +245,23 @@ export interface Collection {
   spec: CollectionSpec;
   created?: number;
   updated?: number;
+}
+
+/** A hand-picked set of photos in an order of its own. */
+export interface Album {
+  id: number;
+  name: string;
+  note: string | null;
+  position: number;
+  created: number;
+  updated: number;
+  /** Photos shown (reject folders left out). */
+  count: number;
+  /** Members whose file left the library (found again if it turns up). */
+  missing: number;
+  /** The cover: the photo set as cover, or the first one. */
+  cover: { id: number; v: string } | null;
+  cover_set: number | null;
 }
 
 export interface Timeline {
@@ -555,6 +574,15 @@ export const api = {
   collections: () => req<Collection[]>('GET', 'collections'),
   saveCollection: (c: { id?: number; name: string; spec: CollectionSpec }) => req<Collection>('POST', 'collections', c),
   deleteCollection: (id: number) => req<{ ok: boolean }>('DELETE', `collections/${id}`),
+  albums: () => req<Album[]>('GET', 'albums'),
+  createAlbum: (name: string, ids: number[] = []) => req<Album & { added: number[]; batch: string }>('POST', 'albums', { name, ids }),
+  editAlbum: (id: number, b: { name?: string; note?: string | null; cover?: number | null }) => req<Album & { batch: string }>('POST', `albums/${id}`, b),
+  deleteAlbum: (id: number) => req<{ ok: boolean; batch: string }>('DELETE', `albums/${id}`),
+  albumAdd: (id: number, ids: number[], before?: number) => req<{ added: number[]; batch: string | null }>('POST', `albums/${id}/add`, { ids, before }),
+  albumRemove: (id: number, ids: number[]) => req<{ removed: number[]; batch: string | null }>('POST', `albums/${id}/remove`, { ids }),
+  albumOrder: (id: number, ids: number[], before: number | null) => req<{ moved: boolean; batch: string | null }>('POST', `albums/${id}/order`, { ids, before }),
+  albumForget: (id: number) => req<{ forgotten: number; batch: string | null }>('POST', `albums/${id}/forget`, {}),
+  orderAlbums: (ids: number[]) => req<{ ok: boolean }>('POST', 'albums/order', { ids }),
   photo: (id: number, signal?: AbortSignal) => req<PhotoDetail>('GET', `photo/${id}`, undefined, undefined, signal),
   rawinfo: (id: number, v: string, wb: WbMode, signal?: AbortSignal) => req<RawInfo>('GET', `photo/${id}/rawinfo`, undefined, { v, wb, a: ANALYSIS_REV }, signal),
   pyramid: (id: number, v: string, signal?: AbortSignal) => req<Pyramid>('GET', `photo/${id}/pyramid`, undefined, { v }, signal),

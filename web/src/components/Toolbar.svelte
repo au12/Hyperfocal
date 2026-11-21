@@ -5,6 +5,7 @@
   import Popover from './Popover.svelte';
   import { Tween } from 'svelte/motion';
   import { segmented, easeOut, reduced } from '../lib/motion';
+  import { albums } from '../lib/albums.svelte';
 
   let facets = $state<Facets | null>(null);
   let filterOpen = $state(false);
@@ -79,12 +80,38 @@
     store.setFilter(k, v);
   }
 
-  const sorts: [SortKey, string][] = [
+  const baseSorts: [SortKey, string][] = [
     ['taken', 'Capture time'],
     ['name', 'File name'],
     ['rating', 'Rating'],
     ['modified', 'File date'],
   ];
+  const album = $derived(albums.current);
+  const sorts = $derived<[SortKey, string][]>(albums.currentId != null ? [['album', 'Album order'], ...baseSorts] : baseSorts);
+
+  // The album shown: rename in place, a note, delete.
+  let editing = $state(false);
+  let editText = $state('');
+  let noteOpen = $state(false);
+  let noteText = $state('');
+
+  function startEdit(close: () => void) {
+    close();
+    if (!album) return;
+    editText = album.name;
+    editing = true;
+  }
+
+  function commitEdit() {
+    editing = false;
+    if (album) albums.rename(album, editText);
+  }
+
+  function deleteShown(close: () => void) {
+    close();
+    const a = album;
+    if (a && confirm(`Delete the album “${a.name}”? Its photos stay where they are: only the album goes.`)) albums.deleteAlbum(a);
+  }
 
   function setRow(e: Event) {
     store.settings.rowHeight = +(e.target as HTMLInputElement).value;
@@ -99,6 +126,43 @@
         <button class="crumb" onclick={() => (store.dialog = 'duplicates')} title="Back to the Duplicates report"><Icon name="copy" size={14} /> Duplicates</button>
         <Icon name="chevron" size={14} class="sep" />
         <span class="crumb current">{coll.name}</span>
+      {:else if albums.currentId != null}
+        {#if editing}
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            class="field crumb-edit"
+            bind:value={editText}
+            maxlength="120"
+            autofocus
+            onkeydown={(e) => {
+              if (e.key === 'Enter') commitEdit();
+              else if (e.key === 'Escape') editing = false;
+            }}
+            onblur={commitEdit}
+          />
+        {:else}
+          <button class="crumb current album-name" title={album?.note ?? 'Album: double-click to rename'} ondblclick={() => startEdit(() => {})}><Icon name="album" size={15} /> {coll.name}</button>
+        {/if}
+        <Popover align="left" width="16rem">
+          {#snippet trigger(toggle, open)}
+            <button class="btn sm ghost icon" class:on={open} onclick={toggle} aria-label="Album actions"><Icon name="more" /></button>
+          {/snippet}
+          {#snippet children(close)}
+            <button class="menu-item" onclick={() => startEdit(close)}><Icon name="edit" />Rename</button>
+            <button class="menu-item" onclick={() => { close(); noteText = album?.note ?? ''; noteOpen = true; }}><Icon name="tag" />{album?.note ? 'Edit the note' : 'Add a note'}</button>
+            {#if store.list.id[store.cursor] != null}
+              <button class="menu-item" onclick={() => { close(); albums.setCover(store.list.id[store.cursor]); }} title="The photo under the cursor becomes the album's picture"><Icon name="image" />Use the current photo as cover</button>
+            {/if}
+            {#if album?.missing}
+              <button class="menu-item" onclick={() => { close(); if (album) albums.forgetMissing(album); }}><Icon name="eye-off" />Forget {album.missing} missing</button>
+            {/if}
+            <div class="menu-sep"></div>
+            <button class="menu-item danger" onclick={() => deleteShown(close)}><Icon name="trash" />Delete album</button>
+          {/snippet}
+        </Popover>
+        {#if album?.missing}
+          <span class="chip missing" title="Members whose file left the library (moved or renamed by another app). They come back by themselves if the file turns up.">{album.missing} missing</span>
+        {/if}
       {:else}
         <span class="crumb current" title="Collection"><Icon name={typeof coll.id === 'number' ? 'bookmark' : 'library'} size={14} /> {coll.name}</span>
         {#if modified}<span class="modified" title="Filters or search differ from the saved collection">modified</span>{/if}
@@ -123,14 +187,24 @@
       <span class="chip who" title="Photos with this person or pet"><Icon name="user" size={12} /><span class="ellipsis">{store.subjLabels[sid] ?? 'Person'}</span><button onclick={() => store.setFilter('subj', f.subj.filter((x) => x !== sid))} aria-label="Remove"><Icon name="x" size={12} /></button></span>
     {/each}
     <span class="count tnum">{Math.round(shown.current).toLocaleString()} {count === 1 ? 'photo' : 'photos'}</span>
+    {#if albums.arranging && !store.mobile && count > 1}<span class="hint-arrange" title="Drag photos (or a selection) to put them in order"><Icon name="grip" size={13} /><span class="txt">Drag to arrange</span></span>{/if}
     {#if store.loading}<span class="spinner"></span>{/if}
   </div>
 
+  {#if noteOpen && album}
+    <form class="notebox" onsubmit={(e) => { e.preventDefault(); noteOpen = false; if (album) albums.setNote(album, noteText); }}>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input class="field" bind:value={noteText} placeholder="A few words about this album" maxlength="2000" autofocus onkeydown={(e) => e.key === 'Escape' && (noteOpen = false)} />
+      <button class="btn sm primary" type="submit">Save</button>
+      <button class="btn sm ghost" type="button" onclick={() => (noteOpen = false)}>Cancel</button>
+    </form>
+  {/if}
+
   <div class="tools">
-    {#if !store.query && store.mobile}
+    {#if !store.query && store.mobile && albums.currentId == null}
       <button class="btn sm icon" class:on={store.recursive} onclick={() => { store.recursive = !store.recursive; store.reload(); }} title="Include sub folders" aria-label="Include sub folders"><Icon name="layers" /></button>
     {/if}
-    {#if !store.query && !store.mobile}
+    {#if !store.query && !store.mobile && albums.currentId == null}
       <label class="check" title="Include photos in sub folders">
         <input type="checkbox" checked={store.recursive} onchange={(e) => { store.recursive = (e.target as HTMLInputElement).checked; store.reload(); }} />
         Sub folders
@@ -287,6 +361,13 @@
     min-width: 0;
     flex: 1;
     overflow: hidden;
+    container-type: inline-size;
+  }
+  /* Short of room, the arranging hint keeps only its icon (the tooltip says the rest). */
+  @container (max-width: 30rem) {
+    .hint-arrange .txt {
+      display: none;
+    }
   }
   .crumbs :global(.sep) {
     color: var(--text-3);
@@ -321,6 +402,42 @@
       opacity: 0;
       transform: translateY(3px);
     }
+  }
+  .album-name {
+    font: inherit;
+  }
+  .crumb-edit {
+    height: 1.875rem;
+    font-size: 1.0625rem;
+    font-weight: 650;
+    width: min(20rem, 50vw);
+  }
+  .chip.missing {
+    margin-left: 0.25rem;
+    color: var(--critical);
+    background: color-mix(in srgb, var(--critical) 12%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--critical) 35%, transparent);
+  }
+  .hint-arrange {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: 0.625rem;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    white-space: nowrap;
+    animation: crumb-in var(--dur-slow) var(--ease-out);
+  }
+  .notebox {
+    flex-basis: 100%;
+    order: 3;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    animation: crumb-in var(--dur-slow) var(--ease-out);
+  }
+  .notebox .field {
+    flex: 1;
   }
   .chip.who {
     margin-left: 0.25rem;

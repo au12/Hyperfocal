@@ -9,6 +9,7 @@
   import PhotoPeople from './PhotoPeople.svelte';
   import { people } from '../lib/people.svelte';
   import { bump } from '../lib/motion';
+  import { albums } from '../lib/albums.svelte';
 
   let { compact = false }: { compact?: boolean } = $props();
 
@@ -123,6 +124,27 @@
         <PhotoPeople photo={d.id} />
       </section>
     {/if}
+
+    <section>
+      <div class="lab row">
+        <span class="grow">Albums</span>
+        <button class="btn sm ghost" onclick={() => albums.pick([d.id])} title={'Add to an album' + store.keyHint('albumPick')}><Icon name="album-plus" /> Add</button>
+      </div>
+      {#if d.albums?.length}
+        <div class="row wrap gap-s">
+          {#each d.albums as [aid, name] (aid)}
+            <span class="chip album-chip">
+              <button class="open" onclick={() => { const a = albums.byId(aid); if (a) albums.open(a); }} title="Open the album"><Icon name="album" size={12} />{name}</button>
+              {#if albums.currentId === aid}
+                <button onclick={() => albums.remove([d.id])} aria-label="Take out of this album" title="Take out of this album (the file stays)"><Icon name="x" size={12} /></button>
+              {/if}
+            </span>
+          {/each}
+        </div>
+      {:else}
+        <div class="dim small">In no album yet.</div>
+      {/if}
+    </section>
 
     <section>
       <div class="lab row">
@@ -342,6 +364,29 @@
     box-shadow:
       inset 0 0 0 1px var(--accent),
       0 0 0 2px var(--accent);
+  }
+  .wrap {
+    flex-wrap: wrap;
+  }
+  .gap-s {
+    gap: 0.375rem;
+  }
+  .album-chip .open {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+    cursor: pointer;
+  }
+  .album-chip .open :global(svg) {
+    color: var(--accent);
+  }
+  .album-chip .open:hover {
+    color: var(--accent);
   }
   .fields {
     gap: 0.625rem;

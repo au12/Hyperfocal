@@ -73,6 +73,7 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 
 - **Your folders, as they are.** The Year/Event (or Year/Month) tree is shown exactly as it is on disk. Any folder can be viewed with or without its sub-folders.
 - **Timeline and saved collections.** Browse by capture date across folders (year, month, day), and save any search and filter combination as a collection, such as "5★ picks from 2019 with no location". Quick collections: Picks, Five stars, Without location, All rejected.
+- **Albums.** Hand-picked photos from anywhere in the library, in an order of their own. `B` adds the photos you are on (or the selection) to the album you used last, `Shift+B` picks or creates one by typing, `Alt+B` takes photos out of the album shown. In an album, drag photos (or a selection) into place; a cover, a note and the albums' own order in the sidebar are yours to set. Albums only point at photos: deleting one, or taking a photo out, never moves or deletes a file, and every change can be undone from History. A photo moved or renamed by another app keeps its place, and is found again when a file with the same name and size turns up. Albums live in the index (back up `/config`), not in the sidecars.
 - **Search and filters.**
   - Full-text search covers file name, folder, title, caption, keywords, place, camera and lens.
   - Filters cover rating, label, pick state, file type, camera, lens, keyword, date range and GPS.

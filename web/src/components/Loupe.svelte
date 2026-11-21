@@ -14,6 +14,7 @@
   import { people } from '../lib/people.svelte';
   import { flip } from 'svelte/animate';
   import { flyImage, segmented, bump, reduced, type Rect } from '../lib/motion';
+  import { albums } from '../lib/albums.svelte';
 
   let stage: HTMLDivElement | undefined = $state();
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -809,6 +810,7 @@
         <button class="btn sm icon" onclick={() => store.rotate(-90)} title={'Rotate left' + store.keyHint('rotateCcw')}><Icon name="rotate-ccw" /></button>
         <button class="btn sm icon" onclick={() => store.rotate(90)} title={'Rotate right' + store.keyHint('rotateCw')}><Icon name="rotate-cw" /></button>
         <button class="btn sm icon" onclick={() => store.openLocation()} title={'Set location' + store.keyHint('location')}><Icon name="pin" /></button>
+        <button class="btn sm icon" onclick={() => albums.pick()} title={'Add to an album' + store.keyHint('albumPick') + (albums.byId(albums.target) ? ` · ${store.keyHint('albumAdd').trim()} adds to “${albums.byId(albums.target)?.name}”` : '')}><Icon name="album-plus" /></button>
         {#if people.enabled}
           <button class="btn sm icon" class:on={store.panels.faces} onclick={() => { store.panels.faces = !store.panels.faces; store.persist(); requestDraw(); }} title={'Faces and pets' + store.keyHint('faces')}><Icon name="scan-face" /></button>
         {/if}
@@ -945,6 +947,7 @@
           <button class="tool" onclick={() => { const order = ['asshot', 'daylight', 'auto'] as const; store.setViewer('wb', order[(order.indexOf(store.viewer.wb) + 1) % 3]); store.setViewer('source', 'raw'); }}><Icon name="wb" /><span>WB {({ asshot: 'as shot', daylight: 'daylight', auto: 'auto' })[store.viewer.wb]}</span></button>
           <button class="tool" onclick={() => store.rotate(90)}><Icon name="rotate-cw" /><span>Rotate</span></button>
           <button class="tool" onclick={() => { sheet = null; store.openLocation(); }}><Icon name="pin" /><span>Location</span></button>
+          <button class="tool" onclick={() => { sheet = null; albums.pick(); }}><Icon name="album-plus" /><span>Album</span></button>
         </div>
         <div class="evrow">
           <button class="btn" onclick={() => store.bumpEv(-EV_STEP)} aria-label="Exposure −⅓ EV"><Icon name="minus" /></button>

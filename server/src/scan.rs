@@ -335,6 +335,9 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
             repo::index_text(&tx, id, rec, &rel)?;
             if existing.contains_key(&rec.name) {
                 again.push(id);
+            } else {
+                // A file new here may be an album member that moved from elsewhere.
+                crate::albums::reattach(&tx, id, &rec.name, rec.size)?;
             }
         }
         for id in &removed {

@@ -25,6 +25,7 @@ import { keysFor, prettyKey, type Action, type KeyOverrides, type Preset } from 
 import { setOffline } from './offline';
 import { people } from './people.svelte';
 import { dupes } from './dupes.svelte';
+import { albums, albumKey, albumSpec } from './albums.svelte';
 
 export const LABELS: { color: LabelColor; name: string; key: string }[] = [
   { color: 'red', name: 'Red', key: '6' },
@@ -36,7 +37,7 @@ export const LABELS: { color: LabelColor; name: string; key: string }[] = [
 
 type CullPatch = Pick<Patch, 'rating' | 'label' | 'pick'>;
 
-export type SortKey = 'taken' | 'name' | 'rating' | 'modified';
+export type SortKey = 'taken' | 'name' | 'rating' | 'modified' | 'album';
 
 export interface Filters {
   rmin: number;
@@ -59,6 +60,8 @@ export interface Filters {
   subj: number[];
   /** Only these photos (a group of the Duplicates report). */
   ids: number[];
+  /** Only the photos of this album (an album shown). */
+  album?: number | null;
 }
 
 export const DEFAULT_FILTERS: Filters = {
@@ -167,11 +170,12 @@ export function viewParams(v: {
     kw: f.kw || undefined,
     subj: f.subj?.length ? f.subj.join(',') : undefined,
     ids: f.ids?.length ? f.ids.join(',') : undefined,
+    album: f.album ?? undefined,
     nodate: d?.nodate ? 1 : undefined,
     from,
     to,
     q: q || undefined,
-    sort: f.sort === 'taken' ? undefined : f.sort,
+    sort: f.sort === 'taken' || (f.sort === 'album' && f.album == null) ? undefined : f.sort,
     desc: f.desc,
   };
 }
@@ -448,7 +452,7 @@ class Store {
     await this.loadTree();
     this.connectEvents();
     people.loadStatus();
-    await this.loadCollections().catch(() => {});
+    await Promise.all([this.loadCollections().catch(() => {}), albums.load()]);
     this.loadTimeline();
     const hash = new URLSearchParams(location.hash.slice(1));
     const f = Number(hash.get('f'));
@@ -456,7 +460,10 @@ class Store {
     const d = hash.get('d');
     const saved = c ? this.collections.find((x) => String(x.id) === c) : undefined;
     const quick = c ? QUICK.find((x) => x.id === c) : undefined;
-    if (saved || quick) {
+    const album = c ? albums.list.find((a) => albumKey(a.id) === c) : undefined;
+    if (album) {
+      await this.applyCollection({ id: albumKey(album.id), name: album.name, spec: albumSpec(album.id) });
+    } else if (saved || quick) {
       await this.applyCollection(saved ? { id: saved.id, name: saved.name, spec: saved.spec } : { id: quick!.id, name: quick!.name, spec: quick!.spec });
     } else if (d) {
       const m = d.match(/^(-?\d+)_(-?\d+)$/);
@@ -511,6 +518,8 @@ class Store {
         this.scheduleTimeline();
       } else if (e.type === 'collections') {
         this.loadCollections().catch(() => {});
+      } else if (e.type === 'albums') {
+        albums.onEvent();
       } else if (e.type === 'folder') {
         if (this.affects(e.id)) this.scheduleReload();
         this.scheduleTree();
@@ -1481,36 +1490,66 @@ class Store {
       // A photo rejected anywhere leaves its group in the Duplicates report.
       dupes.drop(r.ok);
       // Drop moved photos from the current list immediately (they changed folder).
-      const keep = (i: number) => !r.ok.includes(this.list.id[i]);
       const stay = this.filters.showRejected && this.recursive;
       if (!stay) {
-        const L = this.list;
-        const cols = Object.keys(L) as (keyof PhotoList)[];
-        const next = {} as PhotoList;
-        const idxs = L.id.map((_, i) => i).filter(keep);
-        for (const c of cols) (next as any)[c] = idxs.map((i) => (L as any)[c][i]);
-        const oldCurrent = this.current;
-        const oldCursor = this.cursor;
-        this.list = next;
-        const idx = new Map<number, number>();
-        next.id.forEach((id, i) => idx.set(id, i));
-        this.index = idx;
-        const removedBefore = L.id.slice(0, oldCurrent).filter((id) => r.ok.includes(id)).length;
-        this.current = Math.min(Math.max(0, oldCurrent - removedBefore), Math.max(0, next.id.length - 1));
-        const cursorBefore = L.id.slice(0, oldCursor).filter((id) => r.ok.includes(id)).length;
-        this.cursor = Math.min(Math.max(0, oldCursor - cursorBefore), Math.max(0, next.id.length - 1));
-        if (!this.settings.advanceAfterReject && this.current > 0 && ids.length === 1) this.current--;
-        if (next.id.length === 0) this.loupe = false;
-        this.pruneCompare();
-        this.reflow++;
-        this.rev++;
+        this.dropFromList(r.ok, !this.settings.advanceAfterReject && ids.length === 1);
         if (this.loupe || this.compare) this.loadDetail();
       } else {
         this.reload(true);
       }
       this.loadTree();
+      // Album counts leave out the reject folders.
+      albums.load();
     }
   }
+
+  /** Takes photos out of the list on screen at once (moved away, or out of the album
+   * shown); the cursor and the single view stay on their neighbours (`stepBack`: the
+   * single view goes to the photo before instead of after). */
+  dropFromList = (gone: number[], stepBack = false) => {
+    const out = new Set(gone);
+    const L = this.list;
+    const idxs = L.id.map((_, i) => i).filter((i) => !out.has(L.id[i]));
+    if (idxs.length === L.id.length) return;
+    const next = {} as PhotoList;
+    for (const c of Object.keys(L) as (keyof PhotoList)[]) (next as any)[c] = idxs.map((i) => (L as any)[c][i]);
+    const oldCurrent = this.current;
+    const oldCursor = this.cursor;
+    this.list = next;
+    const idx = new Map<number, number>();
+    next.id.forEach((id, i) => idx.set(id, i));
+    this.index = idx;
+    const before = (k: number) => L.id.slice(0, k).filter((id) => out.has(id)).length;
+    this.current = Math.min(Math.max(0, oldCurrent - before(oldCurrent)), Math.max(0, next.id.length - 1));
+    this.cursor = Math.min(Math.max(0, oldCursor - before(oldCursor)), Math.max(0, next.id.length - 1));
+    if (stepBack && this.current > 0) this.current--;
+    for (const id of gone) this.selected.delete(id);
+    if (next.id.length === 0) this.loupe = false;
+    this.pruneCompare();
+    this.reflow++;
+    this.rev++;
+  };
+
+  /** Shows the photos on screen in a new order (an album rearranged): `order` lists
+   * every id of the list, first to last. */
+  reorderList = (order: number[]): boolean => {
+    const L = this.list;
+    const pos = order.map((id) => this.index.get(id)).filter((i): i is number => i != null);
+    if (pos.length !== L.id.length) return false;
+    const next = {} as PhotoList;
+    for (const c of Object.keys(L) as (keyof PhotoList)[]) (next as any)[c] = pos.map((i) => (L as any)[c][i]);
+    const cur = L.id[this.current];
+    const cursor = L.id[this.cursor];
+    this.list = next;
+    const idx = new Map<number, number>();
+    next.id.forEach((id, i) => idx.set(id, i));
+    this.index = idx;
+    this.current = idx.get(cur) ?? 0;
+    this.cursor = idx.get(cursor) ?? 0;
+    this.reflow++;
+    this.rev++;
+    return true;
+  };
 
   undo = async (batch?: string) => {
     if (this.readonlyGuard()) return;

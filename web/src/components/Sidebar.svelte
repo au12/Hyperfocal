@@ -1,10 +1,13 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
   import { store, QUICK, rangeLabel } from '../lib/store.svelte';
-  import type { Collection, Folder } from '../lib/api';
+  import { urls, type Album, type Collection, type Folder } from '../lib/api';
   import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
   import { people } from '../lib/people.svelte';
+  import { albums } from '../lib/albums.svelte';
+  import { flip } from 'svelte/animate';
+  import { reduced, reveal } from '../lib/motion';
 
   let { onpick }: { onpick?: () => void } = $props();
 
@@ -151,6 +154,81 @@
     if (confirm(`Delete the collection “${c.name}”? The photos stay where they are.`)) store.deleteCollection(c);
   }
 
+  // ---- albums: create, open, rename, arrange (drag), delete
+  let creating = $state(false);
+  let newName = $state('');
+  let renamingAlbum = $state<number | null>(null);
+  let albumText = $state('');
+
+  function startCreate() {
+    creating = true;
+    newName = '';
+  }
+
+  async function commitCreate() {
+    const name = newName.trim();
+    creating = false;
+    if (!name) return;
+    const a = await albums.create(name);
+    if (a) openAlbum(a);
+  }
+
+  function openAlbum(a: Album) {
+    albums.open(a);
+    onpick?.();
+  }
+
+  function startAlbumRename(a: Album, close: () => void) {
+    close();
+    renamingAlbum = a.id;
+    albumText = a.name;
+  }
+
+  function commitAlbumRename(a: Album) {
+    renamingAlbum = null;
+    albums.rename(a, albumText);
+  }
+
+  function deleteAlbum(a: Album, close: () => void) {
+    close();
+    if (confirm(`Delete the album “${a.name}”? Its ${a.count === 1 ? 'photo stays' : 'photos stay'} where ${a.count === 1 ? 'it is' : 'they are'}: only the album goes.`)) albums.deleteAlbum(a);
+  }
+
+  let dragAlbum = $state<number | null>(null);
+  let dropAt = $state<{ id: number; after: boolean } | null>(null);
+
+  function onAlbumDragStart(e: DragEvent, a: Album) {
+    dragAlbum = a.id;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', a.name);
+    }
+  }
+
+  function onAlbumDragOver(e: DragEvent, a: Album) {
+    if (dragAlbum == null) return;
+    e.preventDefault();
+    if (dragAlbum === a.id) {
+      dropAt = null;
+      return;
+    }
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    dropAt = { id: a.id, after: e.clientY > r.top + r.height / 2 };
+  }
+
+  function onAlbumDrop(e: DragEvent) {
+    e.preventDefault();
+    const from = dragAlbum;
+    const to = dropAt;
+    dragAlbum = null;
+    dropAt = null;
+    if (from == null || !to) return;
+    const ids = albums.list.map((a) => a.id).filter((id) => id !== from);
+    const k = ids.indexOf(to.id) + (to.after ? 1 : 0);
+    ids.splice(k, 0, from);
+    albums.arrange(ids);
+  }
+
   const fmt = (n: number | undefined) => (n == null ? '' : n >= 10000 ? `${(n / 1000).toFixed(0)}k` : n.toLocaleString());
 </script>
 
@@ -170,6 +248,93 @@
         <Icon name={q.icon} size={16} /><span class="grow">{q.name}</span><span class="count">{fmt(store.counts[q.id])}</span>
       </button>
     {/each}
+  </div>
+
+  <div class="section">
+    <div class="sec-head">
+      <div class="sec-title">Albums</div>
+      <button class="sec-add" onclick={startCreate} title="New album" aria-label="New album"><Icon name="plus" size={14} stroke={2.25} /></button>
+    </div>
+    {#if creating}
+      <div class="item coll" transition:reveal>
+        <Icon name="album" size={16} />
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="rename"
+          bind:value={newName}
+          placeholder="Album name"
+          maxlength="120"
+          autofocus
+          onkeydown={(e) => {
+            if (e.key === 'Enter') commitCreate();
+            else if (e.key === 'Escape') creating = false;
+          }}
+          onblur={commitCreate}
+        />
+      </div>
+    {/if}
+    {#each albums.list as a (a.id)}
+      <div
+        class="item coll album"
+        class:active={store.view !== 'people' && albums.currentId === a.id}
+        class:dragging={dragAlbum === a.id}
+        class:drop-before={dropAt?.id === a.id && !dropAt.after}
+        class:drop-after={dropAt?.id === a.id && dropAt.after}
+        draggable={renamingAlbum !== a.id && !store.mobile}
+        ondragstart={(e) => onAlbumDragStart(e, a)}
+        ondragover={(e) => onAlbumDragOver(e, a)}
+        ondrop={onAlbumDrop}
+        ondragend={() => { dragAlbum = null; dropAt = null; }}
+        animate:flip={{ duration: reduced() ? 0 : 260 }}
+        role="listitem"
+      >
+        {#if renamingAlbum === a.id}
+          <span class="cover"><Icon name="album" size={13} /></span>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            class="rename"
+            bind:value={albumText}
+            maxlength="120"
+            autofocus
+            onkeydown={(e) => {
+              if (e.key === 'Enter') commitAlbumRename(a);
+              else if (e.key === 'Escape') renamingAlbum = null;
+            }}
+            onblur={() => commitAlbumRename(a)}
+          />
+        {:else}
+          <button class="main" onclick={() => openAlbum(a)} title={a.note ? `${a.name}\n${a.note}` : a.name}>
+            <span class="cover">
+              {#if a.cover}<img src={urls.thumb(a.cover.id, a.cover.v)} alt="" loading="lazy" draggable="false" />{:else}<Icon name="album" size={13} />{/if}
+            </span>
+            <span class="grow ellipsis">{a.name}</span>
+            {#if albums.target === a.id}<span class="target" title={'Photos go here with ' + (store.keyHint('albumAdd').replace(/[()\s]/g, '') || 'B')}>{store.keyHint('albumAdd').replace(/[()\s]/g, '') || 'B'}</span>{/if}
+            <span class="count">{fmt(a.count)}</span>
+          </button>
+          <Popover align="right" width="15rem">
+            {#snippet trigger(toggle)}
+              <button class="more" onclick={toggle} aria-label={`Actions for ${a.name}`}><Icon name="more" size={16} /></button>
+            {/snippet}
+            {#snippet children(close)}
+              <button class="menu-item" onclick={() => startAlbumRename(a, close)}><Icon name="edit" />Rename</button>
+              <button class="menu-item" onclick={() => { close(); albums.setTarget(albums.target === a.id ? null : a.id); }}>
+                <Icon name="album-plus" />{albums.target === a.id ? 'Stop adding here with B' : 'Add here with B'}
+              </button>
+              {#if a.missing}
+                <button class="menu-item" onclick={() => { close(); albums.forgetMissing(a); }} title="Members whose file left the library (moved or renamed by another app). They come back by themselves if the file turns up.">
+                  <Icon name="eye-off" />Forget {a.missing} missing
+                </button>
+              {/if}
+              <div class="menu-sep"></div>
+              <button class="menu-item danger" onclick={() => deleteAlbum(a, close)}><Icon name="trash" />Delete album</button>
+            {/snippet}
+          </Popover>
+        {/if}
+      </div>
+    {/each}
+    {#if albums.loaded && albums.list.length === 0 && !creating}
+      <button class="item ghost-item" onclick={startCreate}><Icon name="album-plus" size={16} /><span class="grow">New album…</span></button>
+    {/if}
   </div>
 
   {#if store.collections.length}
@@ -309,6 +474,81 @@
     padding: 0.25rem 0.625rem 0.375rem;
     text-transform: uppercase;
     letter-spacing: 0.075em;
+  }
+  .sec-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 0.25rem;
+  }
+  .sec-add {
+    width: 1.375rem;
+    height: 1.375rem;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: none;
+    color: var(--text-3);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition:
+      background-color var(--dur-fast),
+      color var(--dur-fast),
+      transform var(--dur) var(--ease-spring);
+  }
+  .sec-add:hover {
+    background: var(--surface-3);
+    color: var(--accent);
+    transform: rotate(90deg);
+  }
+  .album .cover {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: none;
+    border-radius: 0.3125rem;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    background: var(--surface-3);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .album .cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform var(--dur-slow) var(--ease-out);
+  }
+  .album:hover .cover img {
+    transform: scale(1.12);
+  }
+  .album.active .cover {
+    box-shadow: 0 0 0 1.5px var(--accent);
+  }
+  .target {
+    font-size: 0.5625rem;
+    font-weight: 750;
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 0.25rem;
+    padding: 0 0.25rem;
+    line-height: 0.9375rem;
+    animation: chip-in var(--dur) var(--ease-spring);
+  }
+  .album.dragging {
+    opacity: 0.4;
+  }
+  .album.drop-before {
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+  .album.drop-after {
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+  .ghost-item {
+    color: var(--text-3);
+  }
+  .ghost-item:hover {
+    color: var(--accent);
   }
   .sec-title.toggle {
     display: flex;

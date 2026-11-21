@@ -1,7 +1,8 @@
 <script lang="ts">
   import { store, LABELS } from '../lib/store.svelte';
   import { rise } from '../lib/motion';
-    import Icon from './Icon.svelte';
+  import { albums } from '../lib/albums.svelte';
+  import Icon from './Icon.svelte';
 
   const n = $derived(store.selected.size);
   const anyRejected = $derived([...store.selected].some((id) => store.folders.get(store.list.f[store.index.get(id) ?? -1])?.isReject));
@@ -21,6 +22,10 @@
     {/if}
     <button class="btn sm" onclick={() => store.togglePick(1)} title="Pick"><Icon name="flag" />{store.mobile ? '' : 'Pick'}</button>
     <button class="btn sm" onclick={() => store.openLocation()} title="Set location"><Icon name="pin" />{store.mobile ? '' : 'Location'}</button>
+    <button class="btn sm" onclick={() => albums.pick()} title={'Add to an album' + store.keyHint('albumPick')}><Icon name="album-plus" />{store.mobile ? '' : 'Album'}</button>
+    {#if albums.currentId != null}
+      <button class="btn sm" onclick={() => albums.remove()} title={'Take out of this album (the files stay)' + store.keyHint('albumRemove')}><Icon name="album-minus" />{store.mobile ? '' : 'Take out'}</button>
+    {/if}
     <button class="btn sm {anyRejected ? '' : 'danger'}" onclick={() => (anyRejected ? store.restore() : store.reject())}>
       <Icon name={anyRejected ? 'restore' : 'reject'} />{store.mobile ? '' : anyRejected ? 'Restore' : 'Reject'}
     </button>

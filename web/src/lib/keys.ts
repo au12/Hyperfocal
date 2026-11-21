@@ -11,7 +11,7 @@ export type Action =
   | 'evToggle' | 'evUp' | 'evDown' | 'evUpBig' | 'evDownBig' | 'evReset'
   | 'rate0' | 'rate1' | 'rate2' | 'rate3' | 'rate4' | 'rate5' | 'rateReject' | 'rateUp' | 'rateDown'
   | 'labelRed' | 'labelYellow' | 'labelGreen' | 'labelBlue' | 'labelPurple'
-  | 'pick' | 'unflag' | 'reject' | 'editTitle' | 'keywords' | 'location'
+  | 'pick' | 'unflag' | 'reject' | 'editTitle' | 'keywords' | 'location' | 'albumAdd' | 'albumPick' | 'albumRemove'
   | 'selectToggle' | 'selectNext' | 'selectPrev' | 'selectRight' | 'selectLeft' | 'selectDown' | 'selectUp'
   | 'selectFirst' | 'selectLast' | 'selectPageDown' | 'selectPageUp' | 'selectAll' | 'selectNone' | 'selectInvert'
   | 'rotateCcw' | 'rotateCw' | 'rotate180'
@@ -83,6 +83,10 @@ const FRV: Bindings = {
   editTitle: ['Alt+D'],
   keywords: ['K'],
   location: ['L'],
+  // Lightroom's "add to target collection".
+  albumAdd: ['B'],
+  albumPick: ['Shift+B'],
+  albumRemove: ['Alt+B'],
   selectToggle: ['Ctrl+Slash'],
   // FastRawViewer puts "select and next" on Shift+arrows too; here Shift extends the
   // selection as in every file manager, and select-and-next keeps its Ctrl keys.
@@ -150,6 +154,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['labelRed', 'Red label'], ['labelYellow', 'Yellow label'], ['labelGreen', 'Green label'], ['labelBlue', 'Blue label'], ['labelPurple', 'Purple label'],
     ['pick', 'Pick flag'], ['unflag', 'Clear flag'], ['reject', 'Move to reject folder (restore when rejected)'], ['rateReject', 'Reject rating (−1)'],
     ['editTitle', 'Edit title & caption'], ['keywords', 'Add keywords'], ['location', 'Set location on map'],
+    ['albumAdd', 'Add to the target album (the last one used)'], ['albumPick', 'Add to an album…'], ['albumRemove', 'Take out of the album shown'],
     ['rotateCcw', 'Rotate left'], ['rotateCw', 'Rotate right'], ['rotate180', 'Rotate 180°'], ['undo', 'Undo last change'],
   ]],
   ['Selection & search', [

@@ -99,6 +99,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(crate::integrity::routes())
         .merge(crate::people::api::routes())
         .merge(crate::dupes::api::routes())
+        .merge(crate::albums::routes())
         .route("/login", post(login))
         .route("/logout", post(logout))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -258,6 +259,8 @@ pub struct ListQuery {
     subj: Option<String>,
     /// Only these photos (ids, comma-separated): a group of the Duplicates report.
     ids: Option<String>,
+    /// Only the photos of this album.
+    album: Option<i64>,
 }
 
 /// SQL for "this folder and everything below it" on `f.path`, as an index range (paths
@@ -373,6 +376,10 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
             }
         }
     }
+    if let Some(album) = q.album {
+        w.push("p.id IN (SELECT photo_id FROM album_photos WHERE album_id = ? AND photo_id IS NOT NULL)".into());
+        a.push(Box::new(album));
+    }
     if let Some(text) = q.q.as_deref() {
         let s = crate::db::search_query(text, trigram);
         if let Some(fq) = s.prefix {
@@ -402,6 +409,10 @@ fn order_by(q: &ListQuery) -> String {
         Some("rating") => format!("p.rating {}, COALESCE(p.taken, p.mtime / 1000) ASC, p.name", if desc { "ASC" } else { "DESC" }),
         Some("modified") => format!("p.mtime {d}, p.name"),
         Some("size") => format!("p.size {d}, p.name"),
+        // An album's own order (the id is a number: safe to put in the SQL).
+        Some("album") if q.album.is_some() => {
+            format!("(SELECT ap.pos FROM album_photos ap WHERE ap.album_id = {} AND ap.photo_id = p.id) {d}, p.id", q.album.unwrap_or(0))
+        }
         _ => format!("COALESCE(p.taken, p.mtime / 1000) {d}, p.name COLLATE NOCASE {d}"),
     }
 }
@@ -888,6 +899,7 @@ async fn photo_detail(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<V
         .unwrap_or_default()
     };
     let sidecar_info = r.sidecar.as_ref().and_then(|s| std::fs::metadata(dir.join(s)).ok().map(|m| (s.clone(), m.len())));
+    let albums = crate::albums::of_photo(&*state.db.get()?, r.id)?;
     Ok(Json(json!({
         "id": r.id, "folder_id": r.folder_id, "folder": loc.folder_path, "in_reject": loc.folder_is_reject,
         "name": r.name, "ext": r.ext, "kind": r.kind, "size": r.size, "mtime": r.mtime,
@@ -902,7 +914,7 @@ async fn photo_detail(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<V
         "city": r.city, "state": r.state, "country": r.country, "country_code": r.country_code, "sublocation": r.sublocation,
         "sidecar": sidecar_info.as_ref().map(|s| &s.0), "sidecar_size": sidecar_info.as_ref().map(|s| s.1),
         "companion": r.companion, "files": companions, "error": r.meta_err,
-        "v": images::sig_str(r),
+        "v": images::sig_str(r), "albums": albums,
     })))
 }
 
@@ -1105,7 +1117,14 @@ struct UndoBody {
 }
 
 async fn undo(State(state): St, Json(b): Json<UndoBody>) -> ApiResult<Json<Value>> {
-    check_writable(&state)?;
+    // Album changes only touch the index: they undo in read-only mode too.
+    let albums_only = match b.batch.as_deref() {
+        Some(batch) => crate::albums::batch_is_albums(&*state.db.get()?, batch)?,
+        None => false,
+    };
+    if !albums_only {
+        check_writable(&state)?;
+    }
     let batch = match b.batch {
         Some(b) => b,
         None => {

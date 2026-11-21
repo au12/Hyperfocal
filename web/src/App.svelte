@@ -24,6 +24,8 @@
   import BulkBar from './components/BulkBar.svelte';
   import MobileNav from './components/MobileNav.svelte';
   import PeopleView from './components/PeopleView.svelte';
+  import AlbumPicker from './components/AlbumPicker.svelte';
+  import { albums } from './lib/albums.svelte';
 
   let drawer = $state(false);
 
@@ -168,6 +170,12 @@
       case 'editTitle': store.panels.info = true; uiCtl.editTitle(); break;
       case 'keywords': store.panels.info = true; uiCtl.addKeyword(); break;
       case 'location': store.openLocation(); break;
+      case 'albumAdd': albums.addToTarget(); break;
+      case 'albumPick': albums.pick(); break;
+      case 'albumRemove':
+        if (albums.currentId == null) store.toast('Open an album first: this takes photos out of the album shown', 'info');
+        else albums.remove();
+        break;
       case 'selectToggle': store.select(focus, 'toggle'); break;
       case 'selectNext': store.select(focus, 'toggle'); store.go(1, true); break;
       case 'selectPrev': store.go(-1, true); store.select(inLoupe ? store.current : store.cursor, 'toggle'); break;
@@ -219,6 +227,13 @@
     if (store.dialog) {
       if (e.key === 'Escape') {
         store.dialog = null;
+        e.preventDefault();
+      }
+      return;
+    }
+    if (albums.picking) {
+      if (e.key === 'Escape') {
+        albums.picking = null;
         e.preventDefault();
       }
       return;
@@ -281,6 +296,7 @@
     <Loupe />
   {/if}
 
+  {#if albums.picking}<AlbumPicker />{/if}
   {#if store.dialog === 'settings'}<SettingsDialog />{/if}
   {#if store.dialog === 'help'}<HelpDialog />{/if}
   {#if store.dialog === 'journal'}<JournalDialog />{/if}

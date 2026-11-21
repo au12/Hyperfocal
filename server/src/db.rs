@@ -12,8 +12,9 @@ pub type Pool = r2d2::Pool<SqliteConnectionManager>;
 
 /// 1: the original schema. 2: `photos.added_at`, covering indexes for the common
 /// filters, the trigram index, saved collections and the integrity monitor. 3: people
-/// and pets (detections, subjects, analysis state).
-const SCHEMA_VERSION: i64 = 4;
+/// and pets (detections, subjects, analysis state). 4: visual fingerprints for the
+/// Duplicates report. 5: albums.
+const SCHEMA_VERSION: i64 = 5;
 
 pub fn open(path: &Path) -> Result<Pool> {
     if let Some(dir) = path.parent() {
@@ -196,6 +197,8 @@ fn migrate(c: &Connection) -> Result<()> {
     crate::people::migrate(c)?;
     // ---- version 4
     crate::dupes::migrate(c)?;
+    // ---- version 5
+    crate::albums::migrate(c)?;
     if !tri_existed {
         // A new (or empty) index fills the trigram table as photos are indexed; an
         // existing one is filled in the background (`backfill_trigram`).
@@ -358,11 +361,12 @@ mod tests {
         }
         let pool = open(&p).unwrap();
         let c = pool.get().unwrap();
-        assert_eq!(get_meta(&c, "schema").as_deref(), Some("4"));
+        assert_eq!(get_meta(&c, "schema").as_deref(), Some("5"));
         assert!(has_column(&c, "photos", "added_at").unwrap());
         assert!(has_column(&c, "detections", "emb").unwrap());
         assert!(has_column(&c, "phashes", "hash").unwrap());
         assert!(table_exists(&c, "dupes_ignored").unwrap());
+        assert!(has_column(&c, "album_photos", "pos").unwrap());
         // The trigram index of an existing library is filled in the background.
         assert!(!trigram_ready(&c));
         drop(c);
