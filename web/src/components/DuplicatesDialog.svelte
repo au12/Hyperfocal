@@ -151,11 +151,13 @@
     }
   }
 
+  /** Exact copies only: near-duplicates and series differ, so they go one group at a time. */
   async function rejectAll() {
+    if (dupes.mode !== 'exact') return;
     const ids = groups.flatMap((g) => dupes.others(g).map((m) => m.id));
     if (!ids.length) return;
     const listed = r && r.total_groups > r.groups.length ? ' listed' : '';
-    const where = `${plural(groups.length, dupes.mode === 'series' ? 'series' : 'group', dupes.mode === 'series' ? 'series' : 'groups')}${listed}`;
+    const where = `${plural(groups.length, 'group')}${listed}`;
     if (!confirm(`Move ${plural(ids.length, 'photo')} (${fmtSize(extraBytes)}) to ${store.status?.reject_dir ?? '_Rejected'}? Every photo not marked Keep goes, in the ${where}. History can undo it.`)) return;
     acting = true;
     try {
@@ -290,8 +292,11 @@
           {#if r.total_groups > r.groups.length}<div class="dim small">Showing the newest {r.groups.length.toLocaleString()} of {r.total_groups.toLocaleString()} groups: reject or dismiss them and search again for the rest.</div>{/if}
           {#if groups.length || r.dismissed}
             <div class="row wrap">
-              {#if groups.length}
+              {#if groups.length && dupes.mode === 'exact'}
                 <button class="btn danger" onclick={rejectAll} disabled={acting || readonly} title={readonly ? 'Read-only mode' : ''}><Icon name="reject" />Reject all but the keepers…</button>
+              {:else if groups.length}
+                <!-- Near-duplicates and series are not identical files: one group at a time, after a look. -->
+                <span class="dim small">These are not identical files, so each group is rejected on its own, after a look.</span>
               {/if}
               {#if r.dismissed}<button class="btn ghost" onclick={showDismissed} disabled={dupes.loading}><Icon name="eye" />Show dismissed groups again</button>{/if}
             </div>
