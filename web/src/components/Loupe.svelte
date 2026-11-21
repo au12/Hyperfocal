@@ -810,6 +810,9 @@
         <button class="btn sm icon" onclick={() => store.rotate(-90)} title={'Rotate left' + store.keyHint('rotateCcw')}><Icon name="rotate-ccw" /></button>
         <button class="btn sm icon" onclick={() => store.rotate(90)} title={'Rotate right' + store.keyHint('rotateCw')}><Icon name="rotate-cw" /></button>
         <button class="btn sm icon" onclick={() => store.openLocation()} title={'Set location' + store.keyHint('location')}><Icon name="pin" /></button>
+        {#if store.status?.immich}
+          <button class="btn sm icon" onclick={() => store.openImmich(undefined, albums.current?.name)} title="Send to Immich"><Icon name="send" /></button>
+        {/if}
         <button class="btn sm icon" onclick={() => albums.pick()} title={'Add to an album' + store.keyHint('albumPick') + (albums.byId(albums.target) ? ` · ${store.keyHint('albumAdd').trim()} adds to “${albums.byId(albums.target)?.name}”` : '')}><Icon name="album-plus" /></button>
         {#if people.enabled}
           <button class="btn sm icon" class:on={store.panels.faces} onclick={() => { store.panels.faces = !store.panels.faces; store.persist(); requestDraw(); }} title={'Faces and pets' + store.keyHint('faces')}><Icon name="scan-face" /></button>
@@ -948,6 +951,9 @@
           <button class="tool" onclick={() => store.rotate(90)}><Icon name="rotate-cw" /><span>Rotate</span></button>
           <button class="tool" onclick={() => { sheet = null; store.openLocation(); }}><Icon name="pin" /><span>Location</span></button>
           <button class="tool" onclick={() => { sheet = null; albums.pick(); }}><Icon name="album-plus" /><span>Album</span></button>
+          {#if store.status?.immich}
+            <button class="tool" onclick={() => { sheet = null; store.openImmich(undefined, albums.current?.name); }}><Icon name="send" /><span>Immich</span></button>
+          {/if}
         </div>
         <div class="evrow">
           <button class="btn" onclick={() => store.bumpEv(-EV_STEP)} aria-label="Exposure −⅓ EV"><Icon name="minus" /></button>

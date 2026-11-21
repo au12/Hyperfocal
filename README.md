@@ -17,6 +17,7 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 
 - [Features](#features)
 - [People & pets](#people--pets)
+- [Send to Immich](#send-to-immich)
 - [Safety](#safety)
 - [Screenshots](#screenshots)
 - [Install on Unraid](#install-on-unraid)
@@ -93,6 +94,7 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - *Near-duplicates* are resized, recompressed or re-exported copies and light edits, found by a 64-bit perceptual hash of each photo's thumbnail, made in the background. Strict, normal and loose levels.
   - *Series* are bursts and brackets: one camera, one folder, a few seconds apart, cut where the scene changes.
   - Each group suggests a keeper (RAW over JPEG, then the most pixels, then the most metadata; in a series the frame you rated or picked, else the sharpest) and says why. Click another photo to keep it instead, open the group in the compare view, mark it "not duplicates", or move the others to `_Rejected` with one click, journaled and undoable like any reject. A RAW and its JPEG twin count as one photo.
+- **Send to Immich.** Select photos (or an album) and send them to your Immich server, into a new or existing Immich album. Photos Immich already has are used as they are, never uploaded twice: found by path when Immich reads this library as an external library, or by content when the same file was uploaded before. RAW files go as a full-size JPEG by default (the camera's own JPEG of a RAW+JPEG pair, or the JPEG inside the RAW, carrying capture time, camera, lens, GPS, rating and keywords), or as the original with its sidecar. Progress shows in the header; nothing in the library changes, and nothing in Immich is changed or deleted besides adding to the album. See [Send to Immich](#send-to-immich).
 - **History.** Every change is journaled with what it changed from and to, and can be undone from the History dialog.
 - **Live updates.** Changes made in another tab, or picked up from disk, appear immediately.
 
@@ -197,6 +199,20 @@ Every model is licensed for commercial use, downloaded when the image is built a
 
 The face models most self-hosted apps use (InsightFace's `buffalo_l` and friends) are for non-commercial research only, so they are not used. AuraFace was trained on commercially licensed data and is a little less accurate than those on the hardest benchmarks; the matching thresholds were tuned on two weddings' worth of photos (crowds, veils, masks, profiles) to make few wrong suggestions rather than many groups.
 
+## Send to Immich
+
+Set `HYPERFOCAL_IMMICH_URL` and `HYPERFOCAL_IMMICH_API_KEY`, and *Send to Immich* appears in the selection bar's menu, the single view, and the albums' menus. Make the key in Immich under Account settings → API keys, with the permissions `asset.read`, `asset.upload`, `album.read`, `album.create` and `albumAsset.create`.
+
+For each photo, Hyperfocal looks for it in Immich before uploading anything:
+
+1. **Sent before:** the asset it became, while it is still there and the file has not changed since.
+2. **In Immich's external library:** if Immich reads the same photo folder (an external library), set `HYPERFOCAL_IMMICH_LIBRARY_PATH` to the path Immich sees it at. A photo at `2019/Trip/IMG_1.CR3` is then looked up as `/mnt/media/photos/2019/Trip/IMG_1.CR3`, and used as it is.
+3. **Uploaded before:** by its content (SHA-1), from Hyperfocal, the Immich CLI or a phone.
+
+Only photos found nowhere are uploaded. A RAW file goes as a full-size JPEG (choose *Original RAW* to send the RAW itself): the camera's own JPEG of a RAW+JPEG pair, or else the largest JPEG inside the RAW with the photo's metadata copied in by ExifTool (capture time, camera and lens, exposure, GPS, and from the sidecar rating, label, title and keywords) and its orientation set, so it looks in Immich as it does here at a fraction of the size. The XMP sidecar goes along with every upload.
+
+Sending runs in the background, with progress in the header and a summary at the end that opens the album in Immich. Nothing in the library changes, and nothing in Immich is changed or deleted besides the album being added to.
+
 ## Safety
 
 Hyperfocal was written for an archive that must not be damaged. These rules are enforced in code:
@@ -296,6 +312,10 @@ services:
       # HYPERFOCAL_PASSWORD: "change-me"
       # People & pets (optional, see below):
       # HYPERFOCAL_ML_URL: "http://hyperfocal-ml:8090"
+      # Send to Immich (optional, see below):
+      # HYPERFOCAL_IMMICH_URL: "http://immich-server:2283"
+      # HYPERFOCAL_IMMICH_API_KEY: "..."
+      # HYPERFOCAL_IMMICH_LIBRARY_PATH: "/mnt/media/photos"   # if Immich reads this library
     restart: unless-stopped
 
   # Optional: face and pet recognition. Use image ghcr.io/au12/hyperfocal-ml:cuda and the
@@ -414,6 +434,10 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | `HYPERFOCAL_PEOPLE_XMP` | `true` | Write confirmed names to the sidecars (`false`: names stay in the index) |
 | `HYPERFOCAL_ML_SIZE` | `2048` | Long side of the image sent for analysis, px |
 | `HYPERFOCAL_ML_CONCURRENCY` | `2` | Photos prepared and in flight to the ML service at once |
+| `HYPERFOCAL_IMMICH_URL` | – | Send to Immich: the Immich server as Hyperfocal reaches it, e.g. `http://192.168.1.10:2283` |
+| `HYPERFOCAL_IMMICH_API_KEY` | – | An Immich API key (Account settings → API keys) with `asset.read`, `asset.upload`, `album.read`, `album.create` and `albumAsset.create` |
+| `HYPERFOCAL_IMMICH_LIBRARY_PATH` | – | Where Immich sees this photo folder, if it reads it as an external library (e.g. `/mnt/media/photos`): photos it has are then found by path instead of uploaded |
+| `HYPERFOCAL_IMMICH_PUBLIC_URL` | the URL above | Immich's address for links in the browser, when the one above is internal |
 | `TZ` | `UTC` | Time zone of the container, for the nightly window (for example `Europe/Lisbon`) |
 | `PUID` / `PGID` | `99` / `100` | User and group the app runs as (Unraid `nobody:users`) |
 | `UMASK` | `000` | `000` matches Unraid share permissions, so Excire can still edit sidecars over SMB |

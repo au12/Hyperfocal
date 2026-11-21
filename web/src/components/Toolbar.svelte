@@ -153,6 +153,9 @@
             {#if store.list.id[store.cursor] != null}
               <button class="menu-item" onclick={() => { close(); albums.setCover(store.list.id[store.cursor]); }} title="The photo under the cursor becomes the album's picture"><Icon name="image" />Use the current photo as cover</button>
             {/if}
+            {#if store.status?.immich && album}
+              <button class="menu-item" onclick={() => { close(); if (album) albums.sendToImmich(album); }}><Icon name="send" />Send the album to Immich…</button>
+            {/if}
             {#if album?.missing}
               <button class="menu-item" onclick={() => { close(); if (album) albums.forgetMissing(album); }}><Icon name="eye-off" />Forget {album.missing} missing</button>
             {/if}

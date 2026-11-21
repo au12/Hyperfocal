@@ -369,7 +369,9 @@ class Store {
 
   settings = $state<Settings>(migrateSettings(loadLocal('hf.settings', DEFAULT_SETTINGS)));
   toasts = $state<Toast[]>([]);
-  dialog = $state<null | 'settings' | 'help' | 'journal' | 'location' | 'keywords' | 'integrity' | 'geotag' | 'duplicates'>(null);
+  dialog = $state<null | 'settings' | 'help' | 'journal' | 'location' | 'keywords' | 'integrity' | 'geotag' | 'duplicates' | 'immich'>(null);
+  /** The photos the Send to Immich dialog sends, and the album it suggests. */
+  immichTargets = $state.raw<{ ids: number[]; album?: string }>({ ids: [] });
   /** Bumped when new visual fingerprints arrive (the Duplicates report refreshes its counts). */
   dupesRev = $state(0);
   /** Background changes, by id (running and recently finished). */
@@ -564,13 +566,21 @@ class Store {
     }
     this.jobsSeen.delete(j.id);
     const ok = j.done - j.failed;
+    setTimeout(() => {
+      if (this.jobs[j.id]?.finished) delete this.jobs[j.id];
+    }, 4000);
+    if (j.undo === false) {
+      // A job that changed nothing here (Send to Immich): what it did, and where to see it.
+      const open = j.link ? { label: 'Open', run: () => window.open(j.link, '_blank', 'noopener') } : undefined;
+      const text = j.summary ?? `${j.label}: done`;
+      if (j.failed) this.toast(`${text} · ${j.failed} failed: ${j.errors[0]?.[1] ?? ''}`, 'error', open, 14000);
+      else this.toast(text, 'ok', open, 9000);
+      return;
+    }
     if (j.failed) this.toast(`${j.label}: ${j.failed} of ${j.total} not saved: ${j.errors[0]?.[1] ?? ''}`, 'error', { label: 'Undo the rest', run: () => this.undo(j.batch) }, 12000);
     else this.toast(`${j.label}: ${ok.toLocaleString()} photo${ok === 1 ? '' : 's'} updated`, 'ok', { label: 'Undo', run: () => this.undo(j.batch) }, 9000);
     this.scheduleReload();
     if (this.loupe || this.detail) this.loadDetail();
-    setTimeout(() => {
-      if (this.jobs[j.id]?.finished) delete this.jobs[j.id];
-    }, 4000);
   };
 
   /** Background changes still running. */
@@ -1572,6 +1582,17 @@ class Store {
     } finally {
       this.busy--;
     }
+  };
+
+  /** Opens Send to Immich for these photos (default: the ones acted on). */
+  openImmich = (ids?: number[], album?: string) => {
+    const t = ids ?? this.targets();
+    if (!t.length) {
+      this.toast('Select photos first', 'info');
+      return;
+    }
+    this.immichTargets = { ids: t, album };
+    this.dialog = 'immich';
   };
 
   openLocation = (ids?: number[]) => {

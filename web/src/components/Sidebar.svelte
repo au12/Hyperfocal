@@ -320,6 +320,9 @@
               <button class="menu-item" onclick={() => { close(); albums.setTarget(albums.target === a.id ? null : a.id); }}>
                 <Icon name="album-plus" />{albums.target === a.id ? 'Stop adding here with B' : 'Add here with B'}
               </button>
+              {#if store.status?.immich}
+                <button class="menu-item" onclick={() => { close(); albums.sendToImmich(a); }}><Icon name="send" />Send to Immich…</button>
+              {/if}
               {#if a.missing}
                 <button class="menu-item" onclick={() => { close(); albums.forgetMissing(a); }} title="Members whose file left the library (moved or renamed by another app). They come back by themselves if the file turns up.">
                   <Icon name="eye-off" />Forget {a.missing} missing

@@ -7,7 +7,8 @@
   const icon = (k: string) => (k === 'error' ? 'info' : k === 'ok' ? 'check' : 'sparkles');
 </script>
 
-<div class="toasts" aria-live="polite">
+<!-- Above the selection bar while it is shown. -->
+<div class="toasts" class:lifted={store.selected.size > 0 && !store.loupe && !store.compare} aria-live="polite">
   {#each store.toasts as t (t.id)}
     <div class="toast {t.kind}" animate:flip={{ duration: reduced() ? 0 : 260 }} in:rise={{ y: 18, scale: 0.96, duration: 340 }} out:fade={{ duration: 160 }}>
       <span class="ico"><Icon name={icon(t.kind)} size={14} stroke={2.25} /></span>
@@ -33,6 +34,10 @@
     align-items: center;
     pointer-events: none;
     width: min(30rem, calc(100% - 1.5rem));
+    transition: bottom var(--dur-slow) var(--ease-out);
+  }
+  .toasts.lifted {
+    bottom: calc(4.5rem + env(safe-area-inset-bottom));
   }
   .toast {
     position: relative;

@@ -25,6 +25,7 @@
   import MobileNav from './components/MobileNav.svelte';
   import PeopleView from './components/PeopleView.svelte';
   import AlbumPicker from './components/AlbumPicker.svelte';
+  import ImmichDialog from './components/ImmichDialog.svelte';
   import { albums } from './lib/albums.svelte';
 
   let drawer = $state(false);
@@ -297,6 +298,7 @@
   {/if}
 
   {#if albums.picking}<AlbumPicker />{/if}
+  {#if store.dialog === 'immich'}<ImmichDialog />{/if}
   {#if store.dialog === 'settings'}<SettingsDialog />{/if}
   {#if store.dialog === 'help'}<HelpDialog />{/if}
   {#if store.dialog === 'journal'}<JournalDialog />{/if}

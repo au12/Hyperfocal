@@ -11,6 +11,7 @@ pub mod files;
 #[cfg(any(fuzzing, test))]
 pub mod fuzzing;
 pub mod geotag;
+pub mod immich;
 pub mod images;
 pub mod inspect;
 pub mod integrity;

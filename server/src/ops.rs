@@ -474,16 +474,25 @@ pub struct JobStatus {
     /// The first errors, for the UI.
     pub errors: Vec<(i64, String)>,
     pub started: i64,
+    /// Whether undoing the batch undoes the job (false: a job that changed nothing here,
+    /// such as sending photos to Immich).
+    pub undo: bool,
+    /// What the job did, in a sentence, once it is finished.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Where to see the result (an album in Immich).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
-struct Job {
+pub(crate) struct Job {
     state: Arc<AppState>,
-    status: JobStatus,
+    pub(crate) status: JobStatus,
     last: std::time::Instant,
 }
 
 impl Job {
-    fn start(state: &Arc<AppState>, label: String, total: usize, batch: String) -> Job {
+    pub(crate) fn start(state: &Arc<AppState>, label: String, total: usize, batch: String) -> Job {
         let status = JobStatus {
             id: batch.clone(),
             label,
@@ -494,6 +503,9 @@ impl Job {
             batch,
             errors: Vec::new(),
             started: crate::db::now_ms(),
+            undo: true,
+            summary: None,
+            link: None,
         };
         let job = Job { state: state.clone(), status, last: std::time::Instant::now() };
         job.publish();
@@ -510,7 +522,7 @@ impl Job {
         self.state.emit(Event::Job(self.status.clone()));
     }
 
-    fn tick(&mut self, err: Option<(i64, String)>) {
+    pub(crate) fn tick(&mut self, err: Option<(i64, String)>) {
         self.status.done += 1;
         if let Some(e) = err {
             self.status.failed += 1;
@@ -524,7 +536,7 @@ impl Job {
         }
     }
 
-    fn finish(mut self) -> JobStatus {
+    pub(crate) fn finish(mut self) -> JobStatus {
         self.status.finished = true;
         self.publish();
         self.status

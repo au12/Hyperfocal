@@ -27,6 +27,8 @@ export interface Status {
   decoders?: { flashraw: string; libraw: string | null; libheif: string | null; raw: 'flashraw' | 'libraw' };
   /** The archive integrity monitor runs. */
   integrity?: boolean;
+  /** Send to Immich is set up: Immich's address, and whether it reads this library. */
+  immich?: { url: string; library: boolean } | null;
   auth: boolean;
   logged_in: boolean;
 }
@@ -192,6 +194,12 @@ export interface JobStatus {
   batch: string;
   errors: [number, string][];
   started: number;
+  /** Undoing the batch undoes the job (false: it changed nothing here). */
+  undo?: boolean;
+  /** What it did, once finished. */
+  summary?: string;
+  /** Where to see the result. */
+  link?: string;
 }
 
 export interface JournalEntry {
@@ -245,6 +253,14 @@ export interface Collection {
   spec: CollectionSpec;
   created?: number;
   updated?: number;
+}
+
+/** An album on the Immich server. */
+export interface ImmichAlbum {
+  id: string;
+  name: string;
+  count: number;
+  thumb: string | null;
 }
 
 /** A hand-picked set of photos in an order of its own. */
@@ -583,6 +599,8 @@ export const api = {
   albumOrder: (id: number, ids: number[], before: number | null) => req<{ moved: boolean; batch: string | null }>('POST', `albums/${id}/order`, { ids, before }),
   albumForget: (id: number) => req<{ forgotten: number; batch: string | null }>('POST', `albums/${id}/forget`, {}),
   orderAlbums: (ids: number[]) => req<{ ok: boolean }>('POST', 'albums/order', { ids }),
+  immichAlbums: () => req<ImmichAlbum[]>('GET', 'immich/albums'),
+  immichSend: (b: { ids: number[]; album?: string; album_name?: string; mode: 'jpeg' | 'original' }) => req<{ job: JobStatus }>('POST', 'immich/send', b),
   photo: (id: number, signal?: AbortSignal) => req<PhotoDetail>('GET', `photo/${id}`, undefined, undefined, signal),
   rawinfo: (id: number, v: string, wb: WbMode, signal?: AbortSignal) => req<RawInfo>('GET', `photo/${id}/rawinfo`, undefined, { v, wb, a: ANALYSIS_REV }, signal),
   pyramid: (id: number, v: string, signal?: AbortSignal) => req<Pyramid>('GET', `photo/${id}/pyramid`, undefined, { v }, signal),

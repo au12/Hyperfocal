@@ -8,7 +8,8 @@
     align = 'left',
     open = $bindable(false),
     width,
-  }: { trigger: Snippet<[() => void, boolean]>; children: Snippet<[() => void]>; align?: 'left' | 'right'; open?: boolean; width?: string } = $props();
+    up = false,
+  }: { trigger: Snippet<[() => void, boolean]>; children: Snippet<[() => void]>; align?: 'left' | 'right'; open?: boolean; width?: string; up?: boolean } = $props();
 
   let root: HTMLElement | undefined = $state();
 
@@ -42,7 +43,7 @@
 <div class="popwrap" bind:this={root}>
   {@render trigger(toggle, open)}
   {#if open}
-    <div class="pop" class:right={align === 'right'} style:width style:animation="none" transition:pop={{ duration: 170, origin: align === 'right' ? 'top right' : 'top left' }}>
+    <div class="pop" class:right={align === 'right'} class:up style:width style:animation="none" transition:pop={{ duration: 170, y: up ? 4 : -4, origin: `${up ? 'bottom' : 'top'} ${align === 'right' ? 'right' : 'left'}` }}>
       {@render children(close)}
     </div>
   {/if}
@@ -60,5 +61,10 @@
   .pop.right {
     left: auto;
     right: 0;
+  }
+  /* Opening upwards (from a bar at the bottom of the screen). */
+  .pop.up {
+    top: auto;
+    bottom: calc(100% + 0.5rem);
   }
 </style>

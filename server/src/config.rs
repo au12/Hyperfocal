@@ -69,6 +69,14 @@ pub struct Config {
     /// Duplicates: a perceptual hash of every photo's thumbnail, made in the background,
     /// for near-duplicates and series (exact copies need only the integrity hashes).
     pub dupes: bool,
+    /// Send to Immich: the server (as Hyperfocal reaches it) and an API key.
+    pub immich_url: Option<String>,
+    pub immich_api_key: Option<String>,
+    /// Immich's address for links in the browser, when it differs (an internal URL above).
+    pub immich_public_url: Option<String>,
+    /// Where Immich sees the photo folder, when it reads it as an external library (so
+    /// photos it has are found by path instead of being uploaded).
+    pub immich_library_path: Option<String>,
 }
 
 fn env_str(key: &str) -> Option<String> {
@@ -125,6 +133,10 @@ impl Config {
             ml_concurrency: 2,
             people_xmp: true,
             dupes: false,
+            immich_url: None,
+            immich_api_key: None,
+            immich_public_url: None,
+            immich_library_path: None,
         }
     }
 
@@ -172,6 +184,10 @@ impl Config {
             ml_concurrency: env_num("HYPERFOCAL_ML_CONCURRENCY", 2usize).clamp(1, 16),
             people_xmp: env_bool("HYPERFOCAL_PEOPLE_XMP", true),
             dupes: env_bool("HYPERFOCAL_DUPES", true),
+            immich_url: env_str("HYPERFOCAL_IMMICH_URL").map(|u| u.trim_end_matches('/').to_string()),
+            immich_api_key: env_str("HYPERFOCAL_IMMICH_API_KEY"),
+            immich_public_url: env_str("HYPERFOCAL_IMMICH_PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
+            immich_library_path: env_str("HYPERFOCAL_IMMICH_LIBRARY_PATH").map(|p| p.trim_end_matches('/').to_string()).filter(|p| !p.is_empty()),
         }
     }
 }

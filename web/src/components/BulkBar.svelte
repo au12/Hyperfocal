@@ -3,6 +3,7 @@
   import { rise } from '../lib/motion';
   import { albums } from '../lib/albums.svelte';
   import Icon from './Icon.svelte';
+  import Popover from './Popover.svelte';
 
   const n = $derived(store.selected.size);
   const anyRejected = $derived([...store.selected].some((id) => store.folders.get(store.list.f[store.index.get(id) ?? -1])?.isReject));
@@ -21,11 +22,24 @@
       <button class="btn sm" onclick={() => store.openCompare()} title={(n > 4 ? 'Compare the first 4' : 'Compare side by side') + store.keyHint('compare')}><Icon name={n >= 4 ? 'compare-4' : 'compare'} />{store.mobile ? '' : 'Compare'}</button>
     {/if}
     <button class="btn sm" onclick={() => store.togglePick(1)} title="Pick"><Icon name="flag" />{store.mobile ? '' : 'Pick'}</button>
-    <button class="btn sm" onclick={() => store.openLocation()} title="Set location"><Icon name="pin" />{store.mobile ? '' : 'Location'}</button>
     <button class="btn sm" onclick={() => albums.pick()} title={'Add to an album' + store.keyHint('albumPick')}><Icon name="album-plus" />{store.mobile ? '' : 'Album'}</button>
     {#if albums.currentId != null}
       <button class="btn sm" onclick={() => albums.remove()} title={'Take out of this album (the files stay)' + store.keyHint('albumRemove')}><Icon name="album-minus" />{store.mobile ? '' : 'Take out'}</button>
     {/if}
+    <Popover align="right" width="14rem" up>
+      {#snippet trigger(toggle, open)}
+        <button class="btn sm icon" class:on={open} onclick={toggle} title="More" aria-label="More actions"><Icon name="more" /></button>
+      {/snippet}
+      {#snippet children(close)}
+        <button class="menu-item" onclick={() => { close(); store.openLocation(); }}><Icon name="pin" />Set location…</button>
+        {#if store.status?.immich}
+          <button class="menu-item" onclick={() => { close(); store.openImmich(undefined, albums.current?.name); }}><Icon name="send" />Send to Immich…</button>
+        {/if}
+        {#if albums.currentId != null && n === 1}
+          <button class="menu-item" onclick={() => { close(); albums.setCover([...store.selected][0]); }}><Icon name="image" />Make it the album cover</button>
+        {/if}
+      {/snippet}
+    </Popover>
     <button class="btn sm {anyRejected ? '' : 'danger'}" onclick={() => (anyRejected ? store.restore() : store.reject())}>
       <Icon name={anyRejected ? 'restore' : 'reject'} />{store.mobile ? '' : anyRejected ? 'Restore' : 'Reject'}
     </button>

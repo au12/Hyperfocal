@@ -236,6 +236,21 @@ class Albums {
     }
   };
 
+  /** Sends a whole album to Immich (into an album of the same name, by default). */
+  sendToImmich = async (a: Album) => {
+    try {
+      const root = store.roots[0]?.id;
+      const list = await api.photos({ folder: root, rec: 1, album: a.id, sort: 'album' });
+      if (!list.id.length) {
+        store.toast(`“${a.name}” has no photos to send`, 'info');
+        return;
+      }
+      store.openImmich(list.id, a.name);
+    } catch (e) {
+      store.toast(`Not sent: ${(e as Error).message}`, 'error');
+    }
+  };
+
   /** New order of the albums in the sidebar. */
   arrange = async (ids: number[]) => {
     const byId = new Map(this.list.map((a) => [a.id, a]));

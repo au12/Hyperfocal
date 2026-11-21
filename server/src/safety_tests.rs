@@ -448,7 +448,7 @@ async fn darktable_sidecars_get_the_standard_name() {
 }
 
 /// Wait for a background job to finish.
-async fn wait_job(state: &Arc<AppState>, id: &str) -> crate::ops::JobStatus {
+pub(crate) async fn wait_job(state: &Arc<AppState>, id: &str) -> crate::ops::JobStatus {
     for _ in 0..600 {
         if let Some(j) = state.jobs.lock().get(id).filter(|j| j.finished).cloned() {
             return j;

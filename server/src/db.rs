@@ -199,6 +199,7 @@ fn migrate(c: &Connection) -> Result<()> {
     crate::dupes::migrate(c)?;
     // ---- version 5
     crate::albums::migrate(c)?;
+    crate::immich::migrate(c)?;
     if !tri_existed {
         // A new (or empty) index fills the trigram table as photos are indexed; an
         // existing one is filled in the background (`backfill_trigram`).
