@@ -266,7 +266,7 @@ Duplicates: near-duplicates across the library, and on a phone exact copies, a s
    Or copy [`unraid/hyperfocal.xml`](unraid/hyperfocal.xml) to that path by hand.
 2. Go to **Docker**, click **Add Container**, and choose **Hyperfocal** in the **Template** list.
 3. Set **Photo library** to the share that holds your Year folders, for example `/mnt/user/Photos`.
-4. Keep **AppData** on your cache pool. The index database and the thumbnail cache live there. `/mnt/cache/appdata/hyperfocal` is best if `appdata` is not an exclusive share.
+4. Keep **AppData** on your cache pool. The index database and the thumbnail cache live there. `/mnt/cache/appdata/hyperfocal` is best if `appdata` is not an exclusive share. Thumbnails are kept in a few large pack files (512 MB each), not one file per photo, so appdata backups copy them at disk speed; the `cache` folder can still be left out of backups, since it is rebuilt by itself.
 5. Click **Apply**, then open the web UI.
 
 The first scan indexes metadata only and reads very little of each file. Thumbnails are built in the background, newest years first. Any folder you open is indexed immediately, ahead of the queue.
@@ -431,6 +431,8 @@ These numbers are from a 2-vCPU test VM; an Unraid server will be faster.
 | Switching between view tools | 30–70 ms |
 | Clipping mask | 4 ms |
 | Full-resolution RAW tile (512×512, RCD), on the server | 10 ms |
+
+Thumbnails live in append-only pack files with a checksum per record: a request is one positioned read, start-up reads a small hint file per pack instead of 300,000 directory entries, and thumbnails of photos that changed or left the library are cleared out in the background (a pack that is mostly garbage is rewritten). Thumbnails from before are moved into packs on the first start.
 
 The server is a single Rust binary (axum, SQLite in WAL mode, FlashRaw, libjpeg-turbo with SIMD). The RAW development pass is written as plain loops the compiler vectorises (SSE2, or NEON on ARM), with an AVX2 copy picked at run time on CPUs that have it; the log says which one runs. The UI is about 70 KB of compressed Svelte 5; the map loads only when you use it. The image is Debian slim plus ExifTool, which is used only to write sidecars, and libheif and LibRaw for the helper process.
 

@@ -71,14 +71,18 @@ async fn heic_drafts_and_previews_ahead() {
     let (st, cc) = get(format!("/api/photo/{heic}/thumb?v=1")).await;
     assert_eq!((st, cc.as_str()), (StatusCode::OK, "no-store"), "the embedded 320 px thumbnail is a draft");
     assert_eq!(get(format!("/api/photo/{heic}/thumb?v=1")).await.1, "no-store");
-    let thumbs = files_under(&tmp.path().join("config/cache/thumbs"));
-    assert!(thumbs.len() == 1 && thumbs[0].ends_with(".draft.jpg"), "{thumbs:?}");
+    let rec = hyperfocal::repo::load(&state.db.get().unwrap(), heic).unwrap().unwrap().rec;
+    let sig = images::sig48(&rec);
+    use images::thumbstore::Kind as TK;
+    assert!(state.images.thumbs.contains(heic, sig, TK::Draft) && !state.images.thumbs.contains(heic, sig, TK::Thumb));
     // The queue's turn: the full thumbnail replaces the draft.
     assert!(images::build_thumb(&state, heic));
     let (_, cc) = get(format!("/api/photo/{heic}/thumb?v=1")).await;
     assert!(cc.contains("immutable"), "{cc}");
-    let thumbs = files_under(&tmp.path().join("config/cache/thumbs"));
-    assert!(thumbs.len() == 1 && !thumbs[0].contains("draft"), "{thumbs:?}");
+    assert!(!state.images.thumbs.contains(heic, sig, TK::Draft) && state.images.thumbs.contains(heic, sig, TK::Thumb));
+    // Thumbnails live in pack files, not one file per photo.
+    let files = files_under(&tmp.path().join("config/cache/thumbs"));
+    assert!(files.iter().all(|f| f.ends_with(".pack") || f.ends_with(".hint")), "{files:?}");
 
     // Previews ahead: recent imports outside reject folders, once.
     let since = hyperfocal::db::now_ms() - 3 * 3_600_000;

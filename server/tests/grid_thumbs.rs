@@ -71,9 +71,10 @@ async fn grid_thumbnails() {
     // Nothing but a version string names a file.
     let resp = app.clone().oneshot(Request::builder().uri(format!("/api/photo/{}/thumb?v=..%2F..%2Fx", a.rec.id)).body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    assert!(state.images.thumb_path_for(1, "abc/../x").is_none());
-    assert!(state.images.thumb_path_for(1, "ABC").is_none());
-    assert!(state.images.thumb_path_for(-1, "abc").is_none());
-    assert!(state.images.thumb_path_for(1, "").is_none());
-    assert!(state.images.thumb_path_for(7, "1f2e").unwrap().ends_with("07/7_1f2e.jpg"));
+    assert!(state.images.cached_thumb(a.rec.id, "abc/../x").is_none());
+    assert!(state.images.cached_thumb(-1, &v).is_none());
+    assert_eq!(images::parse_sig("1f2e"), Some(0x1f2e));
+    for bad in ["ABC", "", "abc/../x", "1234567890abc", "-1"] {
+        assert_eq!(images::parse_sig(bad), None, "{bad}");
+    }
 }

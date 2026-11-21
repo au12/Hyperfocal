@@ -96,7 +96,7 @@ enum Outcome {
 /// Hash one photo and store the result (or why it could not be read).
 fn hash_one(state: &AppState, row: &PhotoRec) -> Result<Outcome> {
     // Before anything else: a thumbnail on its way is waited for.
-    if state.cfg.pregen_thumbs && state.images.thumbs_queued() > 0 && !state.images.thumb_path(row).exists() {
+    if state.cfg.pregen_thumbs && state.images.thumbs_queued() > 0 && !state.images.has_thumb(row) {
         return Ok(Outcome::Later);
     }
     let loc = {

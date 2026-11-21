@@ -817,6 +817,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bindgen",
+ "crc32fast",
  "fast_image_resize",
  "flashraw",
  "flashraw-core",

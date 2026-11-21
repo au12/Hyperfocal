@@ -50,6 +50,8 @@ base64 = "0.22"
 libheif-rs = { version = "3", default-features = false, features = ["v1_17"], optional = true }
 # Archive integrity: content hashes of the originals, and alerts to ntfy, Gotify or a webhook.
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# Checksums of the records in the thumbnail packs.
+crc32fast = "1"
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 
 [build-dependencies]

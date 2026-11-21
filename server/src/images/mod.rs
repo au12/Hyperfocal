@@ -9,6 +9,7 @@ pub mod demosaic;
 pub mod jpeg;
 pub mod raw;
 pub mod simd;
+pub mod thumbstore;
 pub mod tone;
 
 use crate::config::Config;
@@ -164,7 +165,8 @@ type BayerInflight = Arc<tokio::sync::Mutex<Option<std::result::Result<Arc<raw::
 
 pub struct Images {
     pub index_pool: rayon::ThreadPool,
-    thumbs_dir: PathBuf,
+    /// Thumbnails, in pack files (see `thumbstore`).
+    pub thumbs: thumbstore::ThumbStore,
     previews_dir: PathBuf,
     preview_budget: u64,
     thumb_sem: tokio::sync::Semaphore,
@@ -205,7 +207,17 @@ pub fn sig(rec: &PhotoRec) -> u64 {
 }
 
 pub fn sig_str(rec: &PhotoRec) -> String {
-    format!("{:x}", sig(rec) & 0xffff_ffff_ffff)
+    format!("{:x}", sig48(rec))
+}
+
+/// The version a photo list gives (`sig_str`) as a number: the thumbnail store's key.
+pub fn sig48(rec: &PhotoRec) -> u64 {
+    sig(rec) & 0xffff_ffff_ffff
+}
+
+/// A version string from a URL (`v`), if it is one.
+pub fn parse_sig(v: &str) -> Option<u64> {
+    (!v.is_empty() && v.len() <= 12 && v.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))).then(|| u64::from_str_radix(v, 16).ok()).flatten()
 }
 
 fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
@@ -324,7 +336,7 @@ impl Images {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
         Ok(Images {
             index_pool,
-            thumbs_dir: cfg.cache_dir.join("thumbs"),
+            thumbs: thumbstore::ThumbStore::open(&cfg.cache_dir.join("thumbs"))?,
             previews_dir: cfg.cache_dir.join("previews"),
             preview_budget: cfg.preview_cache_mb as u64 * 1024 * 1024,
             thumb_sem: tokio::sync::Semaphore::new(cores.clamp(2, 8)),
@@ -345,20 +357,28 @@ impl Images {
         })
     }
 
-    pub fn thumb_path(&self, rec: &PhotoRec) -> PathBuf {
-        self.thumbs_dir.join(format!("{:02x}", rec.id % 256)).join(format!("{}_{}.jpg", rec.id, sig_str(rec)))
+    /// The cached thumbnail of photo `id` at version `v` (`sig_str`, as photo lists give
+    /// it), without looking the photo up: for the grid's many requests.
+    pub fn cached_thumb(&self, id: i64, v: &str) -> Option<Vec<u8>> {
+        let sig = parse_sig(v)?;
+        if id <= 0 {
+            return None;
+        }
+        self.thumbs.get(id, sig, thumbstore::Kind::Thumb).or_else(|| self.legacy_thumb(id, sig))
     }
 
-    /// Where the thumbnail of photo `id` at version `v` (`sig_str`, as photo lists give
-    /// it) is kept, without looking the photo up: for the grid's many requests. None
-    /// for anything that is not a version string.
-    pub fn thumb_path_for(&self, id: i64, v: &str) -> Option<PathBuf> {
-        let ok = id > 0 && !v.is_empty() && v.len() <= 16 && v.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-        ok.then(|| self.thumbs_dir.join(format!("{:02x}", id % 256)).join(format!("{id}_{v}.jpg")))
+    /// A thumbnail of the old one-file-per-photo layout, while it is being moved into packs.
+    fn legacy_thumb(&self, id: i64, sig: u64) -> Option<Vec<u8>> {
+        if !self.thumbs.has_legacy() {
+            return None;
+        }
+        std::fs::read(self.thumbs.legacy_path(id, &format!("{sig:x}"))).ok().filter(|b| !b.is_empty())
     }
 
-    fn draft_path(&self, rec: &PhotoRec) -> PathBuf {
-        self.thumbs_dir.join(format!("{:02x}", rec.id % 256)).join(format!("{}_{}.draft.jpg", rec.id, sig_str(rec)))
+    /// Whether the thumbnail of a photo's current version is made.
+    pub fn has_thumb(&self, rec: &PhotoRec) -> bool {
+        let sig = sig48(rec);
+        self.thumbs.contains(rec.id, sig, thumbstore::Kind::Thumb) || (self.thumbs.has_legacy() && self.thumbs.legacy_path(rec.id, &format!("{sig:x}")).exists())
     }
 
     fn preview_path(&self, rec: &PhotoRec, long: usize) -> PathBuf {
@@ -368,10 +388,13 @@ impl Images {
     pub fn cache_stats(&self) -> serde_json::Value {
         let d = self.developed.lock();
         let r = self.rendered.lock();
+        let t = self.thumbs.stats();
         serde_json::json!({
             "developed": d.len(), "developed_mb": d.bytes() / 1048576,
             "rendered": r.len(), "rendered_mb": r.bytes() / 1048576,
             "thumb_queue": self.queue.lock().0.len(),
+            "thumbs": t.entries, "thumb_packs": t.packs, "thumb_mb": t.bytes / 1048576, "thumb_live_mb": t.live_bytes / 1048576,
+            "thumb_legacy": t.legacy_files,
         })
     }
 
@@ -386,42 +409,44 @@ impl Images {
         self.queue.lock().0.len()
     }
 
-    /// Thumbnail file for a photo (generated on first request), and whether it is a
-    /// draft: for a HEIC file whose embedded thumbnail is smaller than a thumbnail,
-    /// that is shown at once while the full-quality one is made in the background.
-    pub async fn thumb(&self, state: &AppState, loc: &Located) -> Result<(PathBuf, bool)> {
-        let path = self.thumb_path(&loc.rec);
-        if path.exists() {
-            return Ok((path, false));
+    /// A photo's thumbnail (made on first request), and whether it is a draft: for a HEIC
+    /// file whose embedded thumbnail is smaller than a thumbnail, that is shown at once
+    /// while the full-quality one is made in the background.
+    pub async fn thumb(&self, state: &AppState, loc: &Located) -> Result<(Vec<u8>, bool)> {
+        let (id, sig) = (loc.rec.id, sig48(&loc.rec));
+        if let Some(b) = self.thumbs.get(id, sig, thumbstore::Kind::Thumb).or_else(|| self.legacy_thumb(id, sig)) {
+            return Ok((b, false));
         }
         let kind = Kind::from_i32(loc.rec.kind);
-        let draft = self.draft_path(&loc.rec);
-        if kind == Kind::Heic && draft.exists() {
-            self.queue_first(loc.rec.id);
-            return Ok((draft, true));
+        if kind == Kind::Heic
+            && let Some(d) = self.thumbs.get(id, sig, thumbstore::Kind::Draft)
+        {
+            self.queue_first(id);
+            return Ok((d, true));
         }
         let busy = Busy::new(&self.interactive);
         let _p = self.thumb_sem.acquire().await?;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
-        let (orient, out, dout) = (loc.rec.orientation as u8, path.clone(), draft.clone());
-        let res = tokio::task::spawn_blocking(move || -> Result<bool> {
+        let orient = loc.rec.orientation as u8;
+        let res = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, bool)> {
             if kind == Kind::Heic {
                 let (img, info) = native::heic_thumb(&src, THUMB_LONG, DRAFT_MIN)?;
-                let is_draft = info.source == "draft";
                 let img = jpeg::orient(jpeg::fit_long(img, THUMB_LONG)?, orient);
-                write_atomic(if is_draft { &dout } else { &out }, &jpeg::encode(&img, 78, false)?)?;
-                return Ok(is_draft);
+                return Ok((jpeg::encode(&img, 78, false)?, info.source == "draft"));
             }
-            make_thumb(&src, kind, orient, &out)?;
-            Ok(false)
+            Ok((make_thumb(&src, kind, orient)?, false))
         })
         .await;
         drop(busy);
-        if res?? {
-            self.queue_first(loc.rec.id);
-            return Ok((draft, true));
+        let (bytes, draft) = res??;
+        let store_kind = if draft { thumbstore::Kind::Draft } else { thumbstore::Kind::Thumb };
+        if let Err(e) = self.thumbs.put(id, sig, store_kind, &bytes) {
+            tracing::warn!("thumbnail of photo {id} not cached: {e:#}");
         }
-        Ok((path, false))
+        if draft {
+            self.queue_first(id);
+        }
+        Ok((bytes, draft))
     }
 
     /// Put a photo at the front of the thumbnail queue.
@@ -772,6 +797,10 @@ impl Images {
             let st = state.clone();
             std::thread::Builder::new().name("previews".into()).spawn(move || pregen_previews(&st)).expect("spawn previews");
         }
+        {
+            let st = state.clone();
+            std::thread::Builder::new().name("thumbstore".into()).spawn(move || thumbstore_upkeep(&st)).expect("spawn thumbstore");
+        }
 
         // Preview cache size limit.
         tokio::spawn(async move {
@@ -790,14 +819,21 @@ pub fn build_thumb(st: &AppState, id: i64) -> bool {
     let Ok(conn) = st.db.get() else { return false };
     let Ok(Some(loc)) = repo::load(&conn, id) else { return false };
     drop(conn);
-    let out = st.images.thumb_path(&loc.rec);
-    if out.exists() {
+    if st.images.has_thumb(&loc.rec) {
         return false;
     }
-    let draft = st.images.draft_path(&loc.rec);
+    let sig = sig48(&loc.rec);
     let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
-    match raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, &out)) {
-        Ok(()) => std::fs::remove_file(&draft).is_ok(),
+    match raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8)) {
+        Ok(bytes) => {
+            if let Err(e) = st.images.thumbs.put(id, sig, thumbstore::Kind::Thumb, &bytes) {
+                tracing::warn!("thumbnail of {} not cached: {e:#}", src.display());
+                return false;
+            }
+            let had_draft = st.images.thumbs.contains(id, sig, thumbstore::Kind::Draft);
+            st.images.thumbs.remove(id, thumbstore::Kind::Draft);
+            had_draft
+        }
         Err(e) => {
             tracing::debug!("thumbnail for {} failed: {e}", src.display());
             false
@@ -806,19 +842,96 @@ pub fn build_thumb(st: &AppState, id: i64) -> bool {
 }
 
 /// A photo's thumbnail as pixels (upright, long edge `THUMB_LONG`), for analysis: the
-/// cached thumbnail when there is one, else made in memory and not written (the
-/// thumbnail builder and the grid write thumbnails; two writers of one file would race).
+/// cached thumbnail when there is one, else made now (and cached: the pack store takes
+/// any number of writers).
 pub fn thumb_pixels(st: &AppState, loc: &Located) -> Result<Rgb> {
-    if let Ok(data) = std::fs::read(st.images.thumb_path(&loc.rec)) {
+    let sig = sig48(&loc.rec);
+    if let Some(data) = st.images.thumbs.get(loc.rec.id, sig, thumbstore::Kind::Thumb).or_else(|| st.images.legacy_thumb(loc.rec.id, sig)) {
         return jpeg::decode_scaled(&data, 0);
     }
     let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
     let (kind, orientation) = (Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8);
-    raw::catch(|| -> Result<Rgb> {
+    let img = raw::catch(|| -> Result<Rgb> {
         let img = load_display_rgb(&src, kind, THUMB_LONG)?;
         Ok(jpeg::orient(jpeg::fit_long(img, THUMB_LONG)?, orientation))
     })
-    .map_err(|e| anyhow!(e))
+    .map_err(|e| anyhow!(e))?;
+    if let Ok(bytes) = jpeg::encode(&img, 78, false) {
+        let _ = st.images.thumbs.put(loc.rec.id, sig, thumbstore::Kind::Thumb, &bytes);
+    }
+    Ok(img)
+}
+
+/// A photo's cached thumbnail as JPEG bytes, made (and cached) when missing.
+pub fn thumb_jpeg(st: &AppState, loc: &Located) -> Result<Vec<u8>> {
+    let sig = sig48(&loc.rec);
+    if let Some(data) = st.images.thumbs.get(loc.rec.id, sig, thumbstore::Kind::Thumb).or_else(|| st.images.legacy_thumb(loc.rec.id, sig)) {
+        return Ok(data);
+    }
+    let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
+    let bytes = raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8)).map_err(|e| anyhow!(e))?;
+    let _ = st.images.thumbs.put(loc.rec.id, sig, thumbstore::Kind::Thumb, &bytes);
+    Ok(bytes)
+}
+
+/// Thumbnail store upkeep, in the background: moves thumbnails of the old layout into
+/// packs, forgets thumbnails of photos that left the index or changed, and rewrites packs
+/// that are mostly garbage. Always behind interactive work.
+fn thumbstore_upkeep(st: &Arc<AppState>) {
+    let wait = || {
+        while st.images.busy() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    // The version of every photo of the index.
+    let current = || -> Option<HashMap<i64, u64>> {
+        let c = st.db.get().ok()?;
+        let mut q = c.prepare("SELECT id, size, mtime, orientation FROM photos").ok()?;
+        let rows = q
+            .query_map([], |r| Ok(PhotoRec { id: r.get(0)?, size: r.get(1)?, mtime: r.get(2)?, orientation: r.get(3)?, ..Default::default() }))
+            .ok()?;
+        Some(rows.flatten().map(|rec| (rec.id, sig48(&rec))).collect())
+    };
+    std::thread::sleep(Duration::from_secs(20));
+    if st.images.thumbs.has_legacy() {
+        let t = Instant::now();
+        // Until the first scan, the index may not know every photo yet: keep everything.
+        let known = current().filter(|m| !m.is_empty());
+        let keep = |id: i64, sig: u64| known.as_ref().is_none_or(|m| m.get(&id) == Some(&sig));
+        match st.images.thumbs.migrate_legacy(&keep, &wait) {
+            Ok(n) => tracing::info!("thumbnails: moved {n} into pack files in {:.0}s", t.elapsed().as_secs_f64()),
+            Err(e) => tracing::warn!("thumbnails: moving them into pack files stopped: {e:#}"),
+        }
+    }
+    loop {
+        std::thread::sleep(Duration::from_secs(180));
+        // Only once the library has been scanned: before that, the index is incomplete.
+        if st.progress.read().last_full_scan.is_none() {
+            continue;
+        }
+        if let Some(cur) = current() {
+            let n = st.images.thumbs.gc(|id, sig| cur.get(&id) == Some(&sig));
+            if n > 0 {
+                tracing::debug!("thumbnails: {n} no longer needed");
+            }
+        }
+        let mut freed = 0u64;
+        loop {
+            wait();
+            match st.images.thumbs.compact(&wait) {
+                Ok(0) => break,
+                Ok(b) => freed += b,
+                Err(e) => {
+                    tracing::warn!("thumbnails: compacting a pack failed: {e:#}");
+                    break;
+                }
+            }
+        }
+        if freed > 0 {
+            tracing::info!("thumbnails: compacted the packs, {} MB freed", freed / 1048576);
+        }
+        std::thread::sleep(Duration::from_secs(1800));
+    }
 }
 
 /// Previews of recent imports, made ahead of the first look while nothing else is going
@@ -925,11 +1038,12 @@ fn make_preview(src: &Path, kind: Kind, long: usize, out: &Path) -> Result<()> {
     write_atomic(out, &jpeg::encode(&img, 85, false)?)
 }
 
-fn make_thumb(src: &Path, kind: Kind, orientation: u8, out: &Path) -> Result<()> {
+/// A photo's thumbnail as JPEG bytes (upright, long edge `THUMB_LONG`).
+fn make_thumb(src: &Path, kind: Kind, orientation: u8) -> Result<Vec<u8>> {
     let img = load_display_rgb(src, kind, THUMB_LONG)?;
     let img = jpeg::fit_long(img, THUMB_LONG)?;
     let img = jpeg::orient(img, orientation);
-    write_atomic(out, &jpeg::encode(&img, 78, false)?)
+    jpeg::encode(&img, 78, false)
 }
 
 /// Delete the oldest cached previews beyond `budget` bytes (cache directory only).

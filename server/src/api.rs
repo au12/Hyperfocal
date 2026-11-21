@@ -929,16 +929,16 @@ struct ImgQuery {
 }
 
 async fn thumb(State(state): St, Path(id): Path<i64>, Query(q): Query<ImgQuery>) -> ApiResult<Response> {
-    // Made already (nearly always): straight from the cache, without an index lookup.
-    // The version is part of the file name, so this is always the image the URL names.
-    if let Some(path) = q.v.as_deref().and_then(|v| state.images.thumb_path_for(id, v))
-        && let Ok(bytes) = tokio::fs::read(path).await
-    {
-        return Ok(image_response(bytes, "image/jpeg", true));
+    // Made already (nearly always): straight from the pack, without an index lookup. The
+    // version is part of the key, so this is always the image the URL names.
+    if let Some(v) = q.v.clone() {
+        let st = state.clone();
+        if let Ok(Some(bytes)) = tokio::task::spawn_blocking(move || st.images.cached_thumb(id, &v)).await {
+            return Ok(image_response(bytes, "image/jpeg", true));
+        }
     }
     let loc = load(&state, id).await?;
-    let (path, draft) = state.images.thumb(&state, &loc).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
-    let bytes = tokio::fs::read(path).await.map_err(|e| anyhow::anyhow!(e))?;
+    let (bytes, draft) = state.images.thumb(&state, &loc).await.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
     let mut resp = image_response(bytes, "image/jpeg", q.v.is_some() && !draft);
     if draft {
         // Shown until the full-quality thumbnail is ready (an event says when): never cached.
