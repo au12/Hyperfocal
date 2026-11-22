@@ -1,6 +1,6 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
-  import { store, QUICK, rangeLabel } from '../lib/store.svelte';
+  import { store, QUICK, LOCATIONS, rangeLabel } from '../lib/store.svelte';
   import { urls, type Album, type Collection, type Folder } from '../lib/api';
   import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
@@ -28,7 +28,9 @@
   });
 
   const root = $derived(store.roots[0]);
-  const inFolders = $derived(store.view !== 'people' && !store.query && !store.dateRange && !store.collection);
+  /** The grid is shown: what it shows is highlighted (not while the map or People is up). */
+  const browsing = $derived(store.view === 'grid');
+  const inFolders = $derived(browsing && !store.query && !store.dateRange && !store.collection);
   const peopleCount = $derived(people.status ? people.status.people + people.status.pets : undefined);
 
   function toggle(f: Folder, e: MouseEvent) {
@@ -37,31 +39,23 @@
     else store.expanded.add(f.id);
   }
 
-  /** Leave the People view for the photos (the map stays the map). */
-  function toPhotos() {
-    if (store.view === 'people') store.view = 'grid';
-  }
-
+  // Every pick below shows its photos in the grid, leaving the map or People & pets.
   function open(f: Folder) {
-    toPhotos();
     store.openFolder(f.id);
     onpick?.();
   }
 
   function openAll() {
-    toPhotos();
     store.openLibrary();
     onpick?.();
   }
 
   function quick(q: (typeof QUICK)[number]) {
-    toPhotos();
     store.applyCollection({ id: q.id, name: q.name, spec: q.spec });
     onpick?.();
   }
 
   function openSaved(c: Collection) {
-    toPhotos();
     store.applyCollection({ id: c.id, name: c.name, spec: c.spec });
     onpick?.();
   }
@@ -70,6 +64,30 @@
     store.openPeople();
     onpick?.();
   }
+
+  function openLocations() {
+    store.openLocations();
+    onpick?.();
+  }
+
+  // ---- library tools: each opens its dialog
+  let toolsShown = $state(localStorage.getItem('hf.tools') !== '0');
+
+  function toggleTools() {
+    toolsShown = !toolsShown;
+    try {
+      localStorage.setItem('hf.tools', toolsShown ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function tool(d: 'keywords' | 'geotag' | 'duplicates' | 'integrity') {
+    store.dialog = d;
+    onpick?.();
+  }
+
+  const problems = $derived(store.integrity.changed + store.integrity.missing + store.integrity.unreadable);
 
   // ---- timeline: years > months > days, from per-day counts
   const DAY_MS = 86_400_000;
@@ -122,7 +140,7 @@
     onpick?.();
   }
 
-  const isRange = (from: number, to: number) => !store.collection && store.dateRange != null && !store.dateRange.nodate && store.dateRange.from === from && store.dateRange.to === to;
+  const isRange = (from: number, to: number) => browsing && !store.collection && store.dateRange != null && !store.dateRange.nodate && store.dateRange.from === from && store.dateRange.to === to;
   const yearRange = (y: number): [number, number] => [Date.UTC(y, 0, 1) / 1000, Date.UTC(y + 1, 0, 1) / 1000];
   const monthRange = (y: number, m: number): [number, number] => [Date.UTC(y, m, 1) / 1000, Date.UTC(y, m + 1, 1) / 1000];
   const monthName = (m: number) => new Date(Date.UTC(2000, m, 1)).toLocaleDateString(undefined, { month: 'long', timeZone: 'UTC' });
@@ -243,8 +261,11 @@
         <Icon name="users" size={16} /><span class="grow ellipsis">People & pets</span><span class="count">{fmt(peopleCount)}</span>
       </button>
     {/if}
+    <button class="item" class:active={store.view === 'map'} onclick={openLocations} title={'Every photo with a location, on a map' + store.keyHint('map')}>
+      <Icon name={LOCATIONS.icon} size={16} /><span class="grow ellipsis">{LOCATIONS.name}</span><span class="count">{fmt(store.counts[LOCATIONS.id])}</span>
+    </button>
     {#each QUICK as q (q.id)}
-      <button class="item" class:active={store.view !== 'people' && store.collection?.id === q.id} onclick={() => quick(q)}>
+      <button class="item" class:active={browsing && store.collection?.id === q.id} onclick={() => quick(q)}>
         <Icon name={q.icon} size={16} /><span class="grow">{q.name}</span><span class="count">{fmt(store.counts[q.id])}</span>
       </button>
     {/each}
@@ -276,7 +297,7 @@
     {#each albums.list as a (a.id)}
       <div
         class="item coll album"
-        class:active={store.view !== 'people' && albums.currentId === a.id}
+        class:active={browsing && albums.currentId === a.id}
         class:dragging={dragAlbum === a.id}
         class:drop-before={dropAt?.id === a.id && !dropAt.after}
         class:drop-after={dropAt?.id === a.id && dropAt.after}
@@ -344,7 +365,7 @@
     <div class="section">
       <div class="sec-title">Collections</div>
       {#each store.collections as c (c.id)}
-        <div class="item coll" class:active={store.view !== 'people' && store.collection?.id === c.id}>
+        <div class="item coll" class:active={browsing && store.collection?.id === c.id}>
           {#if renaming === c.id}
             <Icon name="bookmark" size={16} />
             <!-- svelte-ignore a11y_autofocus -->
@@ -380,6 +401,29 @@
   {/if}
 
   <div class="section">
+    <button class="sec-title toggle" class:open={toolsShown} onclick={toggleTools} aria-expanded={toolsShown}>
+      <Icon name="chevron" size={12} stroke={2.25} />Library tools
+    </button>
+    {#if toolsShown}
+      <button class="item" onclick={() => tool('keywords')} title="Rename, move, merge and remove keywords across the library">
+        <Icon name="tags" size={16} /><span class="grow ellipsis">Keywords</span>
+      </button>
+      <button class="item" onclick={() => tool('geotag')} title="Place photos from a GPX, KML or location-history file">
+        <Icon name="route" size={16} /><span class="grow ellipsis">Geotag from a track</span>
+      </button>
+      <button class="item" onclick={() => tool('duplicates')} title="Exact copies, near-duplicates, look-alikes and series">
+        <Icon name="copy" size={16} /><span class="grow ellipsis">Duplicates</span>
+      </button>
+      {#if store.status?.integrity !== false}
+        <button class="item" class:alarm={problems > 0} onclick={() => tool('integrity')} title="Content hashes of the originals, checked over time">
+          <Icon name={problems ? 'shield-alert' : 'shield'} size={16} /><span class="grow ellipsis">Archive integrity</span>
+          {#if problems}<span class="count bad tnum">{fmt(problems)}</span>{/if}
+        </button>
+      {/if}
+    {/if}
+  </div>
+
+  <div class="section">
     <button class="sec-title toggle" class:open={timelineShown} onclick={toggleTimeline} aria-expanded={timelineShown}>
       <Icon name="chevron" size={12} stroke={2.25} />Timeline
     </button>
@@ -410,7 +454,7 @@
         {/if}
       {/each}
       {#if store.timeline?.undated}
-        <button class="item" class:active={!store.collection && store.dateRange?.nodate} onclick={() => { store.openDate({ from: 0, to: 0, label: 'No date', nodate: true }); onpick?.(); }}>
+        <button class="item" class:active={browsing && !store.collection && store.dateRange?.nodate} onclick={() => { store.openDate({ from: 0, to: 0, label: 'No date', nodate: true }); onpick?.(); }}>
           <span class="tw"></span><Icon name="calendar" size={16} /><span class="grow dim">No date</span><span class="count">{fmt(store.timeline.undated)}</span>
         </button>
       {/if}
@@ -730,6 +774,14 @@
   }
   .item.active .count {
     color: var(--accent);
+  }
+  /* Archive integrity with problems: the shield and the count turn red. */
+  .item.alarm :global(svg),
+  .count.bad {
+    color: var(--negative);
+  }
+  .count.bad {
+    font-weight: 700;
   }
   .empty {
     padding: 0.5rem 1rem;

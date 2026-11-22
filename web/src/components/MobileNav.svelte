@@ -6,12 +6,12 @@
 </script>
 
 <nav class="mnav glass" use:segmented>
-  <button class:on={store.view === 'grid'} onclick={() => (store.view = 'grid')}><Icon name="grid" size={22} /><span>Photos</span></button>
-  <button class:on={store.view === 'map'} onclick={() => (store.view = 'map')}><Icon name="map" size={22} /><span>Map</span></button>
+  <button class:on={store.view === 'grid'} onclick={() => store.showPhotos()}><Icon name="grid" size={22} /><span>Photos</span></button>
+  <button class:on={store.view === 'map'} onclick={() => store.openLocations()}><Icon name="map" size={22} /><span>Map</span></button>
   {#if people.enabled}
     <button class:on={store.view === 'people'} onclick={() => store.openPeople()}><Icon name="users" size={22} /><span>People</span></button>
   {/if}
-  <button class="sel" class:active={store.selected.size > 0} onclick={() => (store.selected.size ? store.clearSelection() : store.select(store.cursor, 'toggle'))} disabled={store.view === 'people'}>
+  <button class="sel" class:active={store.selected.size > 0} onclick={() => (store.selected.size ? store.clearSelection() : store.select(store.cursor, 'toggle'))} disabled={store.view !== 'grid'}>
     <Icon name="selection" size={22} /><span class="tnum">{store.selected.size ? `${store.selected.size} sel.` : 'Select'}</span>
   </button>
   <button onclick={() => (store.dialog = 'journal')}><Icon name="history" size={22} /><span>History</span></button>

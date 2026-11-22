@@ -96,11 +96,12 @@ Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever reject
 - **XMP and IPTC editing.**
   - Fields: title, caption, creator, copyright, keywords (including `Places|Portugal|Lisbon` hierarchies), sub-location, city, state and country.
   - Edit one photo, or select many and edit them all at once.
+- **Library tools** in the sidebar: Keywords, Geotag from a track, Duplicates and Archive integrity (with its count of problems), described below.
 - **Keyword manager.** Rename, move, merge and remove keywords across the whole library, hierarchies included, as one background change that can be undone as a whole.
 - **Locations.**
-  - Place photos on a map by clicking it or searching for a place name. City, state and country are filled in from the position (you can turn this off).
+  - Place photos on a map by clicking it or searching for a place name (`Shift+L`). City, state and country are filled in from the position (you can turn this off).
   - Works in bulk for any selection.
-  - The map view shows the whole library, clustered.
+  - **Locations** in the sidebar (or `M`) shows every photo with a location on a map, clustered; the search field and the filters narrow it. Click a group to zoom in, or a photo to open it over the map. `M`, `G` or `Esc` goes back to the photos you were looking at.
 - **Geotag from a track.** Load GPX, KML, TCX or NMEA files, or a phone's location history (Google Takeout's Records or Timeline export), and Hyperfocal matches capture times against them. The camera's time zone is detected, clock drift can be corrected, and the result is previewed on a map before anything is written to the sidecars.
 - **Archive integrity monitor.** Every original gets a content hash when it is first indexed and is verified again over time (a full pass every 90 days by default), in a nightly window and at a gentle read rate, so array disks are not kept spinning. Originals that changed, went missing or became unreadable are reported in the app and, optionally, through ntfy, Gotify or a webhook. For JPEG, HEIC and TIFF/DNG only the image data is hashed, so a metadata edit by another app is not reported as damage. A file moved to another folder is recognised by its hash. Report-only: nothing is ever repaired or deleted.
 - **Search by content.** Turn on the ✦ AI switch in the search field and describe what is in the photo — "dog on the beach", "candles on a cake", "red car at night", in English or the other languages SigLIP 2 learned — and the best matches come first, combined with any filter, folder or album. *Find similar* (single view, info panel, selection menu) shows the photos that look most like one. Every photo is looked at once in the background by the built-in AI engine (newest first; the header says how far it has got), from its thumbnail, and nothing leaves your network. Its models (about 1 GB) are downloaded the first time.
@@ -125,6 +126,7 @@ Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever reject
 ### Interface
 
 - Dark and light themes in a graphite-and-glass design set in Inter, with small animations for actions: the photo zooms out of its tile into the single view and back, the filmstrip slides, ratings and flags pop, filters and toggles glide, rejected photos fold out of the grid. Everything falls back to instant changes when the system asks for reduced motion. Layout ideas from [Augenblick](https://github.com/orohde/Augenblick).
+- **Side panels your size.** Drag the edge between the sidebar or the info panel and the photos to resize it, or double-click it for the default width. The tab in the middle of the edge hides the panel, and brings it back from the edge of the window (`F7` for the sidebar, `I` for the info panel, `Tab` for both). The widths are kept in the browser.
 - A mobile layout built for one-handed culling:
   - bottom navigation
   - a reject / rate / pick / RAW-JPEG action bar
@@ -293,9 +295,9 @@ An end-to-end test runs every write path against a scratch library and compares 
 
 ![Faces side by side across a series, with the culling measurements](docs/screenshots/desktop-faces.jpg)
 
-| RAW view with over/underexposure and the RAW histogram | Map |
+| RAW view with over/underexposure and the RAW histogram | Locations |
 | --- | --- |
-| ![RAW view](docs/screenshots/desktop-raw.jpg) | ![Map view](docs/screenshots/desktop-map.jpg) |
+| ![RAW view](docs/screenshots/desktop-raw.jpg) | ![Locations: every photo with a location, on a map](docs/screenshots/desktop-map.jpg) |
 
 | Search by content: “a cat sleeping on a bed” | An album, on its way to Immich |
 | --- | --- |
@@ -436,17 +438,18 @@ The FastRawViewer preset is the default. Press `?` or `F1` in the app for the fu
 | Screen sharpening (off / 1 / 2) | `S` | `S` |
 | Focus peaking | `P` | `Shift+P` |
 | Overexposure / underexposure | `O` / `U` | `O` / `Shift+U` |
-| Shadow boost / highlight inspection / linear | `Shift+S` / `Shift+H` / `Shift+L` | same |
+| Shadow boost / highlight inspection / linear | `Shift+S` / `Shift+H` / `L` | same |
 | Invert colours | `Shift+I` | same |
 | Exposure ±⅓ EV, ±1 EV, on/off, reset (or double-click the EV readout) | `Alt+=` `Alt+-`, `Ctrl+Alt+=` `Ctrl+Alt+-`, `A`, `Shift+A` | same |
 | Histogram / info panel | `H` / `I` | same |
+| Sidebar / hide all panels | `F7` / `Tab` | same |
 | Rating | `0`–`5` | `0`–`5` |
 | Colour label | `6` red, `7` yellow, `8` green, `9` blue | same |
 | Pick / unflag | `Alt+P` or `` ` `` / `Alt+U` | `P` / `U` |
 | Reject (move to `_Rejected`) | `Delete` | `X` or `Delete` |
-| Keywords / location / title | `K` / `L` / `Alt+D` | same |
+| Keywords / location / title | `K` / `Shift+L` / `Alt+D` | same |
 | Undo | `Ctrl+Z` | `Ctrl+Z` |
-| Map | `M` | `M` |
+| Locations (map) / back to the photos | `M` | `M` |
 | People & pets | `Shift+P` | `Shift+Y` |
 | Faces and pets on the photo | `Shift+F` | `Shift+F` |
 | Culling on / off | `Shift+C` | `Shift+C` |

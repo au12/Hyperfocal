@@ -115,6 +115,23 @@ export const QUICK: { id: string; name: string; icon: string; spec: CollectionSp
   { id: 'rejected', name: 'All rejected', icon: 'folder-x', spec: { folder: '', rec: true, filters: { onlyRejected: true, showRejected: true } } },
 ];
 
+/** Locations (sidebar, M): every photo with a location, on a map. A built-in collection
+ * that is only ever shown as the map; the search field and the filters narrow it. */
+export const LOCATIONS: { id: string; name: string; icon: string; spec: CollectionSpec } = {
+  id: 'map',
+  name: 'Locations',
+  icon: 'map',
+  spec: { folder: '', rec: true, filters: { gps: 1 } },
+};
+
+/** Desktop side panels: default, narrowest and widest widths (px), and the room the
+ * photos keep between them. */
+export const PANEL = {
+  sidebar: { w: 264, min: 200, max: 480 },
+  info: { w: 344, min: 288, max: 640 },
+  content: 420,
+};
+
 export interface ActiveCollection {
   /** A saved collection's id, or a built-in one's name. */
   id: number | string;
@@ -359,6 +376,8 @@ class Store {
   recursive = $state(false);
   query = $state('');
   view = $state<'grid' | 'map' | 'people'>('grid');
+  /** Locations: the photos within the part of the map on screen (null: all of them). */
+  mapInView = $state<number | null>(null);
   filters = $state<Filters>(loadLocal('hf.filters', { ...DEFAULT_FILTERS }));
   /** A timeline period being browsed (whole library), or null. */
   dateRange = $state<DateRange | null>(null);
@@ -425,7 +444,20 @@ class Store {
   viewer = $state<ViewerState>(
     loadLocal('hf.viewer', { source: 'jpeg', tone: 'normal', wb: 'asshot', ev: 0, evOn: true, sharpen: 0, peaking: 0, over: false, under: false, invert: false } as ViewerState),
   );
-  panels = $state(loadLocal('hf.panels', { sidebar: true, info: true, histogram: false, filmstrip: true, hidden: false, faces: false, closeups: true }));
+  panels = $state(
+    loadLocal('hf.panels', {
+      sidebar: true,
+      info: true,
+      histogram: false,
+      filmstrip: true,
+      hidden: false,
+      faces: false,
+      closeups: true,
+      /** Library view, desktop: the sidebar's and the info panel's widths (px), dragged. */
+      sidebarW: PANEL.sidebar.w,
+      infoW: PANEL.info.w,
+    }),
+  );
 
   settings = $state<Settings>(migrateSettings(loadLocal('hf.settings', DEFAULT_SETTINGS)));
   toasts = $state<Toast[]>([]);
@@ -525,7 +557,9 @@ class Store {
     const saved = c ? this.collections.find((x) => String(x.id) === c) : undefined;
     const quick = c ? QUICK.find((x) => x.id === c) : undefined;
     const album = c ? albums.list.find((a) => albumKey(a.id) === c) : undefined;
-    if (album) {
+    if (c === LOCATIONS.id) {
+      await this.openLocations();
+    } else if (album) {
       await this.applyCollection({ id: albumKey(album.id), name: album.name, spec: albumSpec(album.id) });
     } else if (saved || quick) {
       await this.applyCollection(saved ? { id: saved.id, name: saved.name, spec: saved.spec } : { id: quick!.id, name: quick!.name, spec: quick!.spec });
@@ -795,6 +829,7 @@ class Store {
   // ------------------------------------------------------------ list
   openFolder = async (id: number, fromUser = true) => {
     if (fromUser) {
+      this.toGrid();
       this.query = '';
       this.dateRange = null;
       this.leaveCollection();
@@ -823,6 +858,7 @@ class Store {
   openLibrary = async (prepare?: () => void) => {
     const root = this.roots[0]?.id;
     if (root == null) return;
+    this.toGrid();
     this.leaveCollection();
     this.query = '';
     this.dateRange = null;
@@ -846,7 +882,6 @@ class Store {
   showSubject = (id: number, label: string) => {
     this.subjLabels[id] = label;
     saveLocal('hf.subj', this.subjLabels);
-    this.view = 'grid';
     return this.openLibrary(() => {
       this.filters.subj = [id];
       this.persist();
@@ -860,9 +895,85 @@ class Store {
     this.view = 'people';
   };
 
+  /** Where the grid was when Locations opened (a folder, a search, a period or a
+   * collection, and the photo at the cursor): M, G and Esc go back there. */
+  private beforeMap: {
+    collection: ActiveCollection | null;
+    folderId: number | null;
+    recursive: boolean;
+    query: string;
+    dateRange: DateRange | null;
+    cursorId: number | undefined;
+  } | null = null;
+
+  /** Locations: every photo with a location, on a map (the sidebar, M, the Map tab). */
+  openLocations = async () => {
+    this.loupe = false;
+    this.compare = null;
+    if (this.collection?.id === LOCATIONS.id) {
+      // Back from People & pets: the map is still in place.
+      this.view = 'map';
+      return;
+    }
+    this.beforeMap =
+      this.folderId != null || this.collection
+        ? {
+            collection: this.collection,
+            folderId: this.folderId,
+            recursive: this.recursive,
+            query: this.query,
+            dateRange: this.dateRange,
+            cursorId: this.list.id[this.cursor],
+          }
+        : null;
+    const ready = this.applyCollection({ id: LOCATIONS.id, name: LOCATIONS.name, spec: LOCATIONS.spec });
+    this.view = 'map';
+    await ready;
+  };
+
+  /** Leaves Locations or People & pets for the photo grid: from Locations, back to
+   * where the grid was before it (M, G, Esc, the Photos tab). */
+  showPhotos = async () => {
+    if (this.collection?.id !== LOCATIONS.id) {
+      this.view = 'grid';
+      return;
+    }
+    const b = this.beforeMap;
+    this.beforeMap = null;
+    if (!b) {
+      const start = this.lastFolder() ?? this.roots[0]?.id;
+      if (start != null) await this.openFolder(start);
+      else this.toGrid();
+      return;
+    }
+    if (b.collection) {
+      await this.applyCollection(b.collection);
+    } else {
+      this.toGrid();
+      this.leaveCollection();
+      this.query = b.query;
+      this.dateRange = b.dateRange;
+      this.folderId = b.folderId;
+      this.recursive = b.recursive;
+      this.loupe = false;
+      this.compare = null;
+      this.clearSelection();
+      await this.reload();
+      this.writeHash();
+    }
+    const i = b.cursorId != null ? this.index.get(b.cursorId) : undefined;
+    if (i != null) this.moveCursor(i);
+  };
+
+  /** The photo grid, for a sidebar pick or a link that shows other photos next: the way
+   * back from Locations is forgotten. */
+  toGrid = () => {
+    this.beforeMap = null;
+    if (this.view !== 'grid') this.view = 'grid';
+  };
+
   /** The photos with a keyword (or one below it), across the library. */
   showKeyword = (kw: string) => {
-    if (this.view === 'map') this.view = 'grid';
     return this.openLibrary(() => {
       this.filters.kw = kw;
       this.persist();
@@ -872,7 +983,6 @@ class Store {
   /** Photos by id (a group of the Duplicates report), as a passing collection, and
    * up to four of them side by side, the first in the first pane. */
   showGroup = async (ids: number[], name: string, compare = true) => {
-    if (this.view !== 'grid') this.view = 'grid';
     await this.applyCollection({ id: 'dupes', name, spec: { folder: '', rec: true, filters: { ids: [...ids] } } });
     if (compare) this.compareIds(ids);
   };
@@ -900,7 +1010,8 @@ class Store {
       scoped: this.collection != null,
       smart: this.smartOn(),
       relevance: this.relevance,
-      cull: this.settings.cull,
+      // The map shows every frame of a series: culling's stacks are for the grid.
+      cull: this.settings.cull && this.collection?.id !== LOCATIONS.id,
       open: [...cull.open],
     });
 
@@ -926,13 +1037,13 @@ class Store {
     if (pid == null) return;
     const name = this.list.n[this.index.get(pid) ?? -1] ?? this.detail?.name ?? 'this photo';
     this.relevance = true;
-    this.view = 'grid';
     return this.applyCollection({ id: 'like', name: `Like ${name}`, spec: { folder: '', rec: true, filters: { like: pid, sort: 'relevance', desc: false } } });
   };
 
   // ------------------------------------------------------------ timeline & collections
   /** Browse one period of the timeline across every folder. */
   openDate = async (range: DateRange) => {
+    this.toGrid();
     this.leaveCollection();
     this.query = '';
     this.dateRange = range;
@@ -957,6 +1068,8 @@ class Store {
   /** Show a collection: its search, scope, dates and filters (the user's own filters
    * come back when it is left). */
   applyCollection = async (c: ActiveCollection) => {
+    // Locations is shown as the map (openLocations); every other collection in the grid.
+    if (c.id !== LOCATIONS.id) this.toGrid();
     if (!this.collection) this.savedFilters = $state.snapshot(this.filters) as Filters;
     const sp = c.spec;
     const base = this.savedFilters ?? DEFAULT_FILTERS;
@@ -1077,7 +1190,7 @@ class Store {
     this.countsAbort?.abort();
     const ctl = new AbortController();
     this.countsAbort = ctl;
-    const all: [string, CollectionSpec][] = [...QUICK.map((q) => [q.id, q.spec] as [string, CollectionSpec]), ...this.collections.map((c) => [String(c.id), c.spec] as [string, CollectionSpec])];
+    const all: [string, CollectionSpec][] = [...[...QUICK, LOCATIONS].map((q) => [q.id, q.spec] as [string, CollectionSpec]), ...this.collections.map((c) => [String(c.id), c.spec] as [string, CollectionSpec])];
     await Promise.all(
       all.map(async ([id, sp]) => {
         try {

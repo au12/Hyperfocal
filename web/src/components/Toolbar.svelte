@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { store, LABELS, activeFilterCount, type SortKey } from '../lib/store.svelte';
+  import { store, LABELS, LOCATIONS, activeFilterCount, type SortKey } from '../lib/store.svelte';
   import { api, type Facets } from '../lib/api';
   import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
@@ -16,6 +16,8 @@
 
   const crumbs = $derived(store.folderPath(store.folderId));
   const f = $derived(store.filters);
+  /** Locations: the map takes only the filters (no folders, culling, order or sizes). */
+  const onMap = $derived(store.view === 'map');
   /** Photos shown: a folded series counts all its frames. */
   const count = $derived.by(() => {
     void store.rev;
@@ -30,7 +32,8 @@
   $effect(() => {
     shown.set(count, { duration: reduced() ? 0 : 420 });
   });
-  const activeFilters = $derived(activeFilterCount(f));
+  // On the map, "with a location" is what Locations is, not a filter of yours.
+  const activeFilters = $derived(activeFilterCount(f) - (onMap && f.gps === 1 ? 1 : 0));
   const coll = $derived(store.collection);
   const modified = $derived(store.collectionModified());
   /** Something worth saving: a search, a period or a filter. */
@@ -46,7 +49,7 @@
   }
 
   function clearFilters() {
-    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '', subj: [], ids: [], ppl: '', shot: '', eyes: '', issue: [], weak: false });
+    Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: onMap ? 1 : null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '', subj: [], ids: [], ppl: '', shot: '', eyes: '', issue: [], weak: false });
     store.persist();
     store.reload();
   }
@@ -167,7 +170,9 @@
 <div class="toolbar">
   <div class="crumbs">
     {#if coll}
-      {#if coll.id === 'dupes'}
+      {#if coll.id === LOCATIONS.id}
+        <span class="crumb current" title="Every photo with a location"><Icon name={LOCATIONS.icon} size={15} /> {LOCATIONS.name}</span>
+      {:else if coll.id === 'dupes'}
         <button class="crumb" onclick={() => (store.dialog = 'duplicates')} title="Back to the Duplicates report"><Icon name="copy" size={14} /> Duplicates</button>
         <Icon name="chevron" size={14} class="sep" />
         <span class="crumb current">{coll.name}</span>
@@ -238,6 +243,9 @@
       <span class="chip who" title="Photos with this person or pet"><Icon name="user" size={12} /><span class="ellipsis">{store.subjLabels[sid] ?? 'Person'}</span><button onclick={() => store.setFilter('subj', f.subj.filter((x) => x !== sid))} aria-label="Remove"><Icon name="x" size={12} /></button></span>
     {/each}
     <span class="count tnum">{Math.round(shown.current).toLocaleString()} {count === 1 ? 'photo' : 'photos'}</span>
+    {#if onMap && store.mapInView != null && store.mapInView < count}
+      <span class="inview tnum" title="Photos within the part of the map on screen">{store.mapInView.toLocaleString()} in view</span>
+    {/if}
     {#if mlWait}
       <span class="chip looking" title="Search by content needs its AI models, which are downloaded into the app data folder once"><span class="spinner"></span>{mlState(mlWait)}</span>
     {:else if looking && vis}
@@ -282,25 +290,27 @@
   {/if}
 
   <div class="tools">
-    {#if !store.query && store.mobile && albums.currentId == null && f.like == null}
+    {#if !store.query && store.mobile && albums.currentId == null && f.like == null && !onMap}
       <button class="btn sm icon" class:on={store.recursive} onclick={() => { store.recursive = !store.recursive; store.reload(); }} title="Include sub folders" aria-label="Include sub folders"><Icon name="layers" /></button>
     {/if}
-    {#if !store.query && !store.mobile && albums.currentId == null && f.like == null}
+    {#if !store.query && !store.mobile && albums.currentId == null && f.like == null && !onMap}
       <label class="check" title="Include photos in sub folders">
         <input type="checkbox" checked={store.recursive} onchange={(e) => { store.recursive = (e.target as HTMLInputElement).checked; store.reload(); }} />
         <span class="t lo">Sub folders</span><span class="t-short lo">Subs</span>
       </label>
     {/if}
 
-    <button
-      class="btn sm cull-toggle"
-      class:on={cull.on()}
-      onclick={cull.toggle}
-      title={(cull.on() ? 'Culling on: series as stacks, possible rejects marked, faces side by side' : 'Culling: series as stacks, possible rejects marked, faces side by side') + store.keyHint('cull')}
-      aria-pressed={cull.on()}
-    >
-      <Icon name="focus" />{#if !store.mobile}<span class="t">Cull</span>{/if}
-    </button>
+    {#if !onMap}
+      <button
+        class="btn sm cull-toggle"
+        class:on={cull.on()}
+        onclick={cull.toggle}
+        title={(cull.on() ? 'Culling on: series as stacks, possible rejects marked, faces side by side' : 'Culling: series as stacks, possible rejects marked, faces side by side') + store.keyHint('cull')}
+        aria-pressed={cull.on()}
+      >
+        <Icon name="focus" />{#if !store.mobile}<span class="t">Cull</span>{/if}
+      </button>
+    {/if}
 
     <Popover bind:open={filterOpen} align="right" width="19rem">
       {#snippet trigger(toggle, open)}
@@ -349,12 +359,14 @@
             <span class="dim">to</span>
             <input class="field" type="date" value={f.dateTo} min={f.dateFrom || undefined} onchange={(e) => setDate('dateTo', (e.target as HTMLInputElement).value)} aria-label="To" />
           </div>
-          <div class="fl">Location</div>
-          <div class="seg small" use:segmented>
-            <button class:on={f.gps == null} onclick={() => store.setFilter('gps', null)}>All</button>
-            <button class:on={f.gps === 1} onclick={() => store.setFilter('gps', 1)}>With GPS</button>
-            <button class:on={f.gps === 0} onclick={() => store.setFilter('gps', 0)}>Without</button>
-          </div>
+          {#if !onMap}
+            <div class="fl">Location</div>
+            <div class="seg small" use:segmented>
+              <button class:on={f.gps == null} onclick={() => store.setFilter('gps', null)}>All</button>
+              <button class:on={f.gps === 1} onclick={() => store.setFilter('gps', 1)}>With GPS</button>
+              <button class:on={f.gps === 0} onclick={() => store.setFilter('gps', 0)}>Without</button>
+            </div>
+          {/if}
           <div class="fl">Camera & lens</div>
           <select class="field" value={f.cam} onchange={(e) => store.setFilter('cam', (e.target as HTMLSelectElement).value)}>
             <option value="">All cameras</option>
@@ -404,7 +416,7 @@
       {/snippet}
     </Popover>
 
-    {#if saveable}
+    {#if saveable && !onMap}
       <Popover bind:open={saveOpen} align="right" width="18rem">
         {#snippet trigger(toggle, open)}
           <button class="btn sm" class:on={open} onclick={() => openSave(toggle)} title="Save this view as a collection">
@@ -429,29 +441,27 @@
       </Popover>
     {/if}
 
-    <Popover align="right">
-      {#snippet trigger(toggle, open)}
-        <button class="btn sm" class:on={open} onclick={toggle} title={'Sort: ' + (sorts.find((s) => s[0] === sortNow)?.[1] ?? '')}><Icon name="sort" />{#if !store.mobile}<span class="t">{sorts.find((s) => s[0] === sortNow)?.[1]}</span>{/if}</button>
-      {/snippet}
-      {#snippet children(close)}
-        {#each sorts as [k, label]}
-          <button class="menu-item" class:active={sortNow === k} onclick={() => { store.setFilter('sort', k); close(); }}>
-            {label}{#if sortNow === k}<Icon name="check" />{/if}
+    {#if !onMap}
+      <Popover align="right">
+        {#snippet trigger(toggle, open)}
+          <button class="btn sm" class:on={open} onclick={toggle} title={'Sort: ' + (sorts.find((s) => s[0] === sortNow)?.[1] ?? '')}><Icon name="sort" />{#if !store.mobile}<span class="t">{sorts.find((s) => s[0] === sortNow)?.[1]}</span>{/if}</button>
+        {/snippet}
+        {#snippet children(close)}
+          {#each sorts as [k, label]}
+            <button class="menu-item" class:active={sortNow === k} onclick={() => { store.setFilter('sort', k); close(); }}>
+              {label}{#if sortNow === k}<Icon name="check" />{/if}
+            </button>
+          {/each}
+          <div class="menu-sep"></div>
+          <button class="menu-item" onclick={() => { store.setFilter('desc', !f.desc); close(); }}>
+            {f.desc ? 'Descending' : 'Ascending'} <Icon name="sort" />
           </button>
-        {/each}
-        <div class="menu-sep"></div>
-        <button class="menu-item" onclick={() => { store.setFilter('desc', !f.desc); close(); }}>
-          {f.desc ? 'Descending' : 'Ascending'} <Icon name="sort" />
-        </button>
-      {/snippet}
-    </Popover>
+        {/snippet}
+      </Popover>
+    {/if}
 
-    {#if !store.mobile}
+    {#if !store.mobile && !onMap}
       <input class="size" type="range" min="110" max="420" step="10" value={store.settings.rowHeight} oninput={setRow} title="Thumbnail size" />
-      <div class="seg" use:segmented>
-        <button class:on={store.view === 'grid'} onclick={() => (store.view = 'grid')} title="Grid"><Icon name="grid" /><span class="t lo">Grid</span></button>
-        <button class:on={store.view === 'map'} onclick={() => (store.view = 'map')} title="Map"><Icon name="map" /><span class="t lo">Map</span></button>
-      </div>
     {/if}
   </div>
 </div>
@@ -789,6 +799,12 @@
     padding: 0.125rem 0.5rem;
     border-radius: 999px;
     background: var(--surface-2);
+  }
+  .inview {
+    margin-left: 0.375rem;
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
   }
   .crumbs .spinner {
     width: 0.875rem;

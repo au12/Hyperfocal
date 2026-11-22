@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { store, LABELS } from './lib/store.svelte';
+  import { store, LABELS, PANEL } from './lib/store.svelte';
   import { actionFor, type Action } from './lib/keys';
   import { gridCtl, uiCtl, viewerCtl, compareCtl, toggleFullscreen } from './lib/ctl';
   import { fullscreen } from './lib/fullscreen.svelte';
@@ -27,10 +27,32 @@
   import PeopleView from './components/PeopleView.svelte';
   import AlbumPicker from './components/AlbumPicker.svelte';
   import ImmichDialog from './components/ImmichDialog.svelte';
+  import PanelEdge from './components/PanelEdge.svelte';
   import { albums } from './lib/albums.svelte';
   import { cull } from './lib/cull.svelte';
 
   let drawer = $state(false);
+
+  // Desktop side panels: shown, and how wide (the edge between a panel and the photos
+  // resizes it; its tab hides it). The widths stay within the window in CSS.
+  const sidebarOpen = $derived(!store.mobile && store.panels.sidebar && !store.panels.hidden);
+  const infoOpen = $derived(!store.mobile && store.panels.info && !store.panels.hidden && store.view === 'grid');
+  const SIDEBAR_VW = 40;
+  const INFO_VW = 45;
+  const sidebarW = $derived(`clamp(${PANEL.sidebar.min}px, ${store.panels.sidebarW || PANEL.sidebar.w}px, ${SIDEBAR_VW}vw)`);
+  // In a small window the info panel gives way first, so the photos keep PANEL.content px.
+  const infoW = $derived(
+    `clamp(${PANEL.info.min}px, ${store.panels.infoW || PANEL.info.w}px, min(${INFO_VW}vw, 100vw - ${sidebarOpen ? 'var(--sidebar-w)' : '0px'} - ${PANEL.content}px))`,
+  );
+
+  function togglePanel(k: 'sidebar' | 'info') {
+    if (store.panels[k] && !store.panels.hidden) store.panels[k] = false;
+    else {
+      store.panels[k] = true;
+      store.panels.hidden = false;
+    }
+    store.persist();
+  }
 
   onMount(() => {
     store.init();
@@ -109,11 +131,30 @@
     // The People view has no photo under the cursor: only a few keys apply there.
     if (store.view === 'people' && !inLoupe) {
       switch (a) {
-        case 'people': case 'toggleGrid': case 'escape': store.view = 'grid'; return true;
-        case 'map': store.view = 'map'; return true;
+        case 'people': case 'toggleGrid': case 'escape': store.showPhotos(); return true;
+        case 'map': store.openLocations(); return true;
         case 'help': store.dialog = 'help'; return true;
-        case 'folders': store.panels.sidebar = !store.panels.sidebar; store.persist(); return true;
+        case 'folders': togglePanel('sidebar'); return true;
         case 'undo': store.undo(); return true;
+        default: return false;
+      }
+    }
+    // Locations: the map. Esc clears the search, then goes back to the photos, like M
+    // and G. No photo is under a cursor here, so nothing rates, moves or selects one.
+    if (store.view === 'map' && !inLoupe) {
+      switch (a) {
+        case 'map': case 'toggleGrid': store.showPhotos(); return true;
+        case 'escape':
+          if (store.query) store.search('');
+          else store.showPhotos();
+          return true;
+        case 'people': store.openPeople(); return true;
+        case 'help': store.dialog = 'help'; return true;
+        case 'search': uiCtl.focusSearch(); return true;
+        case 'undo': store.undo(); return true;
+        case 'folders': togglePanel('sidebar'); return true;
+        case 'hidePanels': store.panels.hidden = !store.panels.hidden; return true;
+        case 'fullscreen': toggleFullscreen(); return true;
         default: return false;
       }
     }
@@ -228,14 +269,15 @@
       case 'rotateCw': store.rotate(90); break;
       case 'rotate180': store.rotate(180); break;
       case 'histogram': store.panels.histogram = !store.panels.histogram; store.persist(); break;
-      case 'info': store.panels.info = !store.panels.info; store.persist(); break;
+      case 'info': if (inLoupe) { store.panels.info = !store.panels.info; store.persist(); } else togglePanel('info'); break;
       case 'filmstrip': store.panels.filmstrip = !store.panels.filmstrip; store.persist(); break;
-      case 'folders': store.panels.sidebar = !store.panels.sidebar; store.persist(); break;
+      case 'folders': if (inLoupe) { store.panels.sidebar = !store.panels.sidebar; store.persist(); } else togglePanel('sidebar'); break;
       case 'hidePanels': store.panels.hidden = !store.panels.hidden; break;
       case 'help': store.dialog = 'help'; break;
       case 'search': uiCtl.focusSearch(); break;
       case 'undo': store.undo(); break;
-      case 'map': store.view = store.view === 'map' ? 'grid' : 'map'; store.loupe = false; break;
+      // From a photo opened on the map, M goes back to the map.
+      case 'map': if (store.view === 'map') store.closeLoupe(); else store.openLocations(); break;
       case 'faces': store.panels.faces = !store.panels.faces; store.persist(); break;
       case 'people': store.openPeople(); break;
       case 'cull': cull.toggle(); break;
@@ -258,7 +300,7 @@
     const t = e.target as HTMLElement | null;
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
     // Only Esc presses on the library page itself count towards the quick double press.
-    if (e.key === 'Escape' && (typing || store.dialog || albums.picking || store.needLogin || store.compare || store.loupe || store.view === 'people')) fullscreen.resetEsc();
+    if (e.key === 'Escape' && (typing || store.dialog || albums.picking || store.needLogin || store.compare || store.loupe || store.view !== 'grid')) fullscreen.resetEsc();
     if (typing) {
       if (e.key === 'Escape') (t as HTMLElement).blur();
       return;
@@ -292,11 +334,27 @@
 {#if store.needLogin}
   <Login />
 {:else}
-  <div class="app" class:mobile={store.mobile}>
+  <div class="app" class:mobile={store.mobile} style:--sidebar-w={store.mobile ? undefined : sidebarW} style:--panel-w={store.mobile ? undefined : infoW}>
     <Shell onmenu={() => (drawer = !drawer)} />
     <div class="main">
-      {#if !store.mobile && store.panels.sidebar && !store.panels.hidden}
+      {#if sidebarOpen}
         <Sidebar />
+      {/if}
+      {#if !store.mobile}
+        <PanelEdge
+          side="left"
+          open={sidebarOpen}
+          width={store.panels.sidebarW || PANEL.sidebar.w}
+          min={PANEL.sidebar.min}
+          max={PANEL.sidebar.max}
+          def={PANEL.sidebar.w}
+          maxVw={SIDEBAR_VW}
+          label="sidebar"
+          hint={store.keyHint('folders')}
+          onresize={(w) => (store.panels.sidebarW = w)}
+          ondone={store.persist}
+          ontoggle={() => togglePanel('sidebar')}
+        />
       {/if}
       <section class="content">
         {#if store.view === 'people'}
@@ -311,7 +369,23 @@
           <BulkBar />
         {/if}
       </section>
-      {#if !store.mobile && store.panels.info && !store.panels.hidden && store.view === 'grid'}
+      {#if !store.mobile && store.view === 'grid'}
+        <PanelEdge
+          side="right"
+          open={infoOpen}
+          width={store.panels.infoW || PANEL.info.w}
+          min={PANEL.info.min}
+          max={PANEL.info.max}
+          def={PANEL.info.w}
+          maxVw={INFO_VW}
+          label="info panel"
+          hint={store.keyHint('info')}
+          onresize={(w) => (store.panels.infoW = w)}
+          ondone={store.persist}
+          ontoggle={() => togglePanel('info')}
+        />
+      {/if}
+      {#if infoOpen}
         <aside class="info">
           <InfoPanel />
         </aside>

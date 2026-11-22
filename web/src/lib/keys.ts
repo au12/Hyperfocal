@@ -52,7 +52,9 @@ const FRV: Bindings = {
   sharpen: ['S'],
   shadows: ['Shift+S'],
   highlights: ['Shift+H'],
-  linear: ['Shift+L'],
+  // Linear mode takes plain L (FastRawViewer has it on Shift+L); Set location moves to
+  // Shift+L.
+  linear: ['L'],
   // FastRawViewer has no default key for "Invert image colors".
   invert: ['Shift+I'],
   over: ['O'],
@@ -83,7 +85,7 @@ const FRV: Bindings = {
   reject: ['Ctrl+Shift+Delete', 'Delete'],
   editTitle: ['Alt+D'],
   keywords: ['K'],
-  location: ['L'],
+  location: ['Shift+L'],
   // Lightroom's "add to target collection".
   albumAdd: ['B'],
   albumPick: ['Shift+B'],
@@ -151,7 +153,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['shadows', 'Shadow boost'], ['highlights', 'Highlight inspection'], ['linear', 'Linear mode'], ['invert', 'Invert colours'],
     ['wb', 'White balance (as shot / daylight / auto)'], ['evToggle', 'Exposure correction on/off'],
     ['evUp', 'Exposure +⅓ EV'], ['evDown', 'Exposure −⅓ EV'], ['evUpBig', 'Exposure +1 EV'], ['evDownBig', 'Exposure −1 EV'], ['evReset', 'Reset exposure'],
-    ['histogram', 'Histogram'], ['info', 'Info & metadata panel'], ['filmstrip', 'Filmstrip'], ['folders', 'Folders panel'], ['hidePanels', 'Hide all panels'],
+    ['histogram', 'Histogram'], ['info', 'Info & metadata panel'], ['filmstrip', 'Filmstrip'], ['folders', 'Sidebar (library, albums, folders)'], ['hidePanels', 'Hide all panels'],
     ['faces', 'Show faces and pets on the photo'], ['closeups', 'Faces side by side (across the series)'],
   ]],
   ['Culling & metadata', [
@@ -167,7 +169,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['selectToggle', 'Select / deselect'], ['selectNext', 'Select / deselect and next'], ['selectPrev', 'Previous and select / deselect'],
     ['selectRight', 'Extend selection right'], ['selectLeft', 'Extend selection left'], ['selectDown', 'Extend selection a row down'], ['selectUp', 'Extend selection a row up'],
     ['selectFirst', 'Extend selection to the first photo'], ['selectLast', 'Extend selection to the last photo'], ['selectPageDown', 'Extend selection a page down'], ['selectPageUp', 'Extend selection a page up'], ['selectAll', 'Select all'], ['selectNone', 'Select none'], ['selectInvert', 'Invert selection'],
-    ['search', 'Search'], ['map', 'Map view'], ['people', 'People & pets'], ['help', 'Keyboard shortcuts'],
+    ['search', 'Search'], ['map', 'Locations (map) / back to the photos'], ['people', 'People & pets'], ['help', 'Keyboard shortcuts'],
   ]],
 ];
 

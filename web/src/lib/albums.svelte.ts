@@ -74,7 +74,6 @@ class Albums {
   }
 
   open = (a: Album) => {
-    if (store.view === 'people') store.view = 'grid';
     return store.applyCollection({ id: albumKey(a.id), name: a.name, spec: albumSpec(a.id) });
   };
 

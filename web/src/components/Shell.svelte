@@ -4,7 +4,6 @@
   import { uiCtl } from '../lib/ctl';
   import { fullscreen } from '../lib/fullscreen.svelte';
   import Icon from './Icon.svelte';
-  import Popover from './Popover.svelte';
   import { pop, fade } from '../lib/motion';
 
   let { onmenu }: { onmenu?: () => void } = $props();
@@ -99,7 +98,7 @@
     {#if problems}<button class="btn ghost icon alarm" onclick={() => (store.dialog = 'integrity')} aria-label="Archive integrity: {problemText}"><Icon name="shield-alert" /><span class="dot">{problems > 99 ? '99+' : problems}</span></button>{/if}
     <button class="btn ghost icon" onclick={() => (store.dialog = 'settings')} aria-label="Settings"><Icon name="settings" /></button>
   {:else}
-    <div class="brand">
+    <div class="brand" class:solo={!store.panels.sidebar || store.panels.hidden}>
       <img class="logo" src="./logo.png" alt="" width="28" height="28" />
       <span class="name">Hyperfocal</span>
     </div>
@@ -150,18 +149,6 @@
         <button class="btn ghost icon alarm" onclick={() => (store.dialog = 'integrity')} title="Archive integrity: {problemText}"><Icon name="shield-alert" /><span class="dot">{problems > 99 ? '99+' : problems}</span></button>
       {/if}
       <button class="btn ghost icon" onclick={() => (store.dialog = 'journal')} title={'History & undo' + store.keyHint('undo')}><Icon name="history" /></button>
-      <Popover align="right">
-        {#snippet trigger(toggle, open)}
-          <button class="btn ghost icon" class:on={open} onclick={toggle} title="Library tools"><Icon name="wrench" /></button>
-        {/snippet}
-        {#snippet children(close)}
-          <div class="menu-label">Library tools</div>
-          <button class="menu-item" onclick={() => { close(); store.dialog = 'keywords'; }}><Icon name="tags" />Keywords</button>
-          <button class="menu-item" onclick={() => { close(); store.dialog = 'geotag'; }}><Icon name="route" />Geotag from a track</button>
-          <button class="menu-item" onclick={() => { close(); store.dialog = 'duplicates'; }}><Icon name="copy" />Duplicates</button>
-          {#if store.status?.integrity !== false}<button class="menu-item" onclick={() => { close(); store.dialog = 'integrity'; }}><Icon name="shield" />Archive integrity</button>{/if}
-        {/snippet}
-      </Popover>
       <button class="btn ghost icon theme" onclick={toggleTheme} title="Light / dark">
         {#key store.settings.theme}<span class="swap" in:pop={{ y: 0, scale: 0.6, duration: 260 }}><Icon name={store.settings.theme === 'light' ? 'moon' : 'sun'} /></span>{/key}
       </button>
@@ -209,6 +196,10 @@
       0 0 0 1px rgba(255, 255, 255, 0.08),
       0 4px 14px -4px rgba(120, 110, 255, 0.55);
     transition: transform var(--dur-slow) var(--ease-spring);
+  }
+  /* With the sidebar hidden, the name takes only its own room. */
+  .brand.solo {
+    width: auto;
   }
   .brand:hover .logo {
     transform: rotate(-8deg) scale(1.06);

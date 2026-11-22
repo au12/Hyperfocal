@@ -16,6 +16,9 @@
   let viewH = $state(0);
   let scrollTop = $state(0);
   const PAD = 12;
+  /** A list this long is laid out again only now and then while a side panel is resized. */
+  const BIG_LIST = 20_000;
+  const RELAYOUT_MS = 200;
 
   const gap = $derived(store.mobile ? 3 : 6);
   const target = $derived(store.mobile ? Math.round(store.settings.rowHeight * 0.62) : store.settings.rowHeight);
@@ -121,10 +124,24 @@
 
   onMount(() => {
     thumbs.rank = rank;
-    const ro = new ResizeObserver(() => {
+    // While a side panel's edge is dragged, a big list is laid out again at most every
+    // RELAYOUT_MS (a layout of 300,000 photos takes ~50 ms), and once more at the end.
+    let relayout: ReturnType<typeof setTimeout> | undefined;
+    let laidAt = 0;
+    const measure = () => {
       if (!scroller) return;
+      clearTimeout(relayout);
+      laidAt = performance.now();
       width = scroller.clientWidth;
       viewH = scroller.clientHeight;
+    };
+    const ro = new ResizeObserver(() => {
+      if (!scroller) return;
+      const dragging = document.documentElement.classList.contains('col-resizing');
+      if (!dragging || store.list.id.length < BIG_LIST) return measure();
+      clearTimeout(relayout);
+      const wait = Math.max(0, RELAYOUT_MS - (performance.now() - laidAt));
+      relayout = setTimeout(measure, Math.max(wait, 60));
     });
     if (scroller) ro.observe(scroller);
     // While a hold-and-slide selection is on, the finger selects instead of scrolling.
@@ -185,6 +202,7 @@
     gridCtl.reveal = reveal;
     return () => {
       ro.disconnect();
+      clearTimeout(relayout);
       scroller?.removeEventListener('touchmove', noPan);
       endPress();
       thumbs.ahead([]);

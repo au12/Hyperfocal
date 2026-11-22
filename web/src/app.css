@@ -916,6 +916,13 @@ body.arranging * {
   background: var(--bg) !important;
 }
 
+/* Dragging a side panel's edge: the resize cursor everywhere, and no text selection. */
+.col-resizing,
+.col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 /* Less motion, when asked for: animations end at once, transitions are instant. */
 @media (prefers-reduced-motion: reduce) {
   *,
