@@ -113,6 +113,7 @@ fn the_api_answers_and_checks_its_token() {
         assert!(v["eyes"][0]["closed"].as_f64().unwrap() > 0.6, "{v}");
         // Faces are off in this engine: 501, not a crash.
         assert_eq!(app.clone().oneshot(req("/v1/analyze", true, b"x".to_vec())).await.unwrap().status(), 501);
+        assert_eq!(app.clone().oneshot(req("/v1/pets", true, b"x".to_vec())).await.unwrap().status(), 501);
         assert_eq!(app.clone().oneshot(req("/v1/eyes", true, b"not an image".to_vec())).await.unwrap().status(), 200);
     });
 }

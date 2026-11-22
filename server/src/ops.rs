@@ -483,6 +483,10 @@ pub struct JobStatus {
     /// Where to see the result (an album in Immich).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// Photos whose files changed, when a job can find nothing to change for some (the
+    /// sidecars of people and pets: a face nobody named that is marked "not a face").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub written: Option<usize>,
 }
 
 pub(crate) struct Job {
@@ -506,6 +510,7 @@ impl Job {
             undo: true,
             summary: None,
             link: None,
+            written: None,
         };
         let job = Job { state: state.clone(), status, last: std::time::Instant::now() };
         job.publish();
@@ -687,6 +692,7 @@ pub async fn write_lazy(state: &Arc<AppState>, label: String, mut ids: Vec<i64>,
     for chunk in ok.chunks(5000) {
         state.emit(Event::Photos { ids: chunk.to_vec() });
     }
+    job.status.written = Some(ok.len());
     job.finish()
 }
 

@@ -11,7 +11,7 @@ use super::engine::{Engine, pet_quality};
 use super::index::{cosine, quantize, to_blob};
 use crate::ml::client::{Analysis, Client, MlError, decode_embedding, embedders, models_key};
 use super::regions::{Rect, iou};
-use super::{AUTO, CAT, DOG, FACE, SRC_DETECTED, SRC_XMP};
+use super::{AUTO, CAT, DOG, FACE, IGNORED, KIND_DETECTED, KIND_YOURS, KIND_YOURS_PENDING, SRC_DETECTED, SRC_XMP};
 use crate::images::jpeg::{self, Rgb};
 use crate::model::Kind;
 use crate::repo::{self, Located};
@@ -67,6 +67,11 @@ impl Crops {
     }
 }
 
+/// The kind a detection's crop is framed as (SQL on `detections`): a dog or a cat you
+/// made out of a face keeps the face's box (the animal's face), so it is framed as a face,
+/// head and ears in.
+pub const FRAME_KIND: &str = "CASE WHEN kind_fixed != 0 THEN 1 ELSE kind END";
+
 /// A square crop around a box of an upright image: a face with room for hair and chin,
 /// an animal as it is.
 pub fn crop(img: &Rgb, r: Rect, kind: i64, size: usize) -> Result<Vec<u8>> {
@@ -86,6 +91,14 @@ pub fn closeup(img: &Rgb, r: Rect, kind: i64, size: usize) -> Result<Vec<u8>> {
 /// A square of `factor` times the box's long side around it (raised by `up` of its
 /// height), at most `size` pixels.
 fn crop_around(img: &Rgb, r: Rect, size: usize, factor: f64, up: f64) -> Result<Vec<u8>> {
+    let sub = square_around(img, r, factor, up);
+    let out = if sub.w > size { jpeg::resize(sub, size, size)? } else { sub };
+    jpeg::encode(&out, 84, false)
+}
+
+/// The pixels of a square of `factor` times the box's long side around it (raised by
+/// `up` of its height), kept inside the image.
+fn square_around(img: &Rgb, r: Rect, factor: f64, up: f64) -> Rgb {
     let (w, h) = (img.w as f64, img.h as f64);
     let (bw, bh) = (r.w * w, r.h * h);
     let mut side = bw.max(bh) * factor;
@@ -100,9 +113,20 @@ fn crop_around(img: &Rgb, r: Rect, size: usize, factor: f64, up: f64) -> Result<
         let row = &img.px[(y * img.w + x0) * 3..(y * img.w + x0 + s) * 3];
         px.extend_from_slice(row);
     }
-    let sub = Rgb { w: s, h: s, px };
-    let out = if s > size { jpeg::resize(sub, size, size)? } else { sub };
-    jpeg::encode(&out, 84, false)
+    Rgb { w: s, h: s, px }
+}
+
+/// What the pet model sees of an animal you made out of a face: its head (the face's
+/// framing), as a JPEG of at most 448 px, and the square's side in the analysed image
+/// (for its quality). None when the face is too small to tell one animal from another.
+fn head(img: &Rgb, r: Rect) -> Option<(Vec<u8>, usize)> {
+    let sq = square_around(img, r, 1.7, 0.08);
+    let side = sq.w;
+    if side < 32 {
+        return None;
+    }
+    let sq = if side > 448 { jpeg::resize(sq, 448, 448).ok()? } else { sq };
+    Some((jpeg::encode(&sq, 92, false).ok()?, side))
 }
 
 // ------------------------------------------------------------------ the worker
@@ -215,6 +239,17 @@ fn run(state: &Arc<AppState>) {
         // Work until the engine goes away.
         loop {
             resyncs(state);
+            // Your corrections first (paused or not: you are waiting for them): faces you
+            // said are dogs or cats get their pet embedding.
+            match embed_yours(state, &client) {
+                Ok(0) => {}
+                Ok(_) => continue,
+                Err(e) => {
+                    set_phase(state, "offline", Some(e));
+                    wait(state, backoff);
+                    break;
+                }
+            }
             let (paused, regroup) = {
                 let mut c = state.people.ctl.lock();
                 (c.paused, std::mem::take(&mut c.regroup))
@@ -284,6 +319,8 @@ fn check_models(state: &AppState, info: &serde_json::Value) -> Result<()> {
         }
         if op != pet {
             let n = c.execute("UPDATE detections SET emb = NULL WHERE kind IN (?1, ?2) AND emb IS NOT NULL", [DOG, CAT])?;
+            // Animals you made out of faces are not found by the analysis: embedded again.
+            c.execute("UPDATE detections SET kind_fixed = ?1 WHERE kind_fixed = ?2", [KIND_YOURS_PENDING, KIND_YOURS])?;
             tracing::warn!("people: the pet recognition model changed ({op} -> {pet}): {n} animals will be analysed again");
         }
         *state.people.engine.lock() = Some(Engine::load(&c)?);
@@ -486,6 +523,91 @@ struct NewDet {
     emb: Option<Vec<i8>>,
 }
 
+/// A detection the photo had before this analysis.
+struct Old {
+    id: i64,
+    kind: i64,
+    rect: Rect,
+    emb: Option<Vec<i8>>,
+    source: i64,
+    /// `kind_fixed`: a dog or a cat you made out of a face.
+    fixed: i64,
+}
+
+/// What a new detection is to the old ones.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Fate {
+    /// The same face or animal: the old detection takes the new box and embedding, and
+    /// keeps who it is (and "not a face", when you said so).
+    Update(i64),
+    /// Found again where you said there is a dog or a cat: the animal stays as it is.
+    Taken(i64),
+    New,
+}
+
+/// Which old detection each new one is (best views first): the same face (or animal)
+/// is where it was, or looks the same (after a rotation, or with a new detector). A dog
+/// or a cat you made out of a face takes that face when the face detector finds it again,
+/// and the whole animal when the animal detector finds it around its face.
+fn carry_over(old: &[Old], new: &[NewDet]) -> Vec<Fate> {
+    let yours = |o: &Old| o.fixed != KIND_DETECTED && o.kind != FACE;
+    let mut taken: HashSet<i64> = HashSet::new();
+    let mut fates = vec![Fate::New; new.len()];
+    // First the faces found again on your animals, so that none of them comes back as a
+    // face (should the animal detector find the animal as well, it is a new detection).
+    for o in old.iter().filter(|o| yours(o)) {
+        let best = (0..new.len())
+            .filter(|&i| new[i].kind == FACE && fates[i] == Fate::New)
+            .map(|i| (i, iou(o.rect, new[i].rect)))
+            .filter(|(_, s)| *s >= 0.5)
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((i, _)) = best {
+            taken.insert(o.id);
+            fates[i] = Fate::Taken(o.id);
+        }
+    }
+    let mut order: Vec<usize> = (0..new.len()).filter(|&i| fates[i] == Fate::New).collect();
+    order.sort_by(|&i, &j| new[j].quality.total_cmp(&new[i].quality));
+    for i in order {
+        let n = &new[i];
+        let best = old
+            .iter()
+            .filter(|o| !taken.contains(&o.id))
+            .filter_map(|o| {
+                let yours = yours(o);
+                let by_box = iou(o.rect, n.rect);
+                if (o.kind == FACE) != (n.kind == FACE) {
+                    return None;
+                }
+                let by_look = match (&o.emb, &n.emb) {
+                    (Some(a), Some(b)) if o.kind == n.kind => cosine(a, b) as f64,
+                    _ => 0.0,
+                };
+                let mut s = by_box.max(if by_look >= 0.8 { by_look } else { 0.0 });
+                // The face you turned into an animal, inside the animal the detector found.
+                if yours && covered(o.rect, n.rect) >= 0.6 {
+                    s = s.max(0.5);
+                }
+                // Too small to embed: the animal of yours keeps its own embedding.
+                Some((o, s, yours && n.emb.is_none()))
+            })
+            .filter(|(_, s, _)| *s >= 0.5)
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((o, _, keep)) = best {
+            taken.insert(o.id);
+            fates[i] = if keep { Fate::Taken(o.id) } else { Fate::Update(o.id) };
+        }
+    }
+    fates
+}
+
+/// How much of `a` lies inside `b` (0..1 of a's area).
+fn covered(a: Rect, b: Rect) -> f64 {
+    let iw = ((a.x + a.w).min(b.x + b.w) - a.x.max(b.x)).max(0.0);
+    let ih = ((a.y + a.h).min(b.y + b.h) - a.y.max(b.y)).max(0.0);
+    iw * ih / (a.w * a.h).max(1e-12)
+}
+
 fn rect_of(b: &[f32; 4]) -> Rect {
     let x = (b[0] as f64).clamp(0.0, 1.0);
     let y = (b[1] as f64).clamp(0.0, 1.0);
@@ -525,15 +647,8 @@ fn store(state: &Arc<AppState>, prep: &Prepared, a: &Analysis, key: &str) -> Res
     if size != prep.loc.rec.size || mtime != prep.loc.rec.mtime || orient != prep.loc.rec.orientation {
         return Ok(());
     }
-    struct Old {
-        id: i64,
-        kind: i64,
-        rect: Rect,
-        emb: Option<Vec<i8>>,
-        source: i64,
-    }
     let old: Vec<Old> = {
-        let mut st = tx.prepare("SELECT id, kind, x, y, w, h, emb, source FROM detections WHERE photo_id = ?1")?;
+        let mut st = tx.prepare("SELECT id, kind, x, y, w, h, emb, source, kind_fixed FROM detections WHERE photo_id = ?1")?;
         st.query_map([photo], |r| {
             Ok(Old {
                 id: r.get(0)?,
@@ -541,44 +656,47 @@ fn store(state: &Arc<AppState>, prep: &Prepared, a: &Analysis, key: &str) -> Res
                 rect: Rect { x: r.get(2)?, y: r.get(3)?, w: r.get(4)?, h: r.get(5)? },
                 emb: r.get_ref(6)?.as_blob_or_null()?.and_then(super::index::from_blob),
                 source: r.get(7)?,
+                fixed: r.get(8)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?
     };
-    // Carry over: the same face (or animal) is where it was, or looks the same (after a
-    // rotation, or with a new detector).
-    let mut order: Vec<usize> = (0..new.len()).collect();
-    order.sort_by(|&i, &j| new[j].quality.total_cmp(&new[i].quality));
-    let mut taken: HashSet<i64> = HashSet::new();
+    let fates = carry_over(&old, &new);
+    let taken: HashSet<i64> = fates.iter().filter_map(|f| match f {
+        Fate::Update(id) | Fate::Taken(id) => Some(*id),
+        Fate::New => None,
+    })
+    .collect();
     let mut touched: Vec<i64> = Vec::new();
     let mut fresh: Vec<i64> = Vec::new();
     let now = crate::db::now_ms();
-    for i in order {
-        let n = &new[i];
-        let best = old
-            .iter()
-            .filter(|o| !taken.contains(&o.id) && (o.kind == FACE) == (n.kind == FACE))
-            .map(|o| {
-                let by_box = iou(o.rect, n.rect);
-                let by_look = match (&o.emb, &n.emb) {
-                    (Some(a), Some(b)) if o.kind == n.kind => cosine(a, b) as f64,
-                    _ => 0.0,
-                };
-                (o, by_box.max(if by_look >= 0.8 { by_look } else { 0.0 }))
-            })
-            .filter(|(_, s)| *s >= 0.5)
-            .max_by(|a, b| a.1.total_cmp(&b.1));
+    for (n, fate) in new.iter().zip(&fates) {
         let emb = n.emb.as_ref().map(|e| to_blob(e));
-        match best {
-            Some((o, _)) => {
-                taken.insert(o.id);
+        match *fate {
+            Fate::Update(id) => {
+                // An animal of yours stays the species you said; a pet embedding from the
+                // analysis (the detector found the whole animal this time) is its own.
                 tx.execute(
-                    "UPDATE detections SET kind = ?2, x = ?3, y = ?4, w = ?5, h = ?6, score = ?7, quality = ?8, emb = ?9, source = ?10 WHERE id = ?1",
-                    params![o.id, n.kind, n.rect.x, n.rect.y, n.rect.w, n.rect.h, n.score, n.quality, emb, SRC_DETECTED],
+                    "UPDATE detections SET kind = CASE WHEN kind_fixed != 0 THEN kind ELSE ?2 END, x = ?3, y = ?4, w = ?5, h = ?6, score = ?7,
+                        quality = ?8, emb = ?9, source = ?10, kind_fixed = CASE WHEN kind_fixed != 0 THEN ?11 ELSE kind_fixed END WHERE id = ?1",
+                    params![id, n.kind, n.rect.x, n.rect.y, n.rect.w, n.rect.h, n.score, n.quality, emb, SRC_DETECTED, KIND_YOURS],
                 )?;
-                touched.push(o.id);
+                touched.push(id);
             }
-            None => {
+            Fate::Taken(id) => {
+                // The face detector found the face of an animal of yours again: the animal
+                // stays as it is, on the face's box (and is embedded if it still has to be).
+                // (An animal the detector found around it, too small to embed, changes
+                // nothing.)
+                if n.kind == FACE {
+                    tx.execute(
+                        "UPDATE detections SET x = ?2, y = ?3, w = ?4, h = ?5, source = ?6, kind_fixed = CASE WHEN emb IS NULL THEN ?7 ELSE kind_fixed END WHERE id = ?1",
+                        params![id, n.rect.x, n.rect.y, n.rect.w, n.rect.h, SRC_DETECTED, KIND_YOURS_PENDING],
+                    )?;
+                }
+                touched.push(id);
+            }
+            Fate::New => {
                 let id: i64 = tx.query_row(
                     "INSERT INTO detections(photo_id, kind, x, y, w, h, score, quality, emb, subject_id, state, source, created)
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12) RETURNING id",
@@ -631,7 +749,7 @@ fn store(state: &Arc<AppState>, prep: &Prepared, a: &Analysis, key: &str) -> Res
     // Crops of the faces and animals worth showing.
     let mut crops: Vec<(i64, Vec<u8>)> = Vec::new();
     {
-        let mut st = conn.prepare("SELECT id, kind, x, y, w, h, quality, subject_id FROM detections WHERE photo_id = ?1 AND source = ?2")?;
+        let mut st = conn.prepare(&format!("SELECT id, {FRAME_KIND}, x, y, w, h, quality, subject_id FROM detections WHERE photo_id = ?1 AND source = ?2"))?;
         let rows: Vec<(i64, i64, Rect, f64, Option<i64>)> = st
             .query_map(params![photo, SRC_DETECTED], |r| Ok((r.get(0)?, r.get(1)?, Rect { x: r.get(2)?, y: r.get(3)?, w: r.get(4)?, h: r.get(5)? }, r.get(6)?, r.get(7)?)))?
             .collect::<rusqlite::Result<_>>()?;
@@ -645,6 +763,130 @@ fn store(state: &Arc<AppState>, prep: &Prepared, a: &Analysis, key: &str) -> Res
     }
     state.people.crops.put(&crops);
     state.people.crops.delete(&gone);
+    Ok(())
+}
+
+/// Faces you said are dogs or cats: a pet embedding of each animal's head, from the
+/// photo as it is analysed, so that it is matched to the pets like any animal. A few
+/// photos a round. Ok: how many were done (or given up: an unreadable photo); Err: the
+/// engine is unreachable (the rest wait for it).
+fn embed_yours(state: &Arc<AppState>, client: &Client) -> Result<usize, String> {
+    let todo: Vec<(i64, i64, Rect)> = {
+        let c = state.db.get().map_err(|e| e.to_string())?;
+        // (The literal lets the partial index detections_kind_pending answer it: this
+        // runs before every batch of the analysis.)
+        let mut st = c
+            .prepare_cached(&format!(
+                "SELECT id, photo_id, x, y, w, h FROM detections WHERE kind_fixed = {KIND_YOURS_PENDING} AND kind != ?1 AND state != ?2 ORDER BY photo_id LIMIT 32"
+            ))
+            .map_err(|e| e.to_string())?;
+        st.query_map(params![FACE, IGNORED], |r| Ok((r.get(0)?, r.get(1)?, Rect { x: r.get(2)?, y: r.get(3)?, w: r.get(4)?, h: r.get(5)? })))
+            .and_then(|rows| rows.collect())
+            .map_err(|e| e.to_string())?
+    };
+    if todo.is_empty() {
+        return Ok(0);
+    }
+    let mut photos: Vec<i64> = todo.iter().map(|t| t.1).collect();
+    photos.dedup();
+    // (detection, embedding, quality): None for one that cannot be embedded.
+    let mut done: Vec<(i64, Option<Vec<i8>>, f64)> = Vec::new();
+    let mut down: Option<String> = None;
+    for photo in photos {
+        let dets: Vec<(i64, Rect)> = todo.iter().filter(|t| t.1 == photo).map(|t| (t.0, t.2)).collect();
+        let prep = match prepare(state, photo) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("people: photo {photo} not read for a pet embedding: {e}");
+                None
+            }
+        };
+        let Some(prep) = prep else {
+            done.extend(dets.iter().map(|d| (d.0, None, 0.0)));
+            continue;
+        };
+        let mut crops = Vec::new();
+        let mut sides = Vec::new();
+        for (id, r) in &dets {
+            match head(&prep.img, *r) {
+                Some((jpeg, side)) => {
+                    crops.push(jpeg);
+                    sides.push((*id, side));
+                }
+                None => done.push((*id, None, 0.0)),
+            }
+        }
+        if crops.is_empty() {
+            continue;
+        }
+        match client.embed_pets(&crops) {
+            Ok(embs) => {
+                for ((id, side), e) in sides.into_iter().zip(embs) {
+                    // As sure as an animal can be (you said so); as good as its size.
+                    done.push((id, e.map(|v| quantize(&v)), pet_quality(side as f32, 1.0) as f64));
+                }
+            }
+            Err(MlError::Rejected(e)) => {
+                tracing::warn!("people: pet embeddings for photo {photo}: {e}");
+                done.extend(sides.iter().map(|s| (s.0, None, 0.0)));
+            }
+            Err(MlError::Unreachable(e) | MlError::Preparing(e)) => {
+                down = Some(e);
+                break;
+            }
+        }
+    }
+    let n = done.len();
+    if n > 0
+        && let Err(e) = save_yours(state, &done)
+    {
+        tracing::warn!("people: keeping pet embeddings: {e:#}");
+        return Ok(0);
+    }
+    match down {
+        Some(e) => Err(e),
+        None => Ok(n),
+    }
+}
+
+/// Keep the pet embeddings of animals you made, and match them.
+fn save_yours(state: &Arc<AppState>, done: &[(i64, Option<Vec<i8>>, f64)]) -> Result<()> {
+    let mut g = state.people.engine.lock();
+    let eng = g.get_or_insert_with(Engine::empty);
+    let mut conn = state.db.get()?;
+    let tx = conn.transaction()?;
+    let mut ids = Vec::new();
+    let mut photos: HashSet<i64> = HashSet::new();
+    for (id, emb, q) in done {
+        // Still pending: not taken back meanwhile.
+        let n = match emb {
+            Some(e) => tx.execute(
+                "UPDATE detections SET emb = ?2, quality = ?3, kind_fixed = ?4 WHERE id = ?1 AND kind_fixed = ?5",
+                params![id, to_blob(e), q, KIND_YOURS, KIND_YOURS_PENDING],
+            )?,
+            None => tx.execute("UPDATE detections SET kind_fixed = ?2 WHERE id = ?1 AND kind_fixed = ?3", params![id, KIND_YOURS, KIND_YOURS_PENDING])?,
+        };
+        if n > 0 {
+            ids.push(*id);
+            photos.insert(tx.query_row("SELECT photo_id FROM detections WHERE id = ?1", [id], |r| r.get(0))?);
+        }
+    }
+    let res = (|| -> Result<()> {
+        eng.refresh(&tx, &ids)?;
+        let r = eng.assign(&tx, &ids)?;
+        photos.extend(r.photos);
+        Ok(())
+    })();
+    if let Err(e) = res {
+        drop(tx);
+        *eng = Engine::load(&conn)?;
+        return Err(e);
+    }
+    tx.commit()?;
+    drop(g);
+    if !photos.is_empty() {
+        super::emit_changed(state, photos.into_iter().collect());
+    }
     Ok(())
 }
 
@@ -831,4 +1073,57 @@ fn maybe_regroup(state: &Arc<AppState>) {
         return;
     }
     run_regroup(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn old(id: i64, kind: i64, r: [f64; 4], fixed: i64) -> Old {
+        Old { id, kind, rect: Rect { x: r[0], y: r[1], w: r[2], h: r[3] }, emb: None, source: SRC_DETECTED, fixed }
+    }
+
+    fn new(kind: i64, r: [f64; 4], q: f64, emb: bool) -> NewDet {
+        NewDet { kind, rect: Rect { x: r[0], y: r[1], w: r[2], h: r[3] }, score: 0.9, quality: q, emb: emb.then(|| vec![1i8; super::super::DIM]) }
+    }
+
+    const FACE_BOX: [f64; 4] = [0.40, 0.30, 0.10, 0.12];
+    const BODY_BOX: [f64; 4] = [0.30, 0.25, 0.40, 0.50];
+
+    #[test]
+    fn faces_and_animals_carry_over_to_their_own_kind() {
+        let o = vec![old(1, FACE, FACE_BOX, KIND_DETECTED), old(2, DOG, BODY_BOX, KIND_DETECTED)];
+        let n = vec![new(FACE, [0.401, 0.30, 0.10, 0.12], 0.8, true), new(DOG, BODY_BOX, 0.9, true)];
+        assert_eq!(carry_over(&o, &n), vec![Fate::Update(1), Fate::Update(2)]);
+        // A face where a detector's animal was is a new face, and the other way round.
+        let o = vec![old(1, DOG, FACE_BOX, KIND_DETECTED)];
+        assert_eq!(carry_over(&o, &[new(FACE, FACE_BOX, 0.8, true)]), vec![Fate::New]);
+        let o = vec![old(1, FACE, FACE_BOX, KIND_DETECTED)];
+        assert_eq!(carry_over(&o, &[new(CAT, FACE_BOX, 0.8, true)]), vec![Fate::New]);
+    }
+
+    #[test]
+    fn a_face_you_turned_into_a_cat_stays_a_cat() {
+        // The face detector finds the cat's face again: it is the cat, not a new face.
+        let o = vec![old(7, CAT, FACE_BOX, KIND_YOURS)];
+        assert_eq!(carry_over(&o, &[new(FACE, FACE_BOX, 0.3, true)]), vec![Fate::Taken(7)]);
+        // The animal detector finds the whole cat around its face: the cat takes it (its
+        // box and embedding), still the species you said.
+        assert_eq!(carry_over(&o, &[new(DOG, BODY_BOX, 0.9, true)]), vec![Fate::Update(7)]);
+        // ... unless too small to embed: the cat keeps its own embedding.
+        assert_eq!(carry_over(&o, &[new(DOG, BODY_BOX, 0.1, false)]), vec![Fate::Taken(7)]);
+        // Both: the face goes to the cat first (it never comes back as a face); the whole
+        // animal is a new detection.
+        assert_eq!(carry_over(&o, &[new(CAT, BODY_BOX, 0.95, true), new(FACE, FACE_BOX, 0.2, true)]), vec![Fate::New, Fate::Taken(7)]);
+        // A person's face elsewhere in the photo is still a face.
+        assert_eq!(carry_over(&o, &[new(FACE, [0.7, 0.1, 0.08, 0.1], 0.9, true)]), vec![Fate::New]);
+    }
+
+    #[test]
+    fn covered_is_the_share_inside() {
+        let a = Rect { x: 0.4, y: 0.3, w: 0.1, h: 0.1 };
+        assert!((covered(a, Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }) - 1.0).abs() < 1e-9);
+        assert!((covered(a, Rect { x: 0.45, y: 0.3, w: 0.5, h: 0.5 }) - 0.5).abs() < 1e-9);
+        assert_eq!(covered(a, Rect { x: 0.6, y: 0.6, w: 0.1, h: 0.1 }), 0.0);
+    }
 }

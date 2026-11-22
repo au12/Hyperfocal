@@ -10,7 +10,8 @@
 //! - `engine` and `index`: match each new face or animal to a person, a pet or an
 //!   unnamed group, with thresholds that tighten for poor faces, and form new groups.
 //! - `xmp`: what a photo's sidecar should say about the people and pets in it.
-//! - `api`: the People & pets view: naming, merging, confirming, rejecting.
+//! - `api`: the People & pets view: naming, merging, confirming, rejecting, and your
+//!   corrections of the detectors (not a face; a dog or a cat taken for a face).
 //!
 //! The database keeps the detections and the groups; the sidecars keep what you
 //! confirmed, so the names survive a lost index (they are read back on analysis).
@@ -49,6 +50,16 @@ pub const IGNORED: i64 = 3;
 pub const SRC_DETECTED: i64 = 0;
 /// A named region another app wrote that matches no detection.
 pub const SRC_XMP: i64 = 1;
+
+/// `detections.kind_fixed`: who says what a detection is. The detector, or you: a face
+/// the face detector found on a dog or a cat that you turned into one ("It's a cat").
+/// Yours keep their kind when the photo is analysed again, and get a pet embedding from
+/// the AI engine (in the background) so that they find their pet.
+pub const KIND_DETECTED: i64 = 0;
+/// Yours, its pet embedding still to be made.
+pub const KIND_YOURS_PENDING: i64 = 1;
+/// Yours, with its pet embedding (or none: the photo could not be read).
+pub const KIND_YOURS: i64 = 2;
 
 /// Embedding length (both models).
 pub const DIM: usize = 512;
@@ -152,6 +163,11 @@ pub fn migrate(c: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    // Who says what a detection is (KIND_DETECTED, KIND_YOURS_PENDING, KIND_YOURS).
+    if !crate::db::has_column(c, "detections", "kind_fixed")? {
+        c.execute_batch("ALTER TABLE detections ADD COLUMN kind_fixed INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    c.execute_batch("CREATE INDEX IF NOT EXISTS detections_kind_pending ON detections(photo_id) WHERE kind_fixed = 1;")?;
     Ok(())
 }
 

@@ -39,7 +39,7 @@ pub fn open(path: &Path) -> Result<Pool> {
     Ok(pool)
 }
 
-fn has_column(c: &Connection, table: &str, col: &str) -> Result<bool> {
+pub(crate) fn has_column(c: &Connection, table: &str, col: &str) -> Result<bool> {
     let mut st = c.prepare(&format!("PRAGMA table_info({table})"))?;
     let names = st.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(names.iter().any(|n| n == col))

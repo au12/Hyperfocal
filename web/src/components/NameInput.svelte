@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { api, type DetKind } from '../lib/api';
+  import { api, urls, type DetKind, type PersonName } from '../lib/api';
   import Icon from './Icon.svelte';
 
   /** A name for a face or an animal: an existing person or pet (suggested as you type,
@@ -11,6 +11,7 @@
     placeholder,
     exclude,
     autofocus = true,
+    listOnFocus = true,
     compact = false,
     onpick,
     oncancel,
@@ -21,12 +22,14 @@
     /** A subject not to offer (the one being renamed). */
     exclude?: number;
     autofocus?: boolean;
+    /** Show the names as soon as the field has the focus (else on a click or typing). */
+    listOnFocus?: boolean;
     compact?: boolean;
     onpick: (p: { subject?: number; name: string }) => void;
     oncancel?: () => void;
   } = $props();
 
-  type Name = { id: number; name: string; kind: string; photos: number };
+  type Name = PersonName;
   // The starting text; typing takes over from there.
   let text = $state(untrack(() => value));
   let sugg = $state<Name[]>([]);
@@ -35,6 +38,9 @@
   let input: HTMLInputElement | undefined = $state();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let ctl: AbortController | null = null;
+  // Without `listOnFocus`, the list opens when you click into the field or type, not when
+  // the field gets the focus on opening (where it would cover the faces being named).
+  let pressed = false;
 
   const isPet = $derived(kind !== 'face');
   const trimmed = $derived(text.trim().replace(/\s+/g, ' '));
@@ -99,9 +105,17 @@
     class="field"
     bind:value={text}
     oninput={onInput}
+    onpointerdown={() => (pressed = true)}
     onfocus={() => {
-      open = true;
       fetchNames();
+      if (pressed || listOnFocus) open = true;
+      pressed = false;
+    }}
+    onclick={() => {
+      if (!open) {
+        open = true;
+        fetchNames();
+      }
     }}
     onblur={() => setTimeout(() => (open = false), 150)}
     onkeydown={onKey}
@@ -115,15 +129,18 @@
     <div class="list" role="listbox">
       {#each sugg as s, i (s.id)}
         <button class="opt" class:active={i === active} role="option" aria-selected={i === active} onmousedown={(e) => e.preventDefault()} onclick={() => pick(s)}>
-          <Icon name={s.kind === 'person' ? 'user' : 'paw'} size={14} />
+          <span class="av" class:pet={s.kind !== 'person'}>
+            {#if s.cover}<img src={urls.crop(s.cover)} alt="" loading="lazy" draggable="false" />{:else}<Icon name={s.kind === 'person' ? 'user' : 'paw'} size={13} />{/if}
+          </span>
           <span class="grow ellipsis">{s.name}</span>
-          <span class="dim tnum">{s.photos.toLocaleString()}</span>
+          <span class="n tnum">{s.photos.toLocaleString()}</span>
         </button>
       {/each}
       {#if trimmed && !exact}
         <button class="opt new" class:active={active === sugg.length} onmousedown={(e) => e.preventDefault()} onclick={() => pick()}>
-          <Icon name="plus" size={14} />
+          <span class="av plus"><Icon name="plus" size={14} stroke={2.2} /></span>
           <span class="grow ellipsis">{isPet ? 'New pet' : 'New person'}: <b>{trimmed}</b></span>
+          <kbd>↵</kbd>
         </button>
       {/if}
     </div>
@@ -160,25 +177,57 @@
   .opt {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.5625rem;
     width: 100%;
-    padding: 0.4375rem 0.5rem;
+    padding: 0.3125rem 0.5rem 0.3125rem 0.375rem;
     border: 0;
     border-radius: var(--r);
     background: none;
     text-align: left;
     cursor: pointer;
     color: var(--text);
-  }
-  .opt :global(svg) {
-    color: var(--text-3);
-    flex: none;
+    font-size: var(--fs);
   }
   .opt.active,
   .opt:hover {
-    background: var(--surface-2);
+    background: var(--surface-3);
+  }
+  .av {
+    flex: none;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    background: var(--surface-3);
+    color: var(--text-3);
+    box-shadow: 0 0 0 1px var(--border);
+  }
+  .av.pet {
+    border-radius: 0.5rem;
+  }
+  .av img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .av.plus {
+    background: var(--accent-bg-strong);
+    color: var(--accent);
+    box-shadow: none;
+  }
+  .n {
+    font-size: var(--fs-sm);
+    color: var(--text-3);
   }
   .opt.new b {
-    font-weight: 600;
+    font-weight: 650;
+  }
+  .opt kbd {
+    opacity: 0;
+  }
+  .opt.new.active kbd {
+    opacity: 1;
   }
 </style>

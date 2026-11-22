@@ -676,7 +676,12 @@ class Store {
       return;
     }
     this.jobsSeen.delete(j.id);
-    const ok = j.done - j.failed;
+    const ok = j.written ?? j.done - j.failed;
+    if (ok === 0 && !j.failed) {
+      // Nothing needed writing (a face nobody had named, marked "not a face").
+      delete this.jobs[j.id];
+      return;
+    }
     setTimeout(() => {
       if (this.jobs[j.id]?.finished) delete this.jobs[j.id];
     }, 4000);

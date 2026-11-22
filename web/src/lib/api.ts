@@ -249,6 +249,8 @@ export interface JobStatus {
   summary?: string;
   /** Where to see the result. */
   link?: string;
+  /** Photos whose files changed (when some needed nothing). */
+  written?: number;
 }
 
 export interface JournalEntry {
@@ -567,14 +569,15 @@ export type SubjectKind = 'person' | 'dog' | 'cat';
 export type DetKind = 'face' | 'dog' | 'cat';
 
 /** A face, dog or cat found in a photo. `box` is [x, y, w, h] on the upright photo
- * (0..1); state 0: found or suggested, 1: confirmed; src 1: a region from another app. */
+ * (0..1); state 0: found or suggested, 1: confirmed, 3: "not a face" (not a dog or cat);
+ * src 1: a region from another app. */
 export interface Detection {
   id: number;
   photo: number;
   kind: DetKind;
   box: [number, number, number, number];
   q: number;
-  state: 0 | 1;
+  state: 0 | 1 | 3;
   sim: number | null;
   src: 0 | 1;
   subject: number | null;
@@ -586,6 +589,8 @@ export interface Detection {
   pv?: string;
   file?: string;
   taken?: number | null;
+  /** You said what it is: a dog or a cat the face detector took for a face. */
+  fixed?: boolean;
 }
 
 /** A person, a pet, or an unnamed group of either. */
@@ -630,7 +635,18 @@ export interface PhotoPeople {
   analyzed: boolean;
   error: string | null;
   detections: Detection[];
+  /** Marked "not a face" (or not a dog or cat). */
   ignored: number;
+  ignored_list?: Detection[];
+}
+
+/** A name for autocompletion: an existing person or pet. */
+export interface PersonName {
+  id: number;
+  name: string;
+  kind: SubjectKind;
+  photos: number;
+  cover?: Detection | null;
 }
 
 export class ApiError extends Error {
@@ -787,9 +803,11 @@ export const api = {
   assign: (ids: number[], who: { subject?: number; name?: string }) => req<{ subject: number }>('POST', 'people/assign', { ids, ...who }),
   confirm: (b: { ids?: number[]; subject?: number }) => req<{ confirmed: number }>('POST', 'people/confirm', b),
   rejectDetections: (ids: number[]) => req<{ rejected: number }>('POST', 'people/reject', { ids }),
-  ignore: (ids: number[], ignored = true) => req<{ changed: number }>('POST', 'people/ignore', { ids, ignored }),
-  peopleNames: (q: string, kind: DetKind | 'pet', signal?: AbortSignal) =>
-    req<{ id: number; name: string; kind: SubjectKind; photos: number }[]>('GET', 'people/names', undefined, { q, kind }, signal),
+  /** "Not a face" (not a dog or cat): these detections, or all of a subject's. `ignored: false` takes it back. */
+  ignore: (who: { ids?: number[]; subject?: number }, ignored = true) => req<{ changed: number; ids: number[] }>('POST', 'people/ignore', { ...who, ignored }),
+  /** "It's a dog / a cat": faces the face detector found on an animal; `face` takes it back. */
+  setKind: (who: { ids?: number[]; subject?: number }, kind: DetKind) => req<{ changed: number; ids: number[] }>('POST', 'people/kind', { ...who, kind }),
+  peopleNames: (q: string, kind: DetKind | 'pet', signal?: AbortSignal) => req<PersonName[]>('GET', 'people/names', undefined, { q, kind }, signal),
   peopleAnalyze: (ids: number[]) => req<{ ok: boolean }>('POST', 'people/analyze', { ids }),
   peopleControl: (b: { pause?: boolean; regroup?: boolean; reanalyze?: number }) => req<{ ok: boolean; paused: boolean }>('POST', 'people/control', b),
   photoPeople: (id: number, signal?: AbortSignal) => req<PhotoPeople>('GET', `photo/${id}/people`, undefined, undefined, signal),

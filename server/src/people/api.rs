@@ -5,7 +5,7 @@
 
 use super::engine::{Engine, subject_by_name};
 use super::regions::Rect;
-use super::{AUTO, CAT, CONFIRMED, DOG, FACE, IGNORED, PERSON, PET, SRC_DETECTED, keyword};
+use super::{AUTO, CAT, CONFIRMED, DOG, FACE, IGNORED, KIND_DETECTED, KIND_YOURS_PENDING, PERSON, PET, SRC_DETECTED, keyword};
 use crate::api::{ApiError, ApiResult, St, bad};
 use crate::state::AppState;
 use axum::Json;
@@ -31,6 +31,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/people/confirm", post(confirm))
         .route("/people/reject", post(reject))
         .route("/people/ignore", post(ignore))
+        .route("/people/kind", post(set_kind))
         .route("/people/analyze", post(analyze))
         .route("/people/control", post(control))
         .route("/people/{id}", get(subject).post(update).delete(remove))
@@ -74,8 +75,9 @@ fn kind_label(subject_kind: i64, species: i64) -> &'static str {
     }
 }
 
-/// Detections as the UI sees them.
-const DET_COLS: &str = "d.id, d.photo_id, d.kind, d.x, d.y, d.w, d.h, d.quality, d.state, d.sim, d.source, d.subject_id, d.score";
+/// Detections as the UI sees them (`DET_N` columns; queries add theirs after them).
+const DET_COLS: &str = "d.id, d.photo_id, d.kind, d.x, d.y, d.w, d.h, d.quality, d.state, d.sim, d.source, d.subject_id, d.score, d.kind_fixed";
+const DET_N: usize = 14;
 
 fn det_json(r: &rusqlite::Row, sig: &str) -> rusqlite::Result<Value> {
     let rect = Rect { x: r.get(3)?, y: r.get(4)?, w: r.get(5)?, h: r.get(6)? };
@@ -84,6 +86,8 @@ fn det_json(r: &rusqlite::Row, sig: &str) -> rusqlite::Result<Value> {
         "box": [rect.x, rect.y, rect.w, rect.h], "q": r.get::<_, f64>(7)?, "state": r.get::<_, i64>(8)?,
         "sim": r.get::<_, Option<f64>>(9)?, "src": r.get::<_, i64>(10)?, "subject": r.get::<_, Option<i64>>(11)?,
         "score": r.get::<_, f64>(12)?, "v": crop_v(&rect, sig),
+        // You said what it is (a face that is a dog or a cat).
+        "fixed": r.get::<_, i64>(13)? != KIND_DETECTED,
     }))
 }
 
@@ -302,11 +306,17 @@ async fn subject_detections(State(state): St, Path(id): Path<i64>, Query(q): Que
         let rows: Vec<Value> = stmt
             .query_map([id], |r| {
                 let photo: i64 = r.get(1)?;
-                let sig = crate::images::sig_str(&crate::model::PhotoRec { id: photo, size: r.get(13)?, mtime: r.get(14)?, orientation: r.get(15)?, ..Default::default() });
+                let sig = crate::images::sig_str(&crate::model::PhotoRec {
+                    id: photo,
+                    size: r.get(DET_N)?,
+                    mtime: r.get(DET_N + 1)?,
+                    orientation: r.get(DET_N + 2)?,
+                    ..Default::default()
+                });
                 let mut v = det_json(r, &sig)?;
                 v["pv"] = json!(sig);
-                v["file"] = json!(r.get::<_, String>(16)?);
-                v["taken"] = json!(r.get::<_, Option<i64>>(17)?);
+                v["file"] = json!(r.get::<_, String>(DET_N + 3)?);
+                v["taken"] = json!(r.get::<_, Option<i64>>(DET_N + 4)?);
                 Ok(v)
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -325,24 +335,28 @@ async fn photo_people(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<V
         let analysis: Option<(i64, Option<String>)> = c.query_row("SELECT at, error FROM analysis WHERE photo_id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
         let mut stmt = c.prepare(&format!(
             "SELECT {DET_COLS}, s.name, s.kind, s.species, s.hidden FROM detections d LEFT JOIN subjects s ON s.id = d.subject_id
-             WHERE d.photo_id = ?1 AND d.state != 3 ORDER BY d.x"
+             WHERE d.photo_id = ?1 ORDER BY d.x"
         ))?;
-        let dets: Vec<Value> = stmt
-            .query_map([id], |r| {
-                let mut v = det_json(r, &sig)?;
-                if let Some(sid) = r.get::<_, Option<i64>>(11)? {
-                    v["who"] = json!({
-                        "id": sid, "name": r.get::<_, Option<String>>(13)?,
-                        "kind": kind_label(r.get(14)?, r.get(15)?), "hidden": r.get::<_, i64>(16)? != 0,
-                    });
-                }
-                Ok(v)
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        let ignored: i64 = c.query_row("SELECT count(*) FROM detections WHERE photo_id = ?1 AND state = 3", [id], |r| r.get(0))?;
+        let mut dets: Vec<Value> = Vec::new();
+        // Marked "not a face" (or not a dog or cat): listed apart, so they can be restored.
+        let mut ignored: Vec<Value> = Vec::new();
+        let rows = stmt.query_map([id], |r| {
+            let mut v = det_json(r, &sig)?;
+            if let Some(sid) = r.get::<_, Option<i64>>(11)? {
+                v["who"] = json!({
+                    "id": sid, "name": r.get::<_, Option<String>>(DET_N)?,
+                    "kind": kind_label(r.get(DET_N + 1)?, r.get(DET_N + 2)?), "hidden": r.get::<_, i64>(DET_N + 3)? != 0,
+                });
+            }
+            Ok((r.get::<_, i64>(8)?, v))
+        })?;
+        for row in rows {
+            let (state, v) = row?;
+            if state == IGNORED { ignored.push(v) } else { dets.push(v) }
+        }
         Ok(json!({
             "analyzed": analysis.as_ref().is_some_and(|a| a.1.is_none()), "error": analysis.and_then(|a| a.1),
-            "detections": dets, "ignored": ignored,
+            "detections": dets, "ignored": ignored.len(), "ignored_list": ignored,
         }))
     })
     .await?;
@@ -376,11 +390,16 @@ async fn names(State(state): St, Query(q): Query<NamesQuery>) -> ApiResult<Json<
                AND EXISTS (SELECT 1 FROM detections d WHERE d.subject_id = s.id)
              ORDER BY n DESC, s.name COLLATE NOCASE LIMIT 20",
         )?;
-        let rows: Vec<Value> = stmt
+        let mut rows: Vec<Value> = stmt
             .query_map(params![kind, pat], |r| {
                 Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "kind": kind_label(r.get(2)?, r.get(3)?), "photos": r.get::<_, i64>(4)?}))
             })?
             .collect::<rusqlite::Result<_>>()?;
+        // Their faces, so a name is picked by who it is.
+        for v in &mut rows {
+            let id = v["id"].as_i64().unwrap_or(0);
+            v["cover"] = cover(&c, id)?;
+        }
         Ok(json!(rows))
     })
     .await
@@ -404,7 +423,7 @@ async fn crop(State(state): St, Path(id): Path<i64>, Query(q): Query<CropQuery>)
         // Not kept (a poor face, or the cache was cleared): made from the photo.
         let c = st.db.get()?;
         let row: Option<(i64, i64, Rect)> = c
-            .query_row("SELECT photo_id, kind, x, y, w, h FROM detections WHERE id = ?1", [id], |r| {
+            .query_row(&format!("SELECT photo_id, {}, x, y, w, h FROM detections WHERE id = ?1", super::worker::FRAME_KIND), [id], |r| {
                 Ok((r.get(0)?, r.get(1)?, Rect { x: r.get(2)?, y: r.get(3)?, w: r.get(4)?, h: r.get(5)? }))
             })
             .optional()?;
@@ -459,11 +478,22 @@ fn change<T>(
             return Err(e);
         }
     };
+    // Photos whose faces changed: culling measures them again (their eyes, their subject).
+    if !w.faces.is_empty() {
+        let now = crate::db::now_ms();
+        let mut st = tx.prepare("UPDATE analysis SET at = max(at + 1, ?2) WHERE photo_id = ?1 AND error IS NULL")?;
+        for p in &w.faces {
+            st.execute(params![p, now])?;
+        }
+    }
     tx.commit()?;
     drop(g);
     let photos: Vec<i64> = w.photos.keys().copied().chain(w.seen.iter().copied()).collect::<HashSet<_>>().into_iter().collect();
     if !w.photos.is_empty() {
         state.people.write(w.photos.into_iter().map(|(p, d)| (p, d.into_iter().collect())));
+    }
+    if !w.faces.is_empty() {
+        state.cull.prioritize(&w.faces.into_iter().collect::<Vec<_>>());
     }
     super::emit_changed(state, photos);
     Ok(r)
@@ -475,6 +505,8 @@ fn change<T>(
 struct Writes {
     photos: HashMap<i64, HashSet<String>>,
     seen: HashSet<i64>,
+    /// Photos with a face more or less (for culling).
+    faces: HashSet<i64>,
 }
 
 impl Writes {
@@ -697,7 +729,10 @@ async fn reject(State(state): St, Json(b): Json<IdsBody>) -> ApiResult<Json<Valu
 
 #[derive(Deserialize)]
 struct IgnoreBody {
+    /// The detections, or all of a subject's (`subject`).
+    #[serde(default)]
     ids: Vec<i64>,
+    subject: Option<i64>,
     /// false: take back an earlier "ignore".
     #[serde(default = "yes")]
     ignored: bool,
@@ -707,16 +742,33 @@ fn yes() -> bool {
     true
 }
 
-/// "Not a face" (or not of interest): left out of everything, sidecars included.
+/// The detections a change is about: these, or all of a subject's (its "not a face"
+/// ones left out).
+fn targets(c: &Connection, ids: &[i64], subject: Option<i64>) -> anyhow::Result<Vec<i64>> {
+    match subject {
+        Some(s) => Ok(c.prepare("SELECT id FROM detections WHERE subject_id = ?1 AND state != ?2")?.query_map(params![s, IGNORED], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?),
+        None => Ok(ids.to_vec()),
+    }
+}
+
+/// "Not a face" (not a dog, not a cat): a detection the detector got wrong. Left out of
+/// everything (people, pets, the sidecars, culling) and kept out when the photo is
+/// analysed again. `subject`: all of a subject's at once (a group of statues).
+/// `ignored: false` takes it back. Answers the detections changed (for an undo).
 async fn ignore(State(state): St, Json(b): Json<IgnoreBody>) -> ApiResult<Json<Value>> {
-    ids_ok(&b.ids)?;
+    if b.subject.is_none() {
+        ids_ok(&b.ids)?;
+    }
     let st = state.clone();
     blocking(move || {
         change(&st, |tx, eng, w| {
-            let dets = load_dets(tx, &b.ids)?;
+            let dets = load_dets(tx, &targets(tx, &b.ids, b.subject)?)?;
             let mut ids = Vec::new();
             for d in &dets {
                 if b.ignored {
+                    if d.state == IGNORED {
+                        continue;
+                    }
                     if d.state == CONFIRMED
                         && let Some(s) = d.subject
                         && let Some(kw) = subject_keyword(tx, s)?
@@ -726,20 +778,136 @@ async fn ignore(State(state): St, Json(b): Json<IgnoreBody>) -> ApiResult<Json<V
                     tx.execute("UPDATE detections SET subject_id = NULL, state = ?2, sim = NULL WHERE id = ?1", params![d.id, IGNORED])?;
                 } else if d.state == IGNORED {
                     tx.execute("UPDATE detections SET state = ?2 WHERE id = ?1", params![d.id, AUTO])?;
+                } else {
+                    continue;
                 }
                 // Its region (ours, or one another app wrote) leaves the sidecar.
                 w.photo(d.photo);
+                w.faces.insert(d.photo);
                 ids.push(d.id);
             }
             eng.refresh(tx, &ids)?;
             if !b.ignored {
-                eng.assign(tx, &ids)?;
+                let r = eng.assign(tx, &ids)?;
+                w.seen.extend(r.photos);
             }
-            Ok(json!({ "changed": ids.len() }))
+            Ok(json!({ "changed": ids.len(), "ids": ids }))
         })
     })
     .await
     .map(Json)
+}
+
+#[derive(Deserialize)]
+struct KindBody {
+    /// The detections, or all of a subject's (`subject`).
+    #[serde(default)]
+    ids: Vec<i64>,
+    subject: Option<i64>,
+    /// dog | cat: these faces are that animal. face: take that back.
+    kind: String,
+}
+
+/// "It's a dog" / "It's a cat": a face the face detector found on an animal (it takes
+/// some dog and cat faces for human ones) is that animal. It leaves its person (and its
+/// name the sidecars), keeps the face's box, the animal's face, and gets a pet embedding
+/// from the AI engine in the background (see `worker::embed_yours`), after which it is
+/// matched to the pets like any animal. An animal made so can change species, or go
+/// back to being a face (`face`: the photo is analysed again for the face's embedding).
+async fn set_kind(State(state): St, Json(b): Json<KindBody>) -> ApiResult<Json<Value>> {
+    let target = match b.kind.as_str() {
+        "dog" => DOG,
+        "cat" => CAT,
+        "face" => FACE,
+        _ => return Err(bad("kind: dog, cat or face")),
+    };
+    if b.subject.is_none() {
+        ids_ok(&b.ids)?;
+    }
+    let st = state.clone();
+    let (v, again, pending) = blocking(move || {
+        let mut again: Vec<i64> = Vec::new();
+        let mut pending = false;
+        let v = change(&st, |tx, eng, w| {
+            let ids = targets(tx, &b.ids, b.subject)?;
+            let mut changed = Vec::new();
+            let mut released = Vec::new();
+            for chunk in ids.chunks(500) {
+                let sql = format!(
+                    "SELECT d.id, d.photo_id, d.kind, d.subject_id, d.state, d.kind_fixed, s.species FROM detections d LEFT JOIN subjects s ON s.id = d.subject_id WHERE d.id IN ({})",
+                    chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+                );
+                #[allow(clippy::type_complexity)]
+                let rows: Vec<(i64, i64, i64, Option<i64>, i64, i64, Option<i64>)> = tx
+                    .prepare(&sql)?
+                    .query_map(params_from_iter(chunk.iter()), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?
+                    .collect::<rusqlite::Result<_>>()?;
+                for (id, photo, kind, subject, dstate, fixed, species) in rows {
+                    let yours = fixed != KIND_DETECTED;
+                    if kind == target || (kind != FACE && !yours) {
+                        // Already so; or an animal the detector found (not yours to turn).
+                        continue;
+                    }
+                    // Who it was goes, unless it is a pet of the new species.
+                    let keeps = kind != FACE && target != FACE && species == Some(target);
+                    if !keeps
+                        && dstate == CONFIRMED
+                        && let Some(s) = subject
+                        && let Some(kw) = subject_keyword(tx, s)?
+                    {
+                        w.drop_kw(photo, kw);
+                    }
+                    if kind == FACE {
+                        // A face becomes an animal: its face embedding means nothing among
+                        // the pets, and the people it was said not to be no longer matter.
+                        tx.execute(
+                            "UPDATE detections SET kind = ?2, kind_fixed = ?3, subject_id = NULL, state = ?4, sim = NULL, emb = NULL WHERE id = ?1",
+                            params![id, target, KIND_YOURS_PENDING, AUTO],
+                        )?;
+                        tx.execute("DELETE FROM detection_rejects WHERE detection_id = ?1", [id])?;
+                        eng.forget(&[id]);
+                        pending = true;
+                    } else if target == FACE {
+                        // Back to a face: analysed again for its face embedding.
+                        tx.execute(
+                            "UPDATE detections SET kind = ?2, kind_fixed = ?3, subject_id = NULL, state = ?4, sim = NULL, emb = NULL WHERE id = ?1",
+                            params![id, FACE, KIND_DETECTED, AUTO],
+                        )?;
+                        tx.execute("DELETE FROM detection_rejects WHERE detection_id = ?1", [id])?;
+                        eng.forget(&[id]);
+                        again.push(photo);
+                    } else if keeps {
+                        tx.execute("UPDATE detections SET kind = ?2 WHERE id = ?1", params![id, target])?;
+                    } else {
+                        // The other species: not the pet it was.
+                        tx.execute("UPDATE detections SET kind = ?2, subject_id = NULL, state = ?3, sim = NULL WHERE id = ?1", params![id, target, AUTO])?;
+                        released.push(id);
+                    }
+                    w.photo(photo);
+                    w.faces.insert(photo);
+                    changed.push(id);
+                }
+            }
+            again.sort_unstable();
+            again.dedup();
+            for p in &again {
+                tx.execute("DELETE FROM analysis WHERE photo_id = ?1", [p])?;
+            }
+            eng.refresh(tx, &changed)?;
+            let r = eng.assign(tx, &released)?;
+            w.seen.extend(r.photos);
+            Ok(json!({ "changed": changed.len(), "ids": changed }))
+        })?;
+        Ok((v, again, pending))
+    })
+    .await?;
+    if !again.is_empty() {
+        state.people.prioritize(&again);
+    }
+    if pending {
+        state.people.wake();
+    }
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
@@ -1107,5 +1275,109 @@ mod tests {
         let (st, _) = call(&app, "DELETE", &format!("/api/people/{g1}"), None).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(call(&app, "GET", &format!("/api/people/{g1}"), None).await.0, StatusCode::NOT_FOUND);
+    }
+
+    /// Your corrections of the detectors: "not a face", "it's a cat" and taking both back.
+    #[tokio::test]
+    async fn not_a_face_and_its_a_cat() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("photos")).unwrap();
+        let mut cfg = crate::config::Config::for_tests(tmp.path());
+        cfg.readonly = true;
+        let state = crate::build_state(cfg).await.unwrap();
+        let (ann, statues, faces) = {
+            let c = state.db.get().unwrap();
+            c.execute("INSERT INTO folders(id, parent_id, path, name, scanned_at) VALUES(1, NULL, '', 'Library', 1)", []).unwrap();
+            for i in 1..=4 {
+                let rec = crate::model::PhotoRec { folder_id: 1, name: format!("{i}.CR3"), stem: format!("{i}"), ext: "cr3".into(), kind: 1, ..Default::default() };
+                crate::repo::upsert(&c, &rec).unwrap();
+                c.execute("INSERT INTO analysis(photo_id, size, mtime, orientation, models, at, error, w, h) VALUES(?1, 0, 0, 1, 'm', 1000, NULL, 2048, 1365)", [i])
+                    .unwrap();
+            }
+            crate::repo::refresh_folder(&c, 1).unwrap();
+            let g = |name: Option<&str>| -> i64 {
+                c.query_row("INSERT INTO subjects(kind, species, name, hidden, created, updated) VALUES(1, 1, ?1, 0, 0, 0) RETURNING id", [name], |r| r.get(0)).unwrap()
+            };
+            let (ann, statues) = (g(Some("Ann")), g(None));
+            let mut faces = Vec::new();
+            // Ann (confirmed) in photos 1 and 2; a group of statue "faces" in 3 and 4; an
+            // unknown face (a cat's) in 4.
+            for (photo, s, state) in [(1, Some(ann), 1), (2, Some(ann), 1), (3, Some(statues), 0), (4, Some(statues), 0), (4, None, 0)] {
+                faces.push(
+                    c.query_row(
+                        "INSERT INTO detections(photo_id, kind, x, y, w, h, score, quality, subject_id, state, created) VALUES(?1, 1, 0.1, 0.1, 0.2, 0.2, 0.9, 0.9, ?2, ?3, 0) RETURNING id",
+                        params![photo, s, state],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                );
+            }
+            // And a dog the animal detector found.
+            faces.push(
+                c.query_row(
+                    "INSERT INTO detections(photo_id, kind, x, y, w, h, score, quality, state, created) VALUES(3, 2, 0.5, 0.5, 0.4, 0.4, 0.9, 0.9, 0, 0) RETURNING id",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap(),
+            );
+            (ann, statues, faces)
+        };
+        let app = crate::api::router(state.clone());
+        let at = |p: i64| -> Option<i64> { state.db.get().unwrap().query_row("SELECT at FROM analysis WHERE photo_id = ?1", [p], |r| r.get(0)).optional().unwrap() };
+        let row = |id: i64| -> (i64, i64, Option<i64>, i64) {
+            state.db.get().unwrap().query_row("SELECT kind, kind_fixed, subject_id, state FROM detections WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap()
+        };
+
+        // The unknown face in photo 4 is a cat.
+        let (st, v) = call(&app, "POST", "/api/people/kind", Some(json!({"ids": [faces[4]], "kind": "cat"}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["ids"], json!([faces[4]]));
+        assert_eq!(row(faces[4]), (CAT, KIND_YOURS_PENDING, None, AUTO));
+        let (_, p) = call(&app, "GET", "/api/photo/4/people", None).await;
+        let cat = p["detections"].as_array().unwrap().iter().find(|d| d["id"] == faces[4]).unwrap().clone();
+        assert_eq!((cat["kind"].as_str(), cat["fixed"].as_bool()), (Some("cat"), Some(true)));
+        assert!(at(4).unwrap() > 1000, "culling measures the photo again");
+        // Not a dog after all... but a face it is not either: a dog, then back to a face.
+        assert_eq!(call(&app, "POST", "/api/people/kind", Some(json!({"ids": [faces[4]], "kind": "dog"}))).await.0, StatusCode::OK);
+        assert_eq!(row(faces[4]).0, DOG);
+        assert_eq!(call(&app, "POST", "/api/people/kind", Some(json!({"ids": [faces[4]], "kind": "face"}))).await.0, StatusCode::OK);
+        assert_eq!(row(faces[4]), (FACE, KIND_DETECTED, None, AUTO));
+        assert_eq!(at(4), None, "the photo is analysed again for the face's embedding");
+        // A confirmed face of Ann's that is a dog leaves Ann.
+        let (st, _) = call(&app, "POST", "/api/people/kind", Some(json!({"ids": [faces[1]], "kind": "dog"}))).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, s) = call(&app, "GET", &format!("/api/people/{ann}"), None).await;
+        assert_eq!(s["photos"], 1);
+        // Already a dog: nothing to do. The detector's dog is not yours to turn into a
+        // cat; an unknown kind is refused.
+        let (_, v) = call(&app, "POST", "/api/people/kind", Some(json!({"ids": [faces[1]], "kind": "dog"}))).await;
+        assert_eq!(v["changed"], 0);
+        let (_, v) = call(&app, "POST", "/api/people/kind", Some(json!({"ids": [faces[5]], "kind": "cat"}))).await;
+        assert_eq!(v["changed"], 0);
+        assert_eq!(row(faces[5]).0, DOG);
+        assert_eq!(call(&app, "POST", "/api/people/kind", Some(json!({"ids": [faces[0]], "kind": "horse"}))).await.0, StatusCode::BAD_REQUEST);
+
+        // None of the statue group's are faces.
+        let (st, v) = call(&app, "POST", "/api/people/ignore", Some(json!({"subject": statues}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["changed"], 2);
+        let (_, p) = call(&app, "GET", "/api/photo/3/people", None).await;
+        assert!(p["detections"].as_array().unwrap().iter().all(|d| d["kind"] != "face"), "{p}");
+        assert_eq!(p["ignored"], 1);
+        assert_eq!(p["ignored_list"][0]["id"], faces[2]);
+        assert!(at(3).unwrap() > 1000);
+        let (_, list) = call(&app, "GET", "/api/people", None).await;
+        assert!(list["subjects"].as_array().unwrap().iter().all(|x| x["id"] != statues));
+        // Taken back (the toast's undo): faces again, matched afresh.
+        let ids = v["ids"].clone();
+        let (st, v) = call(&app, "POST", "/api/people/ignore", Some(json!({"ids": ids, "ignored": false}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["changed"], 2);
+        assert_eq!(row(faces[2]).3, AUTO);
+        // Already ignored ones are not counted twice.
+        call(&app, "POST", "/api/people/ignore", Some(json!({"ids": [faces[0]]}))).await;
+        let (_, v) = call(&app, "POST", "/api/people/ignore", Some(json!({"ids": [faces[0]]}))).await;
+        assert_eq!(v["changed"], 0);
     }
 }

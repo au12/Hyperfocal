@@ -3,7 +3,7 @@
 // The server does the matching and writes the names to the sidecars; this keeps
 // what is on screen in step (the event stream says when something changed).
 
-import { api, ApiError, type Detection, type PeopleStatus, type PhotoPeople, type Subject } from './api';
+import { api, ApiError, type DetKind, type Detection, type PeopleStatus, type PhotoPeople, type Subject } from './api';
 import { store } from './store.svelte';
 
 export type PeopleTab = 'person' | 'pet';
@@ -12,6 +12,21 @@ export type PeopleTab = 'person' | 'pet';
 export function subjectLabel(s: { name: string | null; kind: string }): string {
   if (s.name) return s.name;
   return s.kind === 'person' ? 'Unnamed person' : s.kind === 'cat' ? 'Unnamed cat' : 'Unnamed dog';
+}
+
+/** What a detection is, in words: "face", "dog", "cat". */
+export const kindWord = (k: DetKind | string) => (k === 'face' ? 'face' : k === 'cat' ? 'cat' : 'dog');
+
+/** The "not a …" of a detection's kind ("not a face", "not a dog or cat"), for n of them. */
+export function notWord(k: DetKind | string, n = 1): string {
+  if (k === 'face') return n === 1 ? 'not a face' : 'not faces';
+  return n === 1 ? 'not a dog or cat' : 'not dogs or cats';
+}
+
+/** A detection nobody is named for yet, in words: "Unknown person", "Unknown cat". */
+export function unknownLabel(d: Detection): string {
+  if (d.who) return d.kind === 'face' ? 'Unnamed person' : `Unnamed ${kindWord(d.kind)}`;
+  return d.kind === 'face' ? 'Unknown person' : `Unknown ${kindWord(d.kind)}`;
 }
 
 class People {
@@ -32,6 +47,8 @@ class People {
   rev = $state(0);
   /** Bumped by changes that may touch any photo (your edits, a regrouping). */
   allRev = $state(0);
+  /** The detection under the pointer, in the info panel or on the photo: shown in both. */
+  hover = $state<number | null>(null);
   private pending = new Set<number>();
   private pendingAll = false;
   private lastChanged = new Set<number>();
@@ -234,10 +251,59 @@ class People {
 
   reject = (ids: number[]) => this.run('Not changed', () => api.rejectDetections(ids));
 
-  ignore = (ids: number[], ignored = true) =>
+  /** "Not a face" (not a dog or cat): the detector got these wrong. Out of everything,
+   * and kept out when the photos are analysed again. */
+  notDetected = (ids: number[], kind: DetKind) =>
     this.run('Not changed', async () => {
-      const r = await api.ignore(ids, ignored);
-      if (ignored) store.toast(`${ids.length === 1 ? 'Face' : `${ids.length} faces`} ignored`, 'ok', { label: 'Undo', run: () => this.ignore(ids, false) });
+      const r = await api.ignore({ ids });
+      if (r.changed) this.toastNot(r, kind);
+      return r;
+    });
+
+  /** None of a group's detections are what the detector took them for (a statue's
+   * "faces", a pattern). */
+  notGroup = (s: Subject) =>
+    this.run('Not changed', async () => {
+      const r = await api.ignore({ subject: s.id });
+      if (this.open === s.id) this.open = null;
+      if (r.changed) this.toastNot(r, s.kind === 'person' ? 'face' : s.kind);
+      return r;
+    });
+
+  private toastNot(r: { changed: number; ids: number[] }, kind: DetKind | string) {
+    const n = r.changed;
+    store.toast(`${n === 1 ? 'Marked' : `${n.toLocaleString()} marked`} as ${notWord(kind, n)}`, 'ok', { label: 'Undo', run: () => this.restore(r.ids) });
+  }
+
+  /** Take back a "not a face". */
+  restore = (ids: number[]) =>
+    this.run('Not restored', async () => {
+      const r = await api.ignore({ ids }, false);
+      if (r.changed) store.toast(r.changed === 1 ? 'Restored' : `${r.changed.toLocaleString()} restored`, 'ok');
+      return r;
+    });
+
+  /** "It's a dog" / "It's a cat": faces the face detector found on an animal (`face`:
+   * back to a face). Matched to the pets once the AI engine has looked at them. */
+  setKind = (ids: number[], kind: DetKind) => this.kindOf({ ids }, kind);
+
+  /** A whole group of faces that are dogs or cats. */
+  setGroupKind = (s: Subject, kind: DetKind) => {
+    if (this.open === s.id) this.open = null;
+    return this.kindOf({ subject: s.id }, kind);
+  };
+
+  private kindOf = (who: { ids?: number[]; subject?: number }, kind: DetKind) =>
+    this.run('Not changed', async () => {
+      const r = await api.setKind(who, kind);
+      const n = r.changed;
+      if (!n) return r;
+      if (kind === 'face') store.toast(n === 1 ? 'A face again: the photo is analysed once more' : `${n.toLocaleString()} faces again: their photos are analysed once more`, 'ok');
+      else
+        store.toast(`${n === 1 ? 'Now a' : `${n.toLocaleString()} now`} ${kind}${n === 1 ? '' : 's'}: matched to your pets in a moment`, 'ok', {
+          label: 'Undo',
+          run: () => this.kindOf({ ids: r.ids }, 'face'),
+        });
       return r;
     });
 

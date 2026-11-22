@@ -13,6 +13,11 @@
 //!     POST /v1/text       body: {"texts": [...]}. Answers {"embs": [...]} in the same space.
 //!     POST /v1/eyes       body: close-ups of faces (one image, or a batch as for /v1/embed).
 //!                         Answers {"eyes": [...]}: per close-up {"closed": 0..1, ...} or null.
+//!     POST /v1/pets       body: crops of dogs or cats (one image, or a batch as for
+//!                         /v1/embed). Answers {"embs": [...]}: a pet re-identification
+//!                         embedding (base64 float16, as /v1/analyze gives an animal) per
+//!                         crop, or null for one that could not be read. For animals the
+//!                         detector missed (a face you said is a dog or a cat).
 //! ```
 //!
 //! Every /v1/ request carries "Authorization: Bearer <token>" (the server's, from the
@@ -115,6 +120,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/v1/embed", post(embed))
         .route("/v1/text", post(text))
         .route("/v1/eyes", post(eyes))
+        .route("/v1/pets", post(pets))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(engine)
 }
@@ -303,6 +309,47 @@ async fn eyes(State(e): St, h: HeaderMap, body: Bytes) -> Response {
         Ok(Err(err)) => {
             tracing::error!("AI engine: eye check failed: {err:#}");
             error(StatusCode::INTERNAL_SERVER_ERROR, format!("eye check failed: {err:#}"))
+        }
+        Err(r) => r,
+    }
+}
+
+async fn pets(State(e): St, h: HeaderMap, body: Bytes) -> Response {
+    if !authorized(&e, &h) {
+        return error(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    if e.pets.is_none() {
+        return error(StatusCode::NOT_IMPLEMENTED, "face and pet recognition is off (HYPERFOCAL_ML_FACES=false)");
+    }
+    if let Err(m) = images(&h, &body) {
+        return error(StatusCode::BAD_REQUEST, m);
+    }
+    let eng = e.clone();
+    let t = Instant::now();
+    let res = blocking(move || -> anyhow::Result<Vec<Option<String>>> {
+        let list = images(&h, &body).map_err(|m| anyhow::anyhow!(m))?;
+        // As /v1/analyze embeds an animal: its pixels, at least 32 on the short side.
+        let decoded: Vec<Option<crate::images::jpeg::Rgb>> = list.iter().map(|d| decode(d).ok().filter(|i| i.w.min(i.h) >= 32)).collect();
+        let crops: Vec<(Vec<u8>, usize, usize)> = decoded.iter().flatten().map(|i| (i.px.clone(), i.w, i.h)).collect();
+        let mut out: Vec<Option<String>> = vec![None; decoded.len()];
+        if !crops.is_empty() {
+            let _g = eng.gate.enter();
+            let embs = eng.pets.as_ref().expect("pets on").embed(&crops)?;
+            let mut it = embs.into_iter();
+            for (slot, d) in out.iter_mut().zip(&decoded) {
+                if d.is_some() {
+                    *slot = it.next().map(|v| super::b64_f16(&v));
+                }
+            }
+        }
+        Ok(out)
+    })
+    .await;
+    match res {
+        Ok(Ok(embs)) => answer(StatusCode::OK, json!({ "embs": embs, "ms": super::round_to(t.elapsed().as_secs_f64() * 1000.0, 1) })),
+        Ok(Err(err)) => {
+            tracing::error!("AI engine: pet embedding failed: {err:#}");
+            error(StatusCode::INTERNAL_SERVER_ERROR, format!("embedding failed: {err:#}"))
         }
         Err(r) => r,
     }

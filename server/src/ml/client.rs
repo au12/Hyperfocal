@@ -170,9 +170,25 @@ impl Client {
             body.extend_from_slice(&(img.len() as u32).to_le_bytes());
             body.extend_from_slice(img);
         }
-        let v = self.post_for_embs("/v1/embed", "application/x-hfml-batch", &body)?;
+        let v = self.post_for_embs("/v1/embed", "application/x-hfml-batch", &body, crate::visual::DIM)?;
         if v.len() != images.len() {
             return Err(MlError::Rejected(format!("the AI engine answered {} embeddings for {} images", v.len(), images.len())));
+        }
+        Ok(v)
+    }
+
+    /// Pet re-identification embeddings of crops of dogs or cats (encoded images; None for
+    /// one the engine could not read), normalized: in the space of the animals
+    /// `analyze` finds.
+    pub fn embed_pets(&self, crops: &[Vec<u8>]) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {
+        let mut body = Vec::with_capacity(crops.iter().map(|i| i.len() + 4).sum());
+        for img in crops {
+            body.extend_from_slice(&(img.len() as u32).to_le_bytes());
+            body.extend_from_slice(img);
+        }
+        let v = self.post_for_embs("/v1/pets", "application/x-hfml-batch", &body, crate::people::DIM)?;
+        if v.len() != crops.len() {
+            return Err(MlError::Rejected(format!("the AI engine answered {} embeddings for {} animals", v.len(), crops.len())));
         }
         Ok(v)
     }
@@ -180,7 +196,7 @@ impl Client {
     /// SigLIP 2 embeddings of texts, in the images' space.
     pub fn embed_texts(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, MlError> {
         let body = serde_json::json!({ "texts": texts }).to_string();
-        let v = self.post_for_embs("/v1/text", "application/json", body.as_bytes())?;
+        let v = self.post_for_embs("/v1/text", "application/json", body.as_bytes(), crate::visual::DIM)?;
         v.into_iter().map(|e| e.ok_or_else(|| MlError::Rejected("the AI engine sent no embedding for a text".into()))).collect()
     }
 
@@ -217,7 +233,7 @@ impl Client {
         serde_json::from_str(&text).map_err(|e| MlError::Rejected(format!("unexpected answer from the AI engine: {e}")))
     }
 
-    fn post_for_embs(&self, path: &str, ctype: &str, body: &[u8]) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {
+    fn post_for_embs(&self, path: &str, ctype: &str, body: &[u8], dim: usize) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {
         let d = self.dest(true)?;
         let mut r = Self::auth(&d, self.agent.post(&format!("{}{path}", d.base)))
             .content_type(ctype)
@@ -228,12 +244,12 @@ impl Client {
         if !status.is_success() {
             let msg = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(text);
             let msg = format!("the AI engine answered {status}: {msg}");
-            // 501: the engine has no search models. 4xx: this request. 5xx: the engine.
+            // 501: the engine lacks the models. 4xx: this request. 5xx: the engine.
             return Err(if status.is_client_error() && status.as_u16() != 501 { MlError::Rejected(msg) } else { MlError::Unreachable(msg) });
         }
         let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| MlError::Rejected(format!("unexpected answer from the AI engine: {e}")))?;
         let embs = v["embs"].as_array().ok_or_else(|| MlError::Rejected("unexpected answer from the AI engine".into()))?;
-        Ok(embs.iter().map(|e| e.as_str().and_then(|s| decode_f16(s, crate::visual::DIM).ok())).collect())
+        Ok(embs.iter().map(|e| e.as_str().and_then(|s| decode_f16(s, dim).ok())).collect())
     }
 }
 

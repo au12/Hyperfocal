@@ -120,6 +120,7 @@ Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever reject
 - **Name a group once.** Its photos get the name, and new photos of that person or pet are suggested for a yes or no. Merge, split, hide strangers, and filter the grid by a person.
 - **Names go to the sidecars,** as `People|Name` and `Pets|Name` keywords, MWG face regions (Lightroom, digiKam) and IPTC "person shown", undoable like every other edit. Names other apps already wrote come in.
 - **On the photo.** The info panel lists who is in a photo; `Shift+F` draws the faces and pets on the single view, where you can name them.
+- **Set the detectors right.** Every face and animal has a menu (⋯, or a right-click). *Not a face* takes a false detection out of everything for good; *It's a dog* / *It's a cat* turns a pet's face that was taken for a person's into that animal, which then finds its pet.
 
 ### Interface
 
@@ -141,18 +142,24 @@ Hyperfocal finds the faces, dogs and cats in your photos, groups them by who the
 
 - **The models run inside Hyperfocal, in a process of their own** (the AI engine: ONNX Runtime, on the CPU or an NVIDIA GPU). The server hands it a 2048-pixel upright JPEG of each photo over a local connection and gets back boxes and embeddings. The engine never opens your library and keeps nothing; if it crashes (a GPU driver, say), the server restarts it and carries on. Its models are downloaded into your app data folder the first time (see [Setting it up](#setting-it-up)).
 - **Faces:** YuNet at three scales (faces from about 0.6% to the whole of the frame), aligned on five landmarks, then AuraFace embeddings. Each face gets a quality from how recognisable it is: masked, blurred, tiny and turned-away faces must match much more closely to count.
-- **Dogs and cats:** RF-DETR Small finds them, and a pet re-identification model (DINOv2-based) tells individual animals apart. A cat the detector took for a dog still finds its look-alikes.
+- **Dogs and cats:** RF-DETR Small finds them, and a pet re-identification model (DINOv2-based) tells individual animals apart. A cat the detector took for a dog still finds its look-alikes. A face you said is a dog or a cat gets a pet embedding of its head (the face's box, framed as a face's crop is), so it finds its pet too.
 - **Eyes, for culling:** each face of at least 64 pixels is cropped from the photo as culling measures it (a RAW's half-size development) and sent for MediaPipe's face landmarks and blendshapes, which give a blink score per eye, about 25 ms a face on the CPU.
 - **Who is who is decided in Hyperfocal.** Every face is compared with every known face (int8 vectors in memory, AVX2, with a sign-code prefilter: 340 MB for 600,000 faces). Its closest look-alikes vote, confirmed faces count more, and a clear winner is needed: a near tie between two people is left for you. A person is in a photo at most once, and "not this person" is never overruled. Faces that match nobody form unnamed groups with their look-alikes. After the first analysis the groups are formed again, best faces first, which gives cleaner groups than the order the photos happened to be analysed in.
 - **Photos on screen come first,** then the rest of the library. The analysis pauses while you view photos, can be paused from the People view, and resumes after a restart. A photo is analysed again only when the file, its orientation or the models change; names carry over.
 
 ### Naming and reviewing
 
-- **People & pets** (sidebar, or `Shift+P`) shows the named people and pets, then the unnamed groups, most photos first. Open a group, type a name, press Enter: its photos are named and the next group opens. Typing a name that already exists merges the two.
-- **New photos of someone you named are suggested** ("Anna?") until you say yes or no. Each person has a *To review* list, least sure first, with *Yes, all* and per-face ✓ / ✕. Select faces to move them to someone else or to ignore them.
-- **On a photo:** the info panel lists who is in it, with suggestions to confirm and unknown faces to name; `Shift+F` draws the boxes on the single view, where you can name them too. Click a name to see all of that person's photos (a filter you can combine with the others).
-- **Hide** a group of strangers (it keeps collecting them, out of sight), **remove** a group, or **ignore** a false detection.
+- **People & pets** (sidebar, or `Shift+P`) shows the named people and pets, then the unnamed groups, most photos first. Open a group, type a name, press Enter: its photos are named and the next group opens (the arrows in its header step through the groups). Typing a name that already exists merges the two. The names suggested as you type show each person's face. With more than a few people, a search field finds them by name.
+- **New photos of someone you named are suggested** ("Anna?") until you say yes or no. A banner at the top of the view counts them and opens the first person to review. Each person has a *To review* list, least sure first, each face with how alike it is, with *Yes, all* and per-face ✓ / ✕; *Next to review* goes on to the next person. Select faces (click; Shift-click for a range) to say they are not that person, to move them to someone else, or that they are not faces at all.
+- **On a photo:** the info panel lists who is in it, with suggestions to confirm and unknown faces to name; pointing at a row outlines that face on the photo. `Shift+F` draws the boxes on the single view, where you can name them too. Click a name to see all of that person's photos (a filter you can combine with the others).
+- **Every face and animal has a menu** (its ⋯ button, or a right-click) in a person's sheet, the info panel and on the photo: yes or no to a suggestion, someone else, all photos of them, and the corrections below.
+- **Hide** a group of strangers (it keeps collecting them, out of sight), or **remove** a group (its faces become unknown again).
 - **Every sidecar change is a history entry,** written in batches shortly after you name or confirm. Undoing one restores the sidecars and the names follow them back.
+
+### Setting the detectors right
+
+- **Not a face.** A pattern, a statue or a reflection taken for a face (or a toy for a dog): *Not a face* (*Not a dog or cat*) takes it out of the people and pets, the sidecars and culling (people counts, closed eyes, what sharpness is measured on), and it stays out when the photo is analysed again. *None of them are faces*, in an unnamed group's menu, does it for a whole group (a statue in every photo of a venue). The toast offers *Undo*, and the info panel lists what was marked on a photo, to point at (it is outlined on the photo) or restore.
+- **It's a dog, It's a cat.** The face detector takes some dogs' and cats' faces for people's. Usually the animal detector finds the animal around it and the face is dropped, but not always. *It's a cat* turns such a face into a cat: it leaves the person it was given to (the name leaves the sidecar too), and the AI engine makes a pet embedding of its head, after which it is matched to your pets like any animal, a few seconds later. An unnamed group of them can be turned at once. It stays a cat when the photo is analysed again; *It's a dog* changes its species, and *It's a face after all* takes it back (the photo is then analysed again for the face).
 
 ### What is written
 
@@ -302,11 +309,17 @@ Culling on a phone: an unfolded series, the frame where she blinked, and its mea
 
 ![Culling on a phone](docs/screenshots/mobile-culling.jpg)
 
-People & pets: the people found and named, and a dog named in the single view (`Shift+F` shows the boxes):
+People & pets: the people found and named, with the suggestions waiting for review, and a dog named in the single view (`Shift+F` shows the boxes):
 
 | People | Pets |
 | --- | --- |
 | ![People & pets view](docs/screenshots/desktop-people.jpg) | ![A dog named in the single view](docs/screenshots/desktop-pets.jpg) |
+
+A cat's face the face detector took for a person's, set right from its menu (it is then matched to the cat's other photos):
+
+![Correcting a detection: a cat taken for a face](docs/screenshots/desktop-corrections.jpg)
+
+On a phone: the people, the pets, and a person's suggestions to review:
 
 ![People & pets on a phone](docs/screenshots/mobile-people.jpg)
 
@@ -316,7 +329,7 @@ Duplicates: a folder of exports checked against the rest of the library (a mirro
 
 ![Duplicates on a phone](docs/screenshots/mobile-duplicates.jpg)
 
-<sub>The demo library is made of CC0 sample RAW files from [raw.pixls.us](https://raw.pixls.us/); CC0 photos of pets by D Coetzee, iezalel williams and Artem Beliaikin (Flickr, found with [Openverse](https://openverse.org/)); and AI-generated portraits of no real person from the [Open and Closed Eyes Dataset](https://huggingface.co/datasets/MichalMlodawski/closed-open-eyes) by Michał Młodawski (ODC-By 1.0), with blinks and blur added for the culling screenshots. Names are invented.</sub>
+<sub>The demo library is made of CC0 sample RAW files from [raw.pixls.us](https://raw.pixls.us/); CC0 photos of pets by D Coetzee, iezalel williams, Artem Beliaikin and Mustang Joe (Flickr, found with [Openverse](https://openverse.org/)); and AI-generated portraits of no real person from the [Open and Closed Eyes Dataset](https://huggingface.co/datasets/MichalMlodawski/closed-open-eyes) by Michał Młodawski (ODC-By 1.0), with blinks and blur added for the culling screenshots. Names are invented.</sub>
 
 ## Install on Unraid
 
