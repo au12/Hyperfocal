@@ -1,4 +1,5 @@
 import { SvelteSet } from 'svelte/reactivity';
+import type { ArrangeGroup, Arrangement } from './arrange.svelte';
 import {
   api,
   emptyList,
@@ -277,6 +278,8 @@ export interface Settings {
   keyOverrides: Partial<Record<Preset, KeyOverrides>>;
   /** Keep thumbnails, previews and folder lists for offline use (needs HTTPS). */
   offlineCache: boolean;
+  /** The side panels' arrangement: what is where, and what is hidden (lib/arrange). */
+  arrange?: Partial<Record<ArrangeGroup, Arrangement>>;
 }
 
 /** Screen sharpening radius of levels 1 and 2, in device pixels. Radii and the default

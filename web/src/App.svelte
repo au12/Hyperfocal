@@ -28,6 +28,7 @@
   import AlbumPicker from './components/AlbumPicker.svelte';
   import ImmichDialog from './components/ImmichDialog.svelte';
   import PanelEdge from './components/PanelEdge.svelte';
+  import ContextMenu from './components/ContextMenu.svelte';
   import { albums } from './lib/albums.svelte';
   import { cull } from './lib/cull.svelte';
 
@@ -420,6 +421,7 @@
   {#if store.dialog === 'integrity'}<IntegrityDialog />{/if}
   {#if store.dialog === 'duplicates'}<DuplicatesDialog />{/if}
 {/if}
+<ContextMenu />
 <Toasts />
 
 <style>

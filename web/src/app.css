@@ -916,6 +916,14 @@ body.arranging * {
   background: var(--bg) !important;
 }
 
+/* What a context menu is about, while it is open (lib/menu.svelte.ts). */
+.menu-target {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+  border-radius: var(--r);
+  background-color: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
 /* Dragging a side panel's edge: the resize cursor everywhere, and no text selection. */
 .col-resizing,
 .col-resizing * {

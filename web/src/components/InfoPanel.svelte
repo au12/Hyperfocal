@@ -1,14 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { store, LABELS, fmtSettings, fmtSize, fmtDate, cameraName } from '../lib/store.svelte';
-  import type { Patch } from '../lib/api';
+  import type { Patch, PhotoDetail } from '../lib/api';
   import { uiCtl } from '../lib/ctl';
   import Icon from './Icon.svelte';
   import EditField from './EditField.svelte';
   import KeywordEditor from './KeywordEditor.svelte';
   import PhotoPeople from './PhotoPeople.svelte';
   import { people } from '../lib/people.svelte';
-  import { bump } from '../lib/motion';
+  import { bump, reduced } from '../lib/motion';
+  import { flip } from 'svelte/animate';
+  import { contextMenu, type MenuBuilder, type MenuEntry } from '../lib/menu.svelte';
+  import * as arrange from '../lib/arrange.svelte';
+  import { DEFAULT_ORDER, INFO_NAMES } from '../lib/arrange.svelte';
   import { albums } from '../lib/albums.svelte';
   import CullInfo from './CullInfo.svelte';
   import { cull } from '../lib/cull.svelte';
@@ -42,15 +46,103 @@
   }
 
   const labelFor = (c: string | null) => LABELS.find((l) => l.color === c)?.name ?? c;
+
+  // ---- arrangement: the sections in the user's order, without the hidden ones
+  // (lib/arrange). A right-click on a section, or a held touch on its title, opens a
+  // menu to move or hide it, which also lists what is hidden.
+  /** The sections a selection of several photos has. */
+  const MULTI = new Set(['rating', 'keywords', 'location', 'text', 'credits']);
+  const infoIds = $derived<string[]>(
+    DEFAULT_ORDER.info.filter((id) => {
+      if (multi) return MULTI.has(id);
+      if (id === 'cull') return cull.on();
+      if (id === 'people') return people.enabled;
+      if (id === 'credits') return !compact || !!d?.creator || !!d?.rights;
+      return true;
+    }),
+  );
+  const infoShown = $derived(arrange.visible('info', infoIds));
+
+  const item = (text: string, icon: string, run: () => void, more: Partial<Extract<MenuEntry, { kind: 'item' }>> = {}): MenuEntry => ({ kind: 'item', text, icon, run, ...more });
+
+  function hiddenEntries(): MenuEntry[] {
+    const hidden = arrange.hiddenOf('info', infoIds);
+    const out: MenuEntry[] = hidden.map((id) => item(INFO_NAMES[id] ?? id, 'eye', () => arrange.show('info', id), { stay: true }));
+    const tail: MenuEntry[] = [];
+    if (hidden.length > 1) tail.push(item('Show all', 'eye', () => { for (const id of hidden) arrange.show('info', id); }));
+    const a = store.settings.arrange?.info;
+    if (a?.order?.length || a?.hidden?.length) tail.push(item('Reset the info panel', 'restore', () => arrange.reset('info'), { hint: 'Order and hidden' }));
+    return [
+      ...(out.length ? [{ kind: 'sep' } as MenuEntry, { kind: 'label', text: `Hidden (${out.length})` } as MenuEntry, ...out] : []),
+      ...(tail.length ? [{ kind: 'sep' } as MenuEntry, ...tail] : []),
+    ];
+  }
+
+  function sectionMenu(id: string): MenuEntry[] {
+    return [
+      { kind: 'label', text: INFO_NAMES[id] ?? id },
+      item('Move up', 'arrow-up', () => arrange.move('info', infoIds, id, -1), { disabled: !arrange.canMove('info', infoIds, id, -1), stay: true }),
+      item('Move down', 'arrow-down', () => arrange.move('info', infoIds, id, 1), { disabled: !arrange.canMove('info', infoIds, id, 1), stay: true }),
+      item('Hide', 'eye-off', () => arrange.hide('info', id)),
+      ...hiddenEntries(),
+    ];
+  }
+
+  function panelMenu(): MenuEntry[] {
+    const rest = hiddenEntries();
+    return [
+      { kind: 'label', text: 'Info panel' },
+      ...(rest.length ? rest.slice(1) : [item('Nothing is hidden', 'eye', () => {}, { disabled: true }), { kind: 'label', text: 'Right-click a section to move or hide it' } as MenuEntry]),
+    ];
+  }
+
+  function buildMenu(el: HTMLElement, target: HTMLElement): MenuBuilder | null {
+    const key = el.dataset.el ?? '';
+    if (key.startsWith('info:')) {
+      const id = key.slice(5);
+      return () => sectionMenu(id);
+    }
+    // The photo's name and folder: the browser's own menu (to copy them).
+    if (target.closest('.head')) return null;
+    return panelMenu;
+  }
   const coord = (v: number | null, pos: string, neg: string) => (v == null ? '' : `${Math.abs(v).toFixed(5)}° ${v >= 0 ? pos : neg}`);
 </script>
 
-<div class="panel" class:compact>
+<div class="panel" class:compact use:contextMenu={{ build: buildMenu, hold: '.lab, .rate-row, .row.labels' }}>
   {#if multi}
     <div class="head">
       <div class="big">{store.selected.size} photos selected</div>
       <div class="dim">Changes apply to all of them and are written to their XMP sidecars.</div>
     </div>
+  {:else if !d}
+    <div class="empty dim">{store.list.id.length ? 'Loading…' : 'No photo selected'}</div>
+  {:else}
+    <div class="head">
+      <div class="big ellipsis" title={d.name}>{d.name}</div>
+      <div class="row head-links">
+        <button class="link ellipsis" onclick={() => store.openFolder(d.folder_id)} title="Open folder">{d.folder || 'Library'}</button>
+        {#if store.visualReady()}
+          <button class="link similar" onclick={() => store.findSimilar(d.id)} title="Photos that look like this one"><Icon name="sparkles" size={13} />Similar</button>
+        {/if}
+      </div>
+    </div>
+  {/if}
+  {#if multi || d}
+    {#each infoShown as id (id)}
+      <div class="isec" data-el="info:{id}" animate:flip={{ duration: reduced() ? 0 : 260 }}>
+        {#if multi}
+          {@render multiSection(id)}
+        {:else if d}
+          {@render photoSection(id, d)}
+        {/if}
+      </div>
+    {/each}
+  {/if}
+</div>
+
+{#snippet multiSection(id: string)}
+  {#if id === 'rating'}
     <section>
       <div class="lab">Rating</div>
       <div class="stars">
@@ -67,32 +159,30 @@
         <button class="btn sm" onclick={() => save({ pick: 0 })}>Unflag</button>
       </div>
     </section>
+  {:else if id === 'keywords'}
     <section>
       <div class="lab">Add keywords</div>
       <KeywordEditor keywords={[]} onadd={(k) => save({ keywords_add: [k] })} onremove={() => {}} readonly={ro} bind:inputRef={kwRef} />
     </section>
+  {:else if id === 'location'}
     <section>
       <button class="btn wide" onclick={() => store.openLocation()} disabled={ro}><Icon name="pin" /> Set location for {store.selected.size} photos…</button>
     </section>
+  {:else if id === 'text'}
     <section class="fields">
       <EditField label="Title" value={null} placeholder="Set title for all" onsave={(v) => save({ title: v })} readonly={ro} />
       <EditField label="Caption" value={null} placeholder="Set caption for all" multiline onsave={(v) => save({ description: v })} readonly={ro} />
+    </section>
+  {:else if id === 'credits'}
+    <section class="fields">
       <EditField label="Creator" value={null} placeholder="Set creator for all" onsave={(v) => save({ creator: v })} readonly={ro} />
       <EditField label="Copyright" value={null} placeholder="Set copyright for all" onsave={(v) => save({ rights: v })} readonly={ro} />
     </section>
-  {:else if !d}
-    <div class="empty dim">{store.list.id.length ? 'Loading…' : 'No photo selected'}</div>
-  {:else}
-    <div class="head">
-      <div class="big ellipsis" title={d.name}>{d.name}</div>
-      <div class="row head-links">
-        <button class="link ellipsis" onclick={() => store.openFolder(d.folder_id)} title="Open folder">{d.folder || 'Library'}</button>
-        {#if store.visualReady()}
-          <button class="link similar" onclick={() => store.findSimilar(d.id)} title="Photos that look like this one"><Icon name="sparkles" size={13} />Similar</button>
-        {/if}
-      </div>
-    </div>
+  {/if}
+{/snippet}
 
+{#snippet photoSection(id: string, d: PhotoDetail)}
+  {#if id === 'rating'}
     <section>
       {#key d.id}
         <div class="rate-row">
@@ -114,28 +204,24 @@
       </div>
       {#if d.rating < 0}<div class="warn small">Rating: rejected (−1)</div>{/if}
     </section>
-
-    {#if cull.on()}
-      <CullInfo photo={d.id} />
-    {/if}
-
+  {:else if id === 'cull'}
+    <CullInfo photo={d.id} />
+  {:else if id === 'text'}
     <section class="fields">
       <EditField label="Title" value={d.title} onsave={(v) => save({ title: v })} readonly={ro} bind:inputRef={titleRef} />
       <EditField label="Caption" value={d.description} multiline onsave={(v) => save({ description: v })} readonly={ro} />
     </section>
-
-    {#if people.enabled}
-      <section>
-        <div class="lab row">
-          <span class="grow">People & pets</span>
-          {#if store.loupe}
-            <button class="btn sm ghost" class:on={store.panels.faces} onclick={() => { store.panels.faces = !store.panels.faces; store.persist(); }} title={'Show the faces and pets on the photo' + store.keyHint('faces')}><Icon name="scan-face" /> Show</button>
-          {/if}
-        </div>
-        <PhotoPeople photo={d.id} />
-      </section>
-    {/if}
-
+  {:else if id === 'people'}
+    <section>
+      <div class="lab row">
+        <span class="grow">People & pets</span>
+        {#if store.loupe}
+          <button class="btn sm ghost" class:on={store.panels.faces} onclick={() => { store.panels.faces = !store.panels.faces; store.persist(); }} title={'Show the faces and pets on the photo' + store.keyHint('faces')}><Icon name="scan-face" /> Show</button>
+        {/if}
+      </div>
+      <PhotoPeople photo={d.id} />
+    </section>
+  {:else if id === 'albums'}
     <section>
       <div class="lab row">
         <span class="grow">Albums</span>
@@ -156,7 +242,7 @@
         <div class="dim small">In no album yet.</div>
       {/if}
     </section>
-
+  {:else if id === 'keywords'}
     <section>
       <div class="lab row">
         <span class="grow">Keywords</span>
@@ -172,7 +258,7 @@
         bind:inputRef={kwRef}
       />
     </section>
-
+  {:else if id === 'location'}
     <section>
       <div class="lab row">
         <span class="grow">Location</span>
@@ -195,7 +281,7 @@
         <EditField label="Country" value={d.country} onsave={(v) => save({ country: v })} readonly={ro} />
       </div>
     </section>
-
+  {:else if id === 'capture'}
     <section>
       <div class="lab">Capture</div>
       <dl>
@@ -209,7 +295,7 @@
         {#if d.focal}<dt>Focal length</dt><dd>{Math.round(d.focal)} mm</dd>{/if}
       </dl>
     </section>
-
+  {:else if id === 'file'}
     <section>
       <div class="lab">File</div>
       <dl>
@@ -221,15 +307,13 @@
       </dl>
       {#if d.error}<div class="warn small">Metadata: {d.error}</div>{/if}
     </section>
-
-    {#if !compact || d.creator || d.rights}
-      <section class="fields">
-        <EditField label="Creator" value={d.creator} onsave={(v) => save({ creator: v })} readonly={ro} />
-        <EditField label="Copyright" value={d.rights} onsave={(v) => save({ rights: v })} readonly={ro} />
-      </section>
-    {/if}
+  {:else if id === 'credits'}
+    <section class="fields">
+      <EditField label="Creator" value={d.creator} onsave={(v) => save({ creator: v })} readonly={ro} />
+      <EditField label="Copyright" value={d.rights} onsave={(v) => save({ rights: v })} readonly={ro} />
+    </section>
   {/if}
-</div>
+{/snippet}
 
 <style>
   .panel {
@@ -262,9 +346,17 @@
     flex-direction: column;
     gap: 0.5rem;
   }
-  section + section {
+  /* The sections, in the user's order (an empty one, culling still loading, takes no room). */
+  .isec + .isec {
     border-top: 1px solid var(--border);
     padding-top: 0.875rem;
+  }
+  .isec:empty {
+    display: none;
+  }
+  /* A section a context menu is about: outlined just outside its content. */
+  .isec:global(.menu-target) {
+    outline-offset: 0.3125rem;
   }
   .lab {
     font-size: var(--fs-xs);

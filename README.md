@@ -127,6 +127,7 @@ Turn culling on with **Cull** in the toolbar (`Shift+C`). Nothing is ever reject
 
 - Dark and light themes in a graphite-and-glass design set in Inter, with small animations for actions: the photo zooms out of its tile into the single view and back, the filmstrip slides, ratings and flags pop, filters and toggles glide, rejected photos fold out of the grid. Everything falls back to instant changes when the system asks for reduced motion. Layout ideas from [Augenblick](https://github.com/orohde/Augenblick).
 - **Side panels your size.** Drag the edge between the sidebar or the info panel and the photos to resize it, or double-click it for the default width. The tab in the middle of the edge hides the panel, and brings it back from the edge of the window (`F7` for the sidebar, `I` for the info panel, `Tab` for both). The widths are kept in the browser.
+- **Side panels in your order.** Right-click any section or entry of the sidebar or the info panel (hold it on a phone) to move it up or down or hide it. The same menu lists what is hidden, to show it again, and can reset the panel. Albums also get their own actions there, and keep the library's order (shared by every device); everything else is kept in the browser.
 - A mobile layout built for one-handed culling:
   - bottom navigation
   - a reject / rate / pick / RAW-JPEG action bar
