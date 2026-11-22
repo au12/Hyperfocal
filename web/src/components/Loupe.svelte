@@ -29,6 +29,15 @@
   let detailPath = $state<DetailPath | null>(null);
   let glError = $state('');
   const cache = new ImageCache(16);
+  /** Thumbnails (512 px, stored upright), four loading at a time: what stands in for a
+   * photo until its own image arrives, and all that loads while scrubbing. */
+  const thumbs = new ImageCache(64, 4);
+  /** Thumbnails kept ready ahead, in the direction of travel: scrubbing, enough to keep
+   * up; resting on a photo, a few, so a scrub starting there has them from its first step. */
+  const THUMBS_AHEAD = 24;
+  const THUMBS_READY = 8;
+  /** A held arrow key waits at most this long on a photo for the next one to be ready. */
+  const SHOW_WAIT_MS = 250;
 
   // View transform (device px per image px; centre in displayed image px)
   let fit = $state(true);
@@ -40,7 +49,9 @@
 
   let shownUrl = $state('');
   let shownKind = $state<'thumb' | 'preview' | 'full' | 'raw'>('thumb');
+  /** The photo whose image is on screen (its thumbnail at least), and the one last drawn. */
   let shownId = -1;
+  let drawnId = -1;
   let loadError = $state('');
   const masks = new MaskLoader(() => gl, () => requestDraw());
   let rawInfo = $state<RawInfo | null>(null);
@@ -117,7 +128,7 @@
   }
 
   async function loadPyramid() {
-    if (id == null || useRaw || !detail) {
+    if (id == null || useRaw || !detail || store.scrubbing) {
       pyr = null;
       return;
     }
@@ -132,15 +143,32 @@
     }
   }
 
+  /** Shows an image of the photo on screen (`id`). */
   function show(d: Decoded, kind: typeof shownKind) {
     if (!gl) return;
     currentBmp = d;
     gl.setImage(d.bmp, d.w, d.h);
     shownUrl = d.url;
     shownKind = kind;
-    loadError = '';
+    shownId = id;
+    if (kind !== 'thumb') loadError = '';
     if (store.panels.histogram && !useRaw) computeJpegHist(d);
     requestDraw();
+  }
+
+  /** A photo's thumbnail: the grid's URL, so usually in the browser's cache already. */
+  function thumbUrl(idx: number): string | null {
+    const pid = L.id[idx];
+    return pid == null ? null : urls.thumb(pid, L.v[idx], store.thumbRev[pid]);
+  }
+
+  /** Puts the photo's thumbnail up while its own image loads (or while scrubbing). */
+  function placeholder(pid: number) {
+    const url = thumbUrl(i);
+    if (!url) return;
+    const t = thumbs.peek(url);
+    if (t) show(t, 'thumb');
+    else thumbs.get(url).then((d) => { if (id === pid && shownId !== pid) show(d, 'thumb'); }).catch(() => {});
   }
 
   async function load() {
@@ -148,65 +176,75 @@
     const pid = id;
     const want = wanted(i, fit ? 0 : curScale);
     if (!want) return;
-    if (shownUrl === want.url) return;
-    const hit = cache.peek(want.url);
-    if (hit) {
-      show(hit, want.kind);
-    } else {
-      // Something to look at right away: the thumbnail (already in the browser cache).
-      if (shownId !== pid) {
-        const thumbUrl = urls.thumb(pid, v);
-        const t = cache.peek(thumbUrl);
-        // Thumbnails are stored upright; the viewer expects sensor orientation, so
-        // only use them for unrotated photos.
-        if (o === 1) {
-          if (t) show(t, 'thumb');
-          else cache.get(thumbUrl).then((d) => { if (id === pid && shownId !== pid) show(d, 'thumb'); }).catch(() => {});
-        } else if (gl) {
-          gl.setImage(null);
-          requestDraw();
-        }
-      }
-      shownId = pid;
+    const hit = shownUrl === want.url ? undefined : cache.peek(want.url);
+    if (hit) show(hit, want.kind);
+    // Something to look at right away: the thumbnail (before those ahead, which queue).
+    else if (shownId !== pid) placeholder(pid);
+    aheadThumbs();
+    // Scrubbing, the image itself waits until the view settles (this runs again then).
+    if (shownUrl !== want.url && !store.scrubbing) {
       try {
         const d = await cache.get(want.url);
         if (id === pid && wanted(i, fit ? 0 : curScale)?.url === want.url) show(d, want.kind);
       } catch (e) {
-        if (id === pid) {
-          loadError = (e as Error).message;
-          if (want.kind === 'raw') {
-            // Fall back to the embedded JPEG so there is always something to judge.
-            const j = urls.preview(pid, v, 2048);
-            cache.get(j).then((d) => { if (id === pid) show(d, 'preview'); }).catch(() => {});
+        // Cancelled: the view moved on, or wants another size.
+        if (id !== pid || (e as Error).name === 'AbortError') return;
+        loadError = (e as Error).message;
+        if (want.kind === 'raw') {
+          // Fall back to the embedded JPEG so there is always something to judge.
+          try {
+            const d = await cache.get(urls.preview(pid, v, 2048));
+            if (id === pid) show(d, 'preview');
+          } catch {
+            /* the thumbnail stays */
           }
         }
       }
+      if (id !== pid) return;
     }
-    shownId = pid;
     prefetch();
   }
 
+  /** The images of the photos around the one on screen, in the direction of travel:
+   * settled, the next few and the previous one load; scrubbing, none start, and loads
+   * for photos passed are cancelled. */
   function prefetch() {
     const keep = new Set<string>();
-    const n = store.settings.prefetch;
-    const order = [];
-    for (let k = 1; k <= n; k++) order.push(i + k);
-    order.push(i - 1);
-    for (const idx of order) {
-      if (idx < 0 || idx >= L.id.length) continue;
-      const w = wanted(idx, 0);
-      if (!w) continue;
-      keep.add(w.url);
-      cache.get(w.url, true).catch(() => {});
-    }
+    const cur = wanted(i, fit ? 0 : curScale);
+    if (cur) keep.add(cur.url);
     if (shownUrl) keep.add(shownUrl);
+    const near = (idx: number) => {
+      const w = idx >= 0 && idx < L.id.length ? wanted(idx, 0) : null;
+      if (!w) return;
+      keep.add(w.url);
+      if (!store.scrubbing) cache.get(w.url, true).catch(() => {});
+    };
+    for (let k = 1; k <= store.settings.prefetch; k++) near(i + store.navDir * k);
+    near(i - store.navDir);
     cache.cancelOthers(keep);
   }
 
+  /** The thumbnails ahead (see THUMBS_AHEAD). Ones still queued for photos the view no
+   * longer heads to are dropped; the few loading finish (they are small, and cancelling
+   * costs an HTTP/1.1 connection). */
+  function aheadThumbs() {
+    const keep = new Set<string>();
+    const own = thumbUrl(i);
+    if (own) keep.add(own);
+    const n = store.scrubbing ? THUMBS_AHEAD : THUMBS_READY;
+    for (let k = 1; k <= n; k++) {
+      const url = thumbUrl(i + store.navDir * k);
+      if (!url) break;
+      keep.add(url);
+      thumbs.get(url, true).catch(() => {});
+    }
+    thumbs.cancelOthers(keep, false);
+  }
+
   // The RAW clipping mask of the current photo (see MaskLoader): its overexposure display
-  // follows the exposure correction.
+  // follows the exposure correction. None while scrubbing (it needs the RAW developed).
   function loadMask() {
-    const base = useRaw && id != null ? `${id}|${v}|${store.viewer.wb}` : '';
+    const base = useRaw && id != null && !store.scrubbing ? `${id}|${v}|${store.viewer.wb}` : '';
     const url = base ? urls.rawmask(id, v, store.viewer.wb, store.viewer.over ? ev : 0) : '';
     masks.update(base, url, store.viewer.over || store.viewer.under);
   }
@@ -221,8 +259,8 @@
       if (currentBmp && store.panels.histogram) computeJpegHist(currentBmp);
       return;
     }
-    // Needed for the histogram and for the full-resolution view.
-    if (!store.panels.histogram && store.settings.rawDetail === 'off') {
+    // Needed for the histogram and for the full-resolution view; not while scrubbing.
+    if ((!store.panels.histogram && store.settings.rawDetail === 'off') || store.scrubbing) {
       rawInfo = null;
       return;
     }
@@ -284,9 +322,13 @@
       cy = dispH / 2;
     } else clampCenter();
     const s = store.settings;
+    // Thumbnails are stored upright; every other image is in the file's orientation.
+    const upright = shownKind === 'thumb';
     if (detail) {
       if (!useRaw) syncImageDetail();
-      detailOn = detail.update({ orientation: o, dispW, dispH, scale: curScale, cx, cy }, cw, ch);
+      // Tiles are in the file's orientation too: none over a thumbnail.
+      if (upright) gl.detailEnable(false);
+      detailOn = !upright && detail.update({ orientation: o, dispW, dispH, scale: curScale, cx, cy }, cw, ch);
       detailPath = detail.path;
     }
     if (store.panels.faces) {
@@ -295,8 +337,11 @@
       const r = { x: (cw / 2 - cx * sc) / dpr, y: (ch / 2 - cy * sc) / dpr, w: (dispW * sc) / dpr, h: (dispH * sc) / dpr };
       if (!imgRect || Math.abs(imgRect.x - r.x) + Math.abs(imgRect.y - r.y) + Math.abs(imgRect.w - r.w) + Math.abs(imgRect.h - r.h) > 0.25) imgRect = r;
     }
+    // The RAW view's clipping overlays come from its RAW mask: none over a thumbnail
+    // standing in for the RAW render (nor ones guessed from it).
+    const overlays = !(useRaw && upright);
     gl.draw({
-      orientation: o,
+      orientation: upright ? 1 : o,
       dispW,
       dispH,
       scale: curScale,
@@ -307,9 +352,9 @@
       invert: store.viewer.invert,
       peaking: store.viewer.peaking,
       peakColor: hexToRgb(s.peakColor),
-      over: store.viewer.over,
-      under: store.viewer.under,
-      maskOnly: useRaw && masks.active,
+      over: store.viewer.over && overlays,
+      under: store.viewer.under && overlays,
+      maskOnly: useRaw && (masks.active || store.scrubbing),
       overSolid: s.overColor === 'red',
       underSolid: s.underDisplay === 'solid',
       underColor: hexToRgb(s.underColor),
@@ -317,6 +362,7 @@
       // RAW renders carry the correction already; JPEGs and thumbnails get it on screen.
       gain: shownKind === 'raw' ? 1 : 2 ** ev,
     });
+    drawnId = gl.hasImg ? shownId : -1;
   }
 
   // ---------------------------------------------------------------- zoom
@@ -425,6 +471,16 @@
     viewerCtl.fit = setFit;
     viewerCtl.zoomIn = () => zoomTo(curScale * 1.5);
     viewerCtl.zoomOut = () => zoomTo(curScale / 1.5);
+    viewerCtl.canStep = (d) => {
+      // A held key moves on once this photo has been drawn and the next one is ready (so
+      // the name and the image change together), or after waiting SHOW_WAIT_MS for it.
+      if (performance.now() - store.stepAt > SHOW_WAIT_MS) return true;
+      if (drawnId !== id) return false;
+      const t = thumbUrl(i + d);
+      if (!t) return true; // past the end: the step goes no further than the last photo
+      const w = wanted(i + d, 0);
+      return !!thumbs.peek(t) || !!(w && cache.peek(w.url));
+    };
     const ro = new ResizeObserver(() => {
       if (gl?.resize() && canvas) {
         cw = canvas.width;
@@ -436,9 +492,11 @@
     canvas?.addEventListener('webglcontextlost', (e) => e.preventDefault());
     return () => {
       store.beforeCloseLoupe = null;
+      viewerCtl.canStep = () => true;
       ro.disconnect();
       cancelAnimationFrame(raf);
       cache.clear();
+      thumbs.clear();
       masks.destroy();
       detail?.destroy();
       detail = null;
@@ -515,7 +573,21 @@
     if (store.panels.faces) untrack(() => requestDraw());
   });
 
-  // Reload when the photo, the source or any server-side render parameter changes.
+  // New photo: back to fit (before it loads, so it loads at the fitted size).
+  let lastId = -1;
+  $effect(() => {
+    if (id !== lastId) {
+      lastId = id;
+      untrack(() => {
+        fit = true;
+        rawInfo = null;
+        loadError = '';
+      });
+    }
+  });
+
+  // Reload when the photo, the source or any server-side render parameter changes, and
+  // when scrubbing starts or stops.
   $effect(() => {
     void id;
     void store.viewer.source;
@@ -525,6 +597,7 @@
     void cw;
     void ch;
     void store.rev;
+    void store.scrubbing;
     untrack(() => load());
   });
 
@@ -538,18 +611,15 @@
     });
   });
 
-  // New photo: back to fit.
-  let lastId = -1;
+  /** The photo the view rests on: the faces strip follows it, not every photo scrubbed
+   * past (it would load for each, and come and go). */
+  let restId = $state<number | null>(null);
   $effect(() => {
-    if (id !== lastId) {
-      lastId = id;
-      untrack(() => {
-        fit = true;
-        rawInfo = null;
-      });
-    }
+    const now = id ?? null;
+    if (!store.scrubbing) restId = now;
   });
 
+  // What loads per photo beyond its image waits while scrubbing (see store.scrubbing).
   $effect(() => {
     void store.viewer.over;
     void store.viewer.under;
@@ -557,6 +627,7 @@
     void id;
     void store.viewer.wb;
     void ev;
+    void store.scrubbing;
     untrack(() => loadMask());
   });
 
@@ -566,6 +637,7 @@
     void useRaw;
     void id;
     void store.viewer.wb;
+    void store.scrubbing;
     untrack(() => loadRawInfo());
   });
 
@@ -574,6 +646,7 @@
     void useRaw;
     void id;
     void v;
+    void store.scrubbing;
     untrack(() => loadPyramid());
   });
 
@@ -873,7 +946,7 @@
         </div>
       {/if}
 
-      {#if store.panels.faces && id != null && people.enabled}
+      {#if store.panels.faces && id != null && people.enabled && !store.scrubbing}
         <FaceOverlay photo={id} rect={imgRect} />
       {/if}
 
@@ -884,7 +957,7 @@
       {/if}
 
       <div class="chips">
-        <span class="chip src" class:raw={shownKind === 'raw'}>{shownKind === 'raw' ? 'RAW' : fileLabel}{#if shownKind === 'thumb'}{' · loading'}{/if}</span>
+        <span class="chip src" class:raw={shownKind === 'raw'}>{shownKind === 'raw' ? 'RAW' : fileLabel}{#if shownKind === 'thumb'}{store.scrubbing ? ' · thumbnail' : ' · loading'}{/if}</span>
         {#if halfRes}<span class="chip" title={fullResAhead ? 'RAW view at half resolution: zoom in to 75% or more for the full sensor resolution' : 'RAW view is rendered at half resolution; switch to JPEG' + store.keyHint('source') + ' for full-resolution focus checks'}>RAW ½ res</span>{/if}
         {#if toneLabel[store.viewer.tone] && useRaw}<span class="chip">{toneLabel[store.viewer.tone]}</span>{/if}
         {#if wbLabel[store.viewer.wb] && useRaw}<span class="chip">{wbLabel[store.viewer.wb]}</span>{/if}
@@ -910,8 +983,8 @@
     {/if}
   </div>
 
-  {#if !store.mobile && culling.on() && store.panels.closeups && !store.panels.hidden && id != null}
-    <FaceStrip photo={id} />
+  {#if !store.mobile && culling.on() && store.panels.closeups && !store.panels.hidden && restId != null}
+    <FaceStrip photo={restId} />
   {/if}
 
   {#if !store.mobile}
@@ -943,9 +1016,10 @@
     </footer>
     {#if store.panels.filmstrip && !store.panels.hidden}
       <div class="film" bind:clientWidth={filmW}>
+        <!-- The strip slides with each photo; scrubbing, it steps (a slide per photo can't keep up). -->
         {#each filmSlots as j (j >= 0 && j < L.id.length ? L.id[j] : `g${j}`)}
           {@const _r = store.rev}
-          <div class="fslot" animate:flip={{ duration: reduced() ? 0 : 280 }}>
+          <div class="fslot" animate:flip={{ duration: reduced() || store.scrubbing ? 0 : 280 }}>
             {#if j >= 0 && j < L.id.length}
               <button class="fthumb" class:cur={j === i} onclick={() => store.goTo(j)} title={L.n[j]}>
                 <img src={urls.thumb(L.id[j], L.v[j], store.thumbRev[L.id[j]])} alt="" loading="lazy" draggable="false" />

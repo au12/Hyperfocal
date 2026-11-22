@@ -11,6 +11,9 @@ export const viewerCtl = {
   fit: () => {},
   zoomIn: () => {},
   zoomOut: () => {},
+  /** Whether a held arrow key may move the view on by `d` photos: the photo it moves to
+   * can show at once (its thumbnail at least). */
+  canStep: (_d: number): boolean => true,
 };
 /** The compare view's zoom commands (the active pane, or all when synced; Z and Space
  * zoom the pane under the mouse when there is one). */

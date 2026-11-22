@@ -64,7 +64,8 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
   - Rejecting moves the photo, its sidecar and its JPEG/HEIF twin into a `_Rejected` sub-folder next to it, the way FastRawViewer does. A different photo that only shares the name (a TIFF saved as `IMG_1234.tif`, say) stays put.
   - Restore moves it back, and `Ctrl+Z` undoes anything.
 - **Fast navigation.**
-  - The next photos are prefetched.
+  - The next photos are prefetched, in the direction you are going.
+  - Hold an arrow key to scrub: every photo shows as you pass it, from its thumbnail (loaded well ahead), and the full image loads as soon as you let go or stop. Only thumbnails load for the photos passed on the way, so the view never falls behind.
   - High-priority requests jump ahead of background work.
   - Developed RAW data stays in RAM, so switching between view tools takes 30–70 ms.
 - **Selection like a file manager.** Click selects one photo, `Ctrl`/`⌘`-click adds or removes one, `Shift`-click selects a range (repeat it to grow or shrink the range), and dragging draws a selection rectangle (with `Shift` to add, `Ctrl`/`⌘` to toggle; the grid scrolls at the edges). `Shift` with the arrows, `Home`/`End` or `PgUp`/`PgDn` extends from the keyboard. A plain arrow key moves on to a single photo, as in Finder, Explorer and Lightroom.

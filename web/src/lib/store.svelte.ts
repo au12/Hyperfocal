@@ -338,6 +338,12 @@ export function applyTheme(t: Settings['theme']) {
 
 let toastSeq = 1;
 
+/** Single-view steps closer together than this are scrubbing: a held arrow key repeats
+ * every 30-90 ms, the wheel steps every 140 ms. */
+const SCRUB_GAP_MS = 250;
+/** Scrubbing is over once the view has stayed on a photo this long. */
+const SETTLE_MS = 180;
+
 class Store {
   status = $state<Status | null>(null);
   needLogin = $state(false);
@@ -402,6 +408,15 @@ class Store {
   // Single view
   loupe = $state(false);
   current = $state(0);
+  /** Moving through the single view faster than photos load (a held arrow key, a spun
+   * wheel): it shows thumbnails, and previews, the photo's details and the address wait
+   * until it settles on a photo. */
+  scrubbing = $state(false);
+  /** The direction of the last step (1 forward, -1 back): what the view loads ahead. */
+  navDir: 1 | -1 = 1;
+  /** When the single view last moved to another photo (performance.now()). */
+  stepAt = 0;
+  private settleTimer: ReturnType<typeof setTimeout> | undefined;
   /** Compare view: 2-4 photos side by side (ids, in pane order) and the active pane. */
   compare = $state<number[] | null>(null);
   compareActive = $state(0);
@@ -545,7 +560,12 @@ class Store {
     else if (this.folderId != null) h.set('f', String(this.folderId));
     if (this.loupe && this.list.id[this.current] != null) h.set('p', String(this.list.id[this.current]));
     const s = '#' + h.toString();
-    if (location.hash !== s) history.replaceState(null, '', s);
+    try {
+      if (location.hash !== s) history.replaceState(null, '', s);
+    } catch {
+      // Too many changes in a short time (Firefox and Safari refuse them): the next write
+      // catches up.
+    }
   }
 
   private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1190,11 +1210,7 @@ class Store {
     for (let k = lo; k <= hi; k++) next.add(L.id[k]);
     this.setSelection(next);
     this.headId = L.id[to];
-    if (this.loupe && to !== this.current) {
-      this.current = to;
-      this.loadDetail();
-      this.writeHash();
-    }
+    if (this.loupe && to !== this.current) this.step(to);
     this.cursor = to;
     this.normalize();
   };
@@ -1288,6 +1304,8 @@ class Store {
 
   closeLoupe = () => {
     this.beforeCloseLoupe?.();
+    clearTimeout(this.settleTimer);
+    this.scrubbing = false;
     this.loupe = false;
     this.cursor = this.current;
     this.writeHash();
@@ -1385,10 +1403,8 @@ class Store {
     const i = Math.max(0, Math.min(n - 1, (this.loupe ? this.current : this.cursor) + delta));
     if (this.loupe) {
       if (i !== this.current) {
-        this.current = i;
+        this.step(i);
         this.cursor = i;
-        this.loadDetail();
-        this.writeHash();
       }
     } else {
       if (!keep && !this.compare && this.selected.size) this.clearSelection();
@@ -1397,6 +1413,34 @@ class Store {
   };
 
   goTo = (i: number) => this.go(i - (this.loupe ? this.current : this.cursor));
+
+  /** The single view moves to photo `to`. A step soon after the last one is scrubbing:
+   * the photo's details and the address wait until the view settles. */
+  private step(to: number) {
+    const now = performance.now();
+    const quick = now - this.stepAt < SCRUB_GAP_MS;
+    this.navDir = to > this.current ? 1 : -1;
+    this.stepAt = now;
+    this.current = to;
+    clearTimeout(this.settleTimer);
+    if (quick) {
+      this.scrubbing = true;
+      this.settleTimer = setTimeout(this.settle, SETTLE_MS);
+    } else {
+      this.loadDetail();
+      this.writeHash();
+    }
+  }
+
+  /** Scrubbing is over (the view rested on a photo, or a held key was let go): what it
+   * put off loads now. */
+  settle = () => {
+    clearTimeout(this.settleTimer);
+    if (!this.scrubbing) return;
+    this.scrubbing = false;
+    this.loadDetail();
+    this.writeHash();
+  };
 
   loadDetail = async () => {
     const id = this.focusId();

@@ -50,6 +50,22 @@
 
   const EV_STEP = 1 / 3;
 
+  /** Keys that move the single view to another photo, and by how many. Held down, each
+   * repeat waits until the photo it moves to can show (see viewerCtl.canStep), so none
+   * goes by unseen. */
+  const STEPS: Partial<Record<Action, number>> = {
+    next: 1, prev: -1, next2: 2, prev2: -2, next3: 3, prev3: -3, pageDown: 10, pageUp: -10,
+    selectNext: 1, selectPrev: -1, selectRight: 1, selectLeft: -1, selectPageDown: 10, selectPageUp: -10,
+  };
+  /** The step key being held: letting go of it ends scrubbing at once. */
+  let heldStep = '';
+
+  function onKeyUp(e: KeyboardEvent) {
+    if (!heldStep || e.code !== heldStep) return;
+    heldStep = '';
+    store.settle();
+  }
+
   /** Keys in the compare view: arrows pick the active pane or step its photo, zoom keys
    * zoom, rating and flag keys apply to the active photo (via store.targets()). */
   function runCompare(a: Action): boolean | null {
@@ -100,6 +116,11 @@
         case 'undo': store.undo(); return true;
         default: return false;
       }
+    }
+    const step = STEPS[a];
+    if (e.repeat && inLoupe && step) {
+      heldStep = e.code;
+      if (!viewerCtl.canStep(step)) return true;
     }
     switch (a) {
       case 'next': store.go(1); break;
@@ -266,7 +287,7 @@
   void labelCount;
 </script>
 
-<svelte:window onkeydown={onKey} />
+<svelte:window onkeydown={onKey} onkeyup={onKeyUp} />
 
 {#if store.needLogin}
   <Login />
