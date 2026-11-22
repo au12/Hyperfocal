@@ -357,7 +357,7 @@
           ontoggle={() => togglePanel('sidebar')}
         />
       {/if}
-      <section class="content">
+      <section class="content" style:--edge-l={!store.mobile && !sidebarOpen ? '0.5rem' : undefined} style:--edge-r={!store.mobile && store.view === 'grid' && !infoOpen ? '0.375rem' : undefined}>
         {#if store.view === 'people'}
           <PeopleView />
         {:else}

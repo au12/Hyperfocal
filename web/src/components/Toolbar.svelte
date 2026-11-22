@@ -474,7 +474,8 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.4375rem 0.75rem 0.4375rem 1rem;
+    /* --edge-l / --edge-r: room for a hidden side panel's tab (App.svelte). */
+    padding: 0.4375rem calc(0.75rem + var(--edge-r, 0px)) 0.4375rem calc(1rem + var(--edge-l, 0px));
     border-bottom: 1px solid var(--border);
     background: var(--bg);
     flex-wrap: wrap;

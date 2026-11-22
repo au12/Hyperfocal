@@ -219,7 +219,7 @@
     display: flex;
     align-items: center;
     gap: 0.625rem;
-    padding: 0.5rem 0.75rem 0.5rem 1rem;
+    padding: 0.5rem calc(0.75rem + var(--edge-r, 0px)) 0.5rem calc(1rem + var(--edge-l, 0px));
     border-bottom: 1px solid var(--border);
     min-height: var(--toolbar-h);
   }

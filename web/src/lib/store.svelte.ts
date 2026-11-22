@@ -29,6 +29,7 @@ import { people } from './people.svelte';
 import { dupes } from './dupes.svelte';
 import { albums, albumKey, albumSpec } from './albums.svelte';
 import { cull } from './cull.svelte';
+import { nav } from './nav.svelte';
 
 export const LABELS: { color: LabelColor; name: string; key: string }[] = [
   { color: 'red', name: 'Red', key: '6' },
@@ -132,6 +133,13 @@ export const PANEL = {
   info: { w: 344, min: 288, max: 640 },
   content: 420,
 };
+
+/** Where the photos on screen come from: a collection (Locations included), a period of
+ * the timeline, or a folder (with the person or keyword a link may have filtered by). */
+export type Place =
+  | { k: 'c'; c: ActiveCollection }
+  | { k: 'd'; r: DateRange }
+  | { k: 'f'; id: number | null; rec: boolean; subj: number[]; kw: string };
 
 export interface ActiveCollection {
   /** A saved collection's id, or a built-in one's name. */
@@ -577,6 +585,7 @@ class Store {
     const p = Number(hash.get('p'));
     if (p && this.index.has(p)) this.openLoupe(this.index.get(p)!);
     window.addEventListener('hashchange', this.onHash);
+    nav.start();
   };
 
   private lastFolder(): number | null {
@@ -584,21 +593,30 @@ class Store {
     return this.folders.has(v) ? v : null;
   }
 
+  /** An address typed or edited by hand. Back and Forward between the app's own entries
+   * are lib/nav.svelte.ts's. */
   private onHash = () => {
+    if ((history.state as { hf?: unknown } | null)?.hf) return;
     const hash = new URLSearchParams(location.hash.slice(1));
     const p = Number(hash.get('p'));
     if (!p && this.loupe) this.loupe = false;
   };
 
-  private writeHash() {
+  /** The address of what is on screen: '#f=12&p=345'. */
+  hashNow = (): string => {
     const h = new URLSearchParams();
     if (this.collection) h.set('c', String(this.collection.id));
     else if (this.dateRange) h.set('d', this.dateRange.nodate ? 'none' : `${this.dateRange.from}_${this.dateRange.to}`);
     else if (this.folderId != null) h.set('f', String(this.folderId));
     if (this.loupe && this.list.id[this.current] != null) h.set('p', String(this.list.id[this.current]));
-    const s = '#' + h.toString();
+    return '#' + h.toString();
+  };
+
+  private writeHash() {
+    const s = this.hashNow();
     try {
-      if (location.hash !== s) history.replaceState(null, '', s);
+      // Keeps the entry's state: Back and Forward restore what it records (lib/nav).
+      if (location.hash !== s) history.replaceState(history.state, '', s);
     } catch {
       // Too many changes in a short time (Firefox and Safari refuse them): the next write
       // catches up.
@@ -966,6 +984,54 @@ class Store {
     }
     const i = b.cursorId != null ? this.index.get(b.cursorId) : undefined;
     if (i != null) this.moveCursor(i);
+  };
+
+  /** Where the photos come from, for the browser's history (lib/nav). */
+  place = (): Place => {
+    if (this.collection) return { k: 'c', c: $state.snapshot(this.collection) as ActiveCollection };
+    if (this.dateRange) return { k: 'd', r: $state.snapshot(this.dateRange) as DateRange };
+    return { k: 'f', id: this.folderId, rec: this.recursive, subj: [...(this.filters.subj ?? [])], kw: this.filters.kw ?? '' };
+  };
+
+  /** Shows the photos of a place again (Back or Forward), with the search that was in the
+   * field. The view (grid, map) is the caller's to set afterwards. */
+  restorePlace = async (p: Place, q: string) => {
+    if (p.k === 'c') {
+      if (p.c.id === LOCATIONS.id) await this.openLocations();
+      else await this.applyCollection(p.c);
+      if (this.query !== q) {
+        this.query = q;
+        await this.reload();
+      }
+      return;
+    }
+    if (p.k === 'd') {
+      await this.openDate(p.r);
+      if (this.query !== q) {
+        this.query = q;
+        await this.reload();
+      }
+      return;
+    }
+    this.toGrid();
+    this.leaveCollection();
+    this.query = q;
+    this.dateRange = null;
+    const id = p.id != null && this.folders.has(p.id) ? p.id : (this.lastFolder() ?? this.roots[0]?.id ?? null);
+    this.folderId = id;
+    this.recursive = p.rec;
+    if (id != null) for (const f of this.folderPath(id)) this.expanded.add(f.id);
+    // Links that show a person's or a keyword's photos set these filters: they are part
+    // of where you were. The rest of the filters stay as they are now.
+    this.filters.subj = [...p.subj];
+    this.filters.kw = p.kw;
+    this.persist();
+    this.loupe = false;
+    this.compare = null;
+    this.clearSelection();
+    await this.reload();
+    this.cursor = 0;
+    this.writeHash();
   };
 
   /** The photo grid, for a sidebar pick or a link that shows other photos next: the way

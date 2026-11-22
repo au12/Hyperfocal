@@ -3,7 +3,7 @@
   import { PANEL } from '../lib/store.svelte';
 
   /** The inner edge of a side panel of the library (desktop): drag it to resize the
-   * panel, double-click it for the default width; the tab in its middle hides the panel,
+   * panel, double-click it for the default width; the tab at its top hides the panel,
    * and brings it back from the window's edge. Sits between the panel and the photos as
    * a zero-width flex item. */
   let {
@@ -186,15 +186,16 @@
       width: 1.25rem;
     }
   }
-  /* The tab: a small pill in the middle of the edge; against the window's edge when the
-     panel is hidden. */
+  /* The tab: a small pill at the top of the edge, level with the toolbar (the photos
+     start below it, so it never covers one); against the window's edge when the panel
+     is hidden. The toolbar keeps room for it (--edge-l / --edge-r, App.svelte). */
   .tab {
     position: absolute;
-    top: 50%;
+    top: calc(var(--toolbar-h) / 2);
     left: 0;
     width: 1rem;
-    height: 2.75rem;
-    margin-top: -1.375rem;
+    height: 2rem;
+    margin-top: -1rem;
     translate: -50% 0;
     display: grid;
     place-items: center;
@@ -235,7 +236,7 @@
   .right:not(.open) .tab :global(svg) {
     transform: rotate(180deg);
   }
-  /* Hidden panel: the tab fits in the grid's margin, and stays fully visible. */
+  /* Hidden panel: the tab sits in the toolbar's margin, and stays fully visible. */
   .left:not(.open) .tab {
     translate: 0 0;
     width: 0.75rem;
@@ -252,7 +253,7 @@
   }
   .left:not(.open) .tab:hover,
   .right:not(.open) .tab:hover {
-    width: 1.125rem;
+    width: 1rem;
     scale: 1;
   }
   .dragging .tab {

@@ -29,6 +29,8 @@
   $effect(() => {
     const id = photo;
     void people.rev;
+    // 0: the panel's photo just went (the single view moved on); it is about to go too.
+    if (!id) return;
     untrack(() => {
       if (id !== shown) {
         shown = id;

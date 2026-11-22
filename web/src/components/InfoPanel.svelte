@@ -219,7 +219,9 @@
           <button class="btn sm ghost" class:on={store.panels.faces} onclick={() => { store.panels.faces = !store.panels.faces; store.persist(); }} title={'Show the faces and pets on the photo' + store.keyHint('faces')}><Icon name="scan-face" /> Show</button>
         {/if}
       </div>
-      <PhotoPeople photo={d.id} />
+      <!-- d?: the snippet's props can update once more after the photo went, before the
+           section unmounts. -->
+      <PhotoPeople photo={d?.id ?? 0} />
     </section>
   {:else if id === 'albums'}
     <section>
