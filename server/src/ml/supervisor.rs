@@ -1,6 +1,10 @@
 //! Keeps the AI engine running: decides between the CPU and an NVIDIA GPU, downloads what
 //! the enabled features need, starts `hyperfocal ml-engine`, and starts it again when it
 //! stops (on the CPU, if the GPU keeps failing). The workers find it through `Ml::client`.
+//!
+//! An engine without work for `HYPERFOCAL_ML_IDLE_MIN` (or, while no browser is
+//! connected, `HYPERFOCAL_ML_IDLE_NO_CLIENTS_MIN`) is stopped, which gives its memory (on
+//! a GPU, all of it) back; the next piece of work starts it again (`Link::lease`).
 
 use super::engine::Device;
 use super::engine::probe::Gpus;
@@ -39,7 +43,7 @@ pub fn spawn(state: Arc<AppState>) {
 }
 
 fn set(state: &AppState, f: impl FnOnce(&mut MlStatus)) {
-    f(&mut state.ml.status.write());
+    f(&mut state.ml.link.status.write());
     state.emit(Event::Ml(state.ml.status()));
 }
 
@@ -61,10 +65,13 @@ fn run(state: &Arc<AppState>) {
     loop {
         // CPU or GPU.
         let (device, gpu, note) = choose_device(&cfg, cpu_only.as_deref());
+        let (idle, idle_no_clients) = cfg.idle_limits(device);
         set(state, |s| {
             s.device = Some(device.as_str().into());
             s.gpu = gpu.clone();
             s.note = note.clone();
+            s.idle_min = idle.map(|d| d.as_secs_f64() / 60.0);
+            s.idle_no_clients_min = idle_no_clients.map(|d| d.as_secs_f64() / 60.0);
         });
         let token = {
             let b: [u8; 24] = rand::random();
@@ -140,7 +147,32 @@ fn run(state: &Arc<AppState>) {
                 // Child::wait closes the child's stdin, which tells the engine to stop:
                 // keep our end open while it runs.
                 let stdin = child.stdin.take();
-                let status = child.wait();
+                let status = match watch(state, &mut child, idle, idle_no_clients) {
+                    Watch::Exited(s) => s,
+                    Watch::Idle => {
+                        // Closing stdin stops it; it frees the GPU as it exits.
+                        drop(stdin);
+                        stop(&mut child);
+                        let span = |d: Option<Duration>| match d.map(|d| d.as_secs()).unwrap_or(0) {
+                            s if s < 120 => format!("{s} s"),
+                            s => format!("{} min", (s + 30) / 60),
+                        };
+                        let why = if state.ml.link.clients() == 0 && idle_no_clients.is_some() {
+                            format!("no browser connected and no AI work for {}", span(idle_no_clients))
+                        } else {
+                            format!("no AI work for {}", span(idle))
+                        };
+                        tracing::info!("AI engine stopped ({why}), its memory freed; it starts again when needed");
+                        set(state, |s| {
+                            s.phase = "asleep".into();
+                            s.error = None;
+                        });
+                        state.ml.link.wait_for_want();
+                        tracing::info!("AI engine: work came in, starting it again");
+                        failures = 0;
+                        continue;
+                    }
+                };
                 drop(stdin);
                 state.ml.set_endpoint(None);
                 let why = match status {
@@ -172,6 +204,8 @@ fn run(state: &Arc<AppState>) {
                     s.phase = "error".into();
                     s.error = Some(format!("The AI engine did not start: {e:#}"));
                 });
+                // Requests waiting for a sleeping engine get this error.
+                state.ml.link.wake_failed();
             }
         }
         std::thread::sleep(Duration::from_secs((5u64 << failures.saturating_sub(1).min(6)).min(300)));
@@ -190,6 +224,46 @@ fn features(cfg: &super::MlConfig) -> String {
         v.push("eyes");
     }
     v.join(", ")
+}
+
+enum Watch {
+    /// The engine stopped by itself (a crash, or killed).
+    Exited(std::io::Result<std::process::ExitStatus>),
+    /// It had no work for long enough: no request holds it and none can reach it.
+    Idle,
+}
+
+/// Waits while the engine runs, until it exits or has been idle long enough.
+fn watch(state: &AppState, child: &mut Child, idle: Option<Duration>, idle_no_clients: Option<Duration>) -> Watch {
+    let sleepy = idle.is_some() || idle_no_clients.is_some();
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) => return Watch::Exited(Ok(s)),
+            Ok(None) => {}
+            Err(e) => return Watch::Exited(Err(e)),
+        }
+        if sleepy && state.ml.link.try_sleep(idle, idle_no_clients) {
+            return Watch::Idle;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Waits for an engine told to stop (stdin closed) to exit; kills it if it does not.
+fn stop(child: &mut Child) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) if Instant::now() >= deadline => {
+                tracing::warn!("AI engine: did not stop within 20 s, killing it");
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
 }
 
 /// Lets the workers waiting for the engine go.

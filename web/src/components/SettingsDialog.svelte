@@ -48,12 +48,15 @@
 
   const st = $derived(store.status);
 
+  const fmtMin = (m: number) => (m < 2 ? `${Math.round(m * 60)} s` : `${Math.round(m)} min`);
+
   /** What the AI engine does: its features, where it runs, and the space its models take. */
   function aiLine(m: NonNullable<typeof st>['ml']): string {
     if (!m || !m.enabled) return 'Off (HYPERFOCAL_ML)';
     const on = [m.faces && 'people and pets', m.search && 'search by content', m.eyes && 'closed eyes'].filter(Boolean).join(', ');
     const disk = m.disk_mb > 0 ? ` · ${m.disk_mb >= 1000 ? `${(m.disk_mb / 1000).toFixed(1)} GB` : `${m.disk_mb} MB`} of models` : '';
-    return `${mlState(m)} · ${on}${m.phase === 'ready' ? disk : ''}`;
+    const idle = m.idle_min ? ` · stops after ${fmtMin(m.idle_min)} without work` : '';
+    return `${mlState(m)} · ${on}${m.phase === 'ready' || m.phase === 'asleep' ? disk + idle : ''}`;
   }
 </script>
 

@@ -17,6 +17,8 @@ export function mlState(m: MlStatus | null | undefined): string {
       return 'Starting the AI engine';
     case 'ready':
       return m.device === 'cuda' ? `AI engine running on the GPU${m.gpu ? ` (${m.gpu})` : ''}` : 'AI engine running on the CPU';
+    case 'asleep':
+      return `AI engine asleep (${m.device === 'cuda' ? 'GPU' : 'memory'} freed), starts when needed`;
     default:
       return m.error ?? 'The AI engine is not running';
   }

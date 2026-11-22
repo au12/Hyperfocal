@@ -204,8 +204,12 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
 
 async fn events(State(state): St) -> impl IntoResponse {
     let rx = state.events.subscribe();
+    // Counts this browser as connected until the stream closes (the AI engine may stop
+    // sooner while nobody is: HYPERFOCAL_ML_IDLE_NO_CLIENTS_MIN).
+    let connected = state.ml.link.client_connected();
     let first = futures_util::stream::once(async { Event::Progress(Default::default()) }).filter(|_| async { false });
-    let stream = first.chain(BroadcastStream::new(rx).filter_map(|e| async move { e.ok() })).map(|e| {
+    let stream = first.chain(BroadcastStream::new(rx).filter_map(|e| async move { e.ok() })).map(move |e| {
+        let _ = &connected;
         Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(serde_json::to_string(&e).unwrap_or_default()))
     });
     // Reverse proxies (nginx / Nginx Proxy Manager) must not buffer the event stream.

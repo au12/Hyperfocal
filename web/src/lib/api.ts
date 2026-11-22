@@ -43,7 +43,8 @@ export interface Status {
 export interface MlStatus {
   /** Some AI feature is on (HYPERFOCAL_ML and its feature switches). */
   enabled: boolean;
-  phase: 'off' | 'starting' | 'downloading' | 'ready' | 'waiting' | 'error' | string;
+  /** asleep: stopped for want of work (its memory freed); the next piece of work starts it. */
+  phase: 'off' | 'starting' | 'downloading' | 'ready' | 'asleep' | 'waiting' | 'error' | string;
   /** cpu or cuda, once decided. */
   device: string | null;
   /** The GPU's name and memory, on cuda. */
@@ -58,6 +59,11 @@ export interface MlStatus {
   error: string | null;
   /** Worth knowing, not an error (e.g. no GPU: running on the CPU). */
   note: string | null;
+  /** Minutes without AI work before the engine stops (null: it stays loaded), and the same while no browser is connected. */
+  idle_min?: number | null;
+  idle_no_clients_min?: number | null;
+  /** Browsers with Hyperfocal open. */
+  clients?: number;
   /** Models and libraries in the app data folder (MB). */
   disk_mb: number;
 }

@@ -199,6 +199,8 @@ AI settings (all optional):
 | `HYPERFOCAL_ML_WORKERS` | 1 (CPU), 2 (GPU) | Photos the engine analyses at once |
 | `HYPERFOCAL_ML_GPU` | `0` | Which GPU, when the container sees several |
 | `HYPERFOCAL_ML_GPU_MEM_MB` | – | Cap on the GPU memory ONNX Runtime takes |
+| `HYPERFOCAL_ML_IDLE_MIN` | 15 (GPU), never (CPU) | Minutes without AI work before the engine stops and gives its memory back (on a GPU, all of it); the next search or new photo starts it again, in a few seconds. `0`: never |
+| `HYPERFOCAL_ML_IDLE_NO_CLIENTS_MIN` | 2 (GPU), never (CPU) | The same while no browser has Hyperfocal open (a tab hidden for 2 minutes lets go). Background analysis keeps the engine awake until it is done. `0`: never |
 | `HYPERFOCAL_ML_FACE_SCALES` | `1600,640,320` | Sizes faces are looked for at (long side, px) |
 | `HYPERFOCAL_ML_DIR` | `$HYPERFOCAL_CONFIG/ml` | Where the models and the GPU runtime go |
 | `HYPERFOCAL_ML_LOG` | `info` | The engine's log level (`debug` for more) |

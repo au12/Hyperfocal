@@ -499,6 +499,7 @@ class Store {
     }
     await this.loadTree();
     this.connectEvents();
+    document.addEventListener('visibilitychange', this.onVisibility);
     people.loadStatus();
     await Promise.all([this.loadCollections().catch(() => {}), albums.load()]);
     this.loadTimeline();
@@ -546,6 +547,43 @@ class Store {
     const s = '#' + h.toString();
     if (location.hash !== s) history.replaceState(null, '', s);
   }
+
+  private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
+  private eventsDropped = false;
+
+  /** A tab hidden for 2 minutes lets go of the event stream, so the server can tell
+   *  nobody is looking (the AI engine then frees its memory sooner:
+   *  HYPERFOCAL_ML_IDLE_NO_CLIENTS_MIN). Back in view, it reconnects and catches up. */
+  onVisibility = () => {
+    if (document.hidden) {
+      this.hiddenTimer ??= setTimeout(() => {
+        this.hiddenTimer = null;
+        if (document.hidden && this.es) {
+          this.es.close();
+          this.es = null;
+          this.eventsDropped = true;
+        }
+      }, 120_000);
+      return;
+    }
+    if (this.hiddenTimer) clearTimeout(this.hiddenTimer);
+    this.hiddenTimer = null;
+    if (!this.eventsDropped) return;
+    this.eventsDropped = false;
+    this.connectEvents();
+    // What the stream would have said meanwhile.
+    api
+      .status()
+      .then((s) => {
+        this.status = s;
+        if (s.counts?.integrity) this.integrity = s.counts.integrity;
+      })
+      .catch(() => {});
+    this.loadTree();
+    this.scheduleReload();
+    people.loadStatus();
+    this.loadCollections().catch(() => {});
+  };
 
   connectEvents = () => {
     this.es?.close();

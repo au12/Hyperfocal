@@ -1,15 +1,30 @@
-//! Client for the AI engine process (`super::engine`), which answers on 127.0.0.1. Get
-//! one from `Ml::client` each time: the engine's port changes when it restarts.
+//! Client for the AI engine process (`super::engine`), which answers on 127.0.0.1. A
+//! client from `Ml::client` finds the engine for each request (its port changes when it
+//! restarts) and starts it first if it was stopped for want of work.
 
+use super::{Endpoint, Lease, Link};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone)]
 pub struct Client {
+    target: Target,
+    agent: ureq::Agent,
+}
+
+#[derive(Clone)]
+enum Target {
+    Fixed { base: String, token: Option<String> },
+    Managed(Arc<Link>),
+}
+
+/// Where one request goes, held for its duration.
+struct Dest {
     base: String,
     token: Option<String>,
-    agent: ureq::Agent,
+    _lease: Option<Lease>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,32 +91,61 @@ pub fn agent() -> ureq::Agent {
 }
 
 impl Client {
+    /// A client for an engine at a fixed address.
     pub fn new(base: &str, token: Option<String>, agent: ureq::Agent) -> Client {
-        Client { base: base.trim_end_matches('/').to_string(), token, agent }
+        Client { target: Target::Fixed { base: base.trim_end_matches('/').to_string(), token }, agent }
     }
 
-    fn auth<B>(&self, req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
-        match &self.token {
+    pub(crate) fn managed(link: Arc<Link>, agent: ureq::Agent) -> Client {
+        Client { target: Target::Managed(link), agent }
+    }
+
+    /// The engine for one request; `work` wakes a sleeping engine and keeps it awake.
+    fn dest(&self, work: bool) -> std::result::Result<Dest, MlError> {
+        match &self.target {
+            Target::Fixed { base, token } => Ok(Dest { base: base.clone(), token: token.clone(), _lease: None }),
+            Target::Managed(link) => {
+                let (lease, Endpoint { base, token }) = link.lease(work)?;
+                Ok(Dest { base, token: Some(token), _lease: Some(lease) })
+            }
+        }
+    }
+
+    fn auth<B>(d: &Dest, req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
+        match &d.token {
             Some(t) => req.header("Authorization", &format!("Bearer {t}")),
             None => req,
         }
     }
 
     /// The service's version, device and models (with the content ids that tell
-    /// whether stored embeddings still match).
+    /// whether stored embeddings still match). A sleeping engine is not woken for it:
+    /// the answer is the one it gave when it last ran.
     pub fn info(&self) -> Result<serde_json::Value> {
-        let mut r = self.auth(self.agent.get(&format!("{}/v1/info", self.base))).call().with_context(|| "reaching the AI engine".to_string())?;
+        if let Target::Managed(link) = &self.target {
+            if link.asleep() {
+                if let Some(v) = link.info.read().clone() {
+                    return Ok(v);
+                }
+            }
+        }
+        let d = self.dest(false).map_err(|e| anyhow!("{e}"))?;
+        let mut r = Self::auth(&d, self.agent.get(&format!("{}/v1/info", d.base))).call().with_context(|| "reaching the AI engine".to_string())?;
         if !r.status().is_success() {
             bail!("the AI engine answered {}", r.status());
         }
         let body = r.body_mut().read_to_string()?;
-        Ok(serde_json::from_str(&body)?)
+        let v: serde_json::Value = serde_json::from_str(&body)?;
+        if let Target::Managed(link) = &self.target {
+            *link.info.write() = Some(v.clone());
+        }
+        Ok(v)
     }
 
     /// Faces and animals in an upright JPEG.
     pub fn analyze(&self, jpeg: &[u8]) -> std::result::Result<Analysis, MlError> {
-        let mut r = self
-            .auth(self.agent.post(&format!("{}/v1/analyze", self.base)))
+        let d = self.dest(true)?;
+        let mut r = Self::auth(&d, self.agent.post(&format!("{}/v1/analyze", d.base)))
             .content_type("image/jpeg")
             .send(jpeg)
             .map_err(|e| MlError::Unreachable(format!("the AI engine: {e}")))?;
@@ -157,8 +201,8 @@ impl Client {
     }
 
     fn post_json(&self, path: &str, ctype: &str, body: &[u8]) -> std::result::Result<serde_json::Value, MlError> {
-        let mut r = self
-            .auth(self.agent.post(&format!("{}{path}", self.base)))
+        let d = self.dest(true)?;
+        let mut r = Self::auth(&d, self.agent.post(&format!("{}{path}", d.base)))
             .content_type(ctype)
             .send(body)
             .map_err(|e| MlError::Unreachable(format!("the AI engine: {e}")))?;
@@ -174,8 +218,8 @@ impl Client {
     }
 
     fn post_for_embs(&self, path: &str, ctype: &str, body: &[u8]) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {
-        let mut r = self
-            .auth(self.agent.post(&format!("{}{path}", self.base)))
+        let d = self.dest(true)?;
+        let mut r = Self::auth(&d, self.agent.post(&format!("{}{path}", d.base)))
             .content_type(ctype)
             .send(body)
             .map_err(|e| MlError::Unreachable(format!("the AI engine: {e}")))?;
