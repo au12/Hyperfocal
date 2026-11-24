@@ -65,7 +65,7 @@ pub struct Params {
 
 impl Default for Params {
     fn default() -> Params {
-        Params { mode: Mode::Exact, scope: Scope::Library, radius: NORMAL, alike: ALIKE_NORMAL, series: bursts::Rules::default(), limit: 2000 }
+        Params { mode: Mode::Exact, scope: Scope::Library, radius: NORMAL, alike: ALIKE_NORMAL, series: crate::tuning::get().series_rules(), limit: 2000 }
     }
 }
 
@@ -155,7 +155,7 @@ pub struct Report {
 
 /// SQL for "this folder and everything below it" on `f.path` (paths below `a` sort
 /// between `a/` and `a0`, since '0' follows '/'); nothing for the library root.
-fn subtree(path: &str, args: &mut Vec<Box<dyn ToSql>>) -> String {
+pub(crate) fn subtree(path: &str, args: &mut Vec<Box<dyn ToSql>>) -> String {
     if path.is_empty() {
         return "1".into();
     }
@@ -165,7 +165,7 @@ fn subtree(path: &str, args: &mut Vec<Box<dyn ToSql>>) -> String {
     "(f.path = ? OR (f.path >= ? AND f.path < ?))".into()
 }
 
-fn folder_path(c: &Connection, id: i64) -> Result<String> {
+pub(crate) fn folder_path(c: &Connection, id: i64) -> Result<String> {
     c.query_row("SELECT path FROM folders WHERE id = ?1", [id], |r| r.get(0)).map_err(|_| anyhow!("no such folder"))
 }
 
@@ -412,8 +412,8 @@ pub fn visual_groups(ids: &[i64], vectors: &[i8], norms: &[f32], dim: usize, all
 }
 
 /// Series, without the ones dismissed (frames dismissed with the first are left out).
-pub fn series_groups(shots: &mut [bursts::Shot], rules: bursts::Rules, ignored: &HashSet<(i64, i64)>) -> Vec<Vec<i64>> {
-    let runs = bursts::series(shots, rules);
+pub fn series_groups(shots: &mut [bursts::Shot], rules: bursts::Rules, ignored: &HashSet<(i64, i64)>, looks: Option<&dyn bursts::Looks>) -> Vec<Vec<i64>> {
+    let runs = bursts::series(shots, rules, looks);
     let mut out = Vec::new();
     for run in runs {
         let s = &shots[run];
@@ -685,7 +685,7 @@ fn shots(c: &Connection) -> Result<(Vec<Seen>, Vec<bursts::Shot>)> {
     while let Some(r) = rows.next()? {
         let s = Seen { id: r.get(0)?, time: r.get(1)?, hash: r.get::<_, Option<i64>>(2)?.map(|h| h as u64), unreadable: r.get(3)? };
         if let Some(taken) = r.get::<_, Option<i64>>(4)? {
-            shots.push(bursts::Shot { id: s.id, folder: r.get(5)?, camera: r.get(6)?, taken, name: r.get(7)?, hash: s.hash });
+            shots.push(bursts::Shot { id: s.id, folder: r.get(5)?, camera: r.get(6)?, taken, name: r.get(7)?, hash: s.hash, emb: None });
         }
         seen.push(s);
     }
@@ -771,7 +771,16 @@ pub fn build_with(c: &Connection, p: &Params, visual: Option<&crate::visual::Ind
             let counts = seen_count(&seen);
             shots.retain(|s| allow(s.id));
             when = seen.iter().map(|s| (s.id, s.time)).collect();
-            (series_groups(&mut shots, p.series, &ignored), false, counts)
+            let looks: Option<&dyn bursts::Looks> = match visual {
+                Some(ix) if !ix.is_empty() => {
+                    for s in shots.iter_mut() {
+                        s.emb = ix.slot(s.id);
+                    }
+                    Some(ix)
+                }
+                _ => None,
+            };
+            (series_groups(&mut shots, p.series, &ignored, looks), false, counts)
         }
         Mode::Visual => {
             let seen = seen(c)?;

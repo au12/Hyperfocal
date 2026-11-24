@@ -52,6 +52,8 @@ pub enum Event {
     Dupes,
     /// The AI engine: downloading its models, starting, ready, or stopped.
     Ml(crate::ml::MlStatus),
+    /// The advanced settings changed: series and possible rejects may have too.
+    Tuning,
 }
 
 pub enum ScanMsg {

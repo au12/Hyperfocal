@@ -2,9 +2,8 @@
 //! across the frames, for close-ups side by side), and the photos to measure first.
 
 use super::series::{self, Frame};
-use super::{CLOSED, PERSON_MIN_H};
+use super::PERSON_MIN_H;
 use crate::api::{ApiError, ApiResult, St, bad};
-use crate::dupes::bursts::Rules;
 use crate::model::PhotoRec;
 use crate::people::regions::Rect;
 use crate::state::AppState;
@@ -103,6 +102,7 @@ fn rows(c: &Connection, wh: &str, args: &[i64]) -> anyhow::Result<Vec<Row>> {
                     sharp: r.get(13)?,
                     focus: r.get(14)?,
                     closed: r.get(15)?,
+                    emb: None,
                 },
                 rec,
                 w: r.get(10)?,
@@ -164,7 +164,7 @@ fn face_json(f: &Face, photo_v: &str) -> Value {
         "box": [f.rect.x, f.rect.y, f.rect.w, f.rect.h],
         "focus": f.focus,
         "closed": f.closed,
-        "shut": f.closed.map(|c| c >= CLOSED),
+        "shut": f.closed.map(|c| c >= super::thresholds().closed),
         "eyes": f.eyes,
         "subject": f.subject.map(|id| json!({ "id": id, "name": f.name })),
         "v": crate::people::api::crop_v(&f.rect, photo_v),
@@ -228,23 +228,46 @@ async fn photo(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<Value>> 
     let v = blocking(move || -> anyhow::Result<Option<Value>> {
         let c = st.db.get()?;
         let Some(me) = rows(&c, "p.id = ?1", &[id])?.pop() else { return Ok(None) };
-        // Its series: the frames of its folder and camera around it.
+        let tuning = crate::tuning::get();
+        let rules = tuning.series_rules();
+        // Its series: the frames of its folder (and camera) around it. The window widens
+        // while the series reaches its edge (a long session).
         let (folder, camera) = (me.frame.folder, me.frame.camera.clone());
-        let mut around: Vec<Row> = match me.frame.taken {
-            Some(t) => rows(
-                &c,
-                "p.folder_id = ?1 AND p.pair_of IS NULL AND f.is_reject = 0 AND p.taken BETWEEN ?2 AND ?3 AND p.id != ?4",
-                &[folder, t - AROUND_S, t + AROUND_S, id],
-            )?
-            .into_iter()
-            .filter(|r| r.frame.camera == camera)
-            .collect(),
-            None => Vec::new(),
-        };
-        around.push(me);
-        let frames: Vec<Frame> = around.iter().map(|r| r.frame.clone()).collect();
+        let mut window = AROUND_S.max((rules.max_gap * 4.0) as i64);
+        let (mut around, mut frames, mut series): (Vec<Row>, Vec<Frame>, Option<Vec<usize>>);
+        loop {
+            around = match me.frame.taken {
+                Some(t) => rows(
+                    &c,
+                    "p.folder_id = ?1 AND p.pair_of IS NULL AND f.is_reject = 0 AND p.taken BETWEEN ?2 AND ?3 AND p.id != ?4",
+                    &[folder, t - window, t + window, id],
+                )?
+                .into_iter()
+                .filter(|r| rules.cameras || r.frame.camera == camera)
+                .collect(),
+                None => Vec::new(),
+            };
+            around.push(rows(&c, "p.id = ?1", &[id])?.pop().ok_or_else(|| anyhow::anyhow!("the photo went away"))?);
+            {
+                let ix = st.visual.index.read();
+                for r in &mut around {
+                    r.frame.emb = ix.slot(r.frame.id);
+                }
+                frames = around.iter().map(|r| r.frame.clone()).collect();
+                let looks: Option<&dyn crate::dupes::bursts::Looks> = if ix.is_empty() { None } else { Some(&*ix) };
+                let at = frames.len() - 1;
+                series = series::group(&frames, rules, looks).into_iter().find(|g| g.contains(&at));
+            }
+            let (Some(t), Some(g)) = (me.frame.taken, &series) else { break };
+            let first = frames[g[0]].taken.unwrap_or(t);
+            let last = frames[*g.last().unwrap()].taken.unwrap_or(t);
+            let near_edge = (first - (t - window)) as f64 <= rules.max_gap || ((t + window) - last) as f64 <= rules.max_gap;
+            if !near_edge || window >= 2 * 86_400 {
+                break;
+            }
+            window *= 4;
+        }
         let at = frames.len() - 1;
-        let series = series::group(&frames, Rules::default()).into_iter().find(|g| g.contains(&at));
         let shown: Vec<usize> = series.clone().unwrap_or_else(|| vec![at]);
         let ids: Vec<i64> = shown.iter().map(|&i| frames[i].id).collect();
         let all = faces(&c, &ids)?;
@@ -257,8 +280,9 @@ async fn photo(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<Value>> 
         let pending = !me_row.measured;
         let own: Vec<Value> = by_photo.get(&id).map(|v| v.iter().map(|f| face_json(f, &sig(me_row))).collect()).unwrap_or_default();
         let series_json = series.map(|g| {
-            let best = series::best(&frames, &g);
-            let second = g.iter().copied().filter(|&i| i != best).max_by(|&a, &b| series::compare(&frames[a], &frames[b]));
+            let choice = series::Choice::current();
+            let best = series::best_with(&frames, &g, choice);
+            let second = g.iter().copied().filter(|&i| i != best).max_by(|&a, &b| series::compare_with(&frames[a], &frames[b], choice));
             let k = g.iter().position(|&i| i == at).unwrap_or(0);
             let fids: Vec<i64> = g.iter().map(|&i| frames[i].id).collect();
             let sigs: HashMap<i64, String> = g.iter().map(|&i| (frames[i].id, sig(&around[i]))).collect();
@@ -275,7 +299,7 @@ async fn photo(State(state): St, Path(id): Path<i64>) -> ApiResult<Json<Value>> 
             json!({
                 "key": frames[g[0]].id,
                 "best": frames[best].id,
-                "why": second.map(|s| series::why(&frames[best], &frames[s])),
+                "why": second.map(|s| series::why(&frames[best], &frames[s], best == g[0])),
                 "index": k,
                 "frames": g.iter().map(|&i| {
                     let r = &around[i];

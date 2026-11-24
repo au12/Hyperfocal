@@ -99,6 +99,19 @@ impl Index {
         self.slot.get(&id).map(|&s| &self.vecs[s * DIM..(s + 1) * DIM])
     }
 
+    /// Where a photo's embedding is (for `cos_slots`), while the index is held.
+    pub fn slot(&self, id: i64) -> Option<u32> {
+        self.slot.get(&id).map(|&s| s as u32)
+    }
+
+    /// Cosine of two embeddings by slot.
+    pub fn cos_slots(&self, a: usize, b: usize) -> f32 {
+        if a >= self.norms.len() || b >= self.norms.len() {
+            return 0.0;
+        }
+        dot(&self.vecs[a * DIM..(a + 1) * DIM], &self.vecs[b * DIM..(b + 1) * DIM]) as f32 / (self.norms[a] * self.norms[b])
+    }
+
     pub fn upsert(&mut self, id: i64, v: &[i8]) {
         debug_assert_eq!(v.len(), DIM);
         let n = norm(v).max(1e-6);
@@ -280,14 +293,15 @@ pub fn search_text(state: &AppState, q: &str) -> Result<Vec<(i64, f32)>> {
             v
         }
     };
-    Ok(state.visual.index.read().search(&v, TEXT_FLOOR, Some(TEXT_BELOW_BEST), MAX_HITS))
+    let floor = crate::tuning::get().search_floor as f32;
+    Ok(state.visual.index.read().search(&v, floor, Some(TEXT_BELOW_BEST), MAX_HITS))
 }
 
 /// Photos that look like this one, best first (the photo itself first).
 pub fn search_like(state: &AppState, id: i64) -> Result<Vec<(i64, f32)>> {
     let ix = state.visual.index.read();
     let v = ix.vector(id).ok_or_else(|| anyhow!("this photo has not been looked at for search yet; try again in a while"))?.to_vec();
-    Ok(ix.search(&v, LIKE_FLOOR, None, MAX_HITS))
+    Ok(ix.search(&v, crate::tuning::get().like_floor as f32, None, MAX_HITS))
 }
 
 /// The ranking of a search, for SQL: a temporary table of this connection

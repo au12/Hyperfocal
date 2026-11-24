@@ -6,7 +6,7 @@
 //! scanned.
 
 use super::measure::{self, Subject};
-use super::CLOSED;
+use super::thresholds;
 use crate::images::tone::{self, ToneMode};
 use crate::model::{Kind, PhotoRec};
 use crate::ml::{Client, MlError};
@@ -354,7 +354,7 @@ pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[
                             // Not clearly a face (a mask, the back of a head): no verdict.
                             let Some(r) = r.filter(|r| r.p >= 0.5) else { continue };
                             checked += 1;
-                            if r.closed as f64 >= CLOSED {
+                            if r.closed as f64 >= thresholds().closed {
                                 closed += 1;
                             }
                             let pos = |k: usize| r.eyes.get(k).map(|p| measure::from_crop(img, *at, *p)).unwrap_or([0.0, 0.0]);

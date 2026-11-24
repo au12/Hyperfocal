@@ -1,6 +1,5 @@
 //! HTTP API of the Duplicates report.
 
-use super::bursts::Rules;
 use super::report::{self, Mode, Params, Scope};
 use crate::api::{ApiResult, St, bad};
 use crate::state::AppState;
@@ -51,18 +50,27 @@ fn params(q: &ReportQuery) -> ApiResult<Params> {
         ("folder" | "against", None) => return Err(bad("a folder is needed for that scope")),
         _ => return Err(bad("scope: library, folder or against")),
     };
+    let t = crate::tuning::get();
     let radius = match q.level.as_deref().unwrap_or("normal") {
-        "strict" => report::STRICT,
-        "normal" => report::NORMAL,
-        "loose" => report::LOOSE,
+        "strict" => t.near_strict as u32,
+        "normal" => t.near_normal as u32,
+        "loose" => t.near_loose as u32,
         _ => return Err(bad("level: strict, normal or loose")),
     };
     let alike = match q.level.as_deref().unwrap_or("normal") {
-        "strict" => report::ALIKE_STRICT,
-        "loose" => report::ALIKE_LOOSE,
-        _ => report::ALIKE_NORMAL,
+        "strict" => t.alike_strict as f32,
+        "loose" => t.alike_loose as f32,
+        _ => t.alike_normal as f32,
     };
-    let series = Rules { max_gap: q.gap.unwrap_or(2).clamp(0, 60), min_len: q.min.unwrap_or(2).clamp(2, 50), ..Rules::default() };
+    // Series as culling finds them (Settings → Advanced); `gap` sets another longest pause.
+    let mut series = t.series_rules();
+    if let Some(g) = q.gap {
+        series.max_gap = g.clamp(0, 900) as f64;
+        series.burst_gap = series.burst_gap.min(series.max_gap);
+    }
+    if let Some(m) = q.min {
+        series.min_len = m.clamp(2, 50) as usize;
+    }
     Ok(Params { mode, scope, radius, alike, series, limit: q.limit.unwrap_or(2000).clamp(1, 5000) })
 }
 
@@ -78,7 +86,7 @@ async fn get_report(State(state): St, Query(q): Query<ReportQuery>) -> ApiResult
                 st.dupes.prioritize(&report::unhashed_below(&c, f)?);
             }
         }
-        let r = if p.mode == Mode::Visual {
+        let r = if matches!(p.mode, Mode::Visual | Mode::Series) {
             let ix = st.visual.index.read();
             report::build_with(&c, &p, Some(&ix))?
         } else {

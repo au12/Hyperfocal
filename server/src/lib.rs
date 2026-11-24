@@ -29,6 +29,7 @@ pub mod scan;
 pub mod sets;
 pub mod state;
 pub mod tracks;
+pub mod tuning;
 pub mod visual;
 #[cfg(test)]
 mod safety_tests;
@@ -143,6 +144,7 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
     let readonly = cfg.readonly || !library_writable(&cfg.photos_root);
     let pool = db::open(&cfg.config_dir.join("hyperfocal.db"))?;
     let trigram = db::trigram_ready(&*pool.get()?);
+    tuning::init(&*pool.get()?);
     let exiftool = meta::exiftool::ExifTool::new(&cfg.exiftool, &cfg.config_dir)?;
     let images = images::Images::new(&cfg)?;
     native::set_prefer_libraw(cfg.raw_decoder_libraw);

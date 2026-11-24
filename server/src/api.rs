@@ -102,6 +102,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(crate::albums::routes())
         .merge(crate::immich::routes())
         .merge(crate::cull::api::routes())
+        .merge(crate::tuning::routes())
         .route("/login", post(login))
         .route("/logout", post(logout))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -456,7 +457,8 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
 /// People in the photo, portrait or group, eyes, and culling's possible rejects. The
 /// faces counted are the people's (`cull::PERSON_MIN_H` tall or more), not passers-by.
 fn people_filters(q: &ListQuery, w: &mut Vec<String>, a: &mut Vec<Box<dyn ToSql>>) {
-    use crate::cull::{CLOSED, GROUP_MIN, PERSON_MIN_H, PORTRAIT_MIN_H, REAL_FACE};
+    use crate::cull::{GROUP_MIN, PERSON_MIN_H, PORTRAIT_MIN_H, REAL_FACE};
+    let closed = crate::cull::thresholds().closed;
     let faces = format!("SELECT photo_id FROM detections WHERE kind = 1 AND h >= ? AND state != 3 AND {REAL_FACE}");
     let faces = faces.as_str();
     if let Some(v) = q.ppl.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -496,11 +498,11 @@ fn people_filters(q: &ListQuery, w: &mut Vec<String>, a: &mut Vec<Box<dyn ToSql>
     match q.eyes.as_deref() {
         Some("closed") => {
             w.push("p.id IN (SELECT photo_id FROM cull_faces WHERE closed >= ?)".into());
-            a.push(Box::new(CLOSED));
+            a.push(Box::new(closed));
         }
         Some("open") => {
             w.push("p.id IN (SELECT photo_id FROM cull_faces WHERE closed IS NOT NULL GROUP BY photo_id HAVING max(closed) < ?)".into());
-            a.push(Box::new(CLOSED));
+            a.push(Box::new(closed));
         }
         _ => {}
     }
@@ -768,6 +770,9 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
         let mut stacks: Vec<(i64, i64, bool)> = vec![(0, 0, false); list.len()];
         let order: Vec<usize> = if series {
             use crate::cull::series::{self as cs, Frame};
+            let tuning = crate::tuning::get();
+            // The embeddings (search by content) tell a moved subject from another scene.
+            let ix = st.visual.index.read();
             let frames: Vec<Frame> = list
                 .iter()
                 .map(|r| Frame {
@@ -777,6 +782,7 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
                     taken: r.taken,
                     name: r.name.clone(),
                     hash: r.hash,
+                    emb: ix.slot(r.id),
                     rating: r.rating,
                     pick: r.pick,
                     focus: r.focus,
@@ -784,11 +790,14 @@ async fn list_photos(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<
                     sharp: r.sharp,
                 })
                 .collect();
-            let groups = cs::group(&frames, crate::dupes::bursts::Rules::default());
+            let looks: Option<&dyn crate::dupes::bursts::Looks> = if ix.is_empty() { None } else { Some(&*ix) };
+            let groups = cs::group(&frames, tuning.series_rules(), looks);
+            drop(ix);
+            let choice = cs::Choice::current();
             let mut member: Vec<Option<usize>> = vec![None; list.len()];
             let mut best = Vec::with_capacity(groups.len());
             for (g, m) in groups.iter().enumerate() {
-                let b = cs::best(&frames, m);
+                let b = cs::best_with(&frames, m, choice);
                 best.push(b);
                 for &i in m {
                     member[i] = Some(g);

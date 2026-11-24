@@ -1,15 +1,14 @@
 <script lang="ts">
-  import { store, LABELS, LOCATIONS, activeFilterCount, type SortKey } from '../lib/store.svelte';
-  import { api, type Facets } from '../lib/api';
-  import Icon from './Icon.svelte';
+  import { store, LABELS, LOCATIONS, activeFilterCount, type SortKey, type Filters } from '../lib/store.svelte';
+    import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
+  import FilterPanel from './FilterPanel.svelte';
   import { Tween } from 'svelte/motion';
   import { segmented, easeOut, reduced } from '../lib/motion';
   import { albums } from '../lib/albums.svelte';
   import { cull, ISSUES } from '../lib/cull.svelte';
   import { mlPreparing, mlState } from '../lib/ml';
 
-  let facets = $state<Facets | null>(null);
   let filterOpen = $state(false);
   let saveOpen = $state(false);
   let saveName = $state('');
@@ -39,20 +38,56 @@
   /** Something worth saving: a search, a period or a filter. */
   const saveable = $derived(!!store.query.trim() || !!store.dateRange || activeFilters > 0 || (coll != null && modified));
 
-  async function loadFacets() {
-    if (!facets) facets = await api.facets().catch(() => null);
-  }
-
-  function toggleLabel(c: string) {
-    const lc = f.lc.includes(c) ? f.lc.filter((x) => x !== c) : [...f.lc, c];
-    store.setFilter('lc', lc);
-  }
-
   function clearFilters() {
     Object.assign(store.filters, { rmin: 0, unrated: false, lc: [], pick: null, kinds: [], gps: onMap ? 1 : null, cam: '', lens: '', kw: '', onlyRejected: false, dateFrom: '', dateTo: '', subj: [], ids: [], ppl: '', shot: '', eyes: '', issue: [], weak: false });
     store.persist();
     store.reload();
   }
+
+  /** The filters in effect, as chips under the toolbar: each one says what it does and
+   * goes with a click, without opening the panel. */
+  interface FChip {
+    key: string;
+    label: string;
+    icon: string;
+    tone?: string;
+    clear: () => void;
+  }
+  const KIND_NAMES: Record<number, string> = { 1: 'RAW', 2: 'JPEG', 5: 'HEIC' };
+  const fchips = $derived.by((): FChip[] => {
+    const out: FChip[] = [];
+    const set =
+      <K extends keyof Filters>(k: K, v: Filters[K]) =>
+      () =>
+        store.setFilter(k, v);
+    if (f.rmin > 0) out.push({ key: 'rmin', label: f.rmin === 5 ? '5★' : `${f.rmin}★ and up`, icon: 'star', clear: set('rmin', 0) });
+    if (f.unrated) out.push({ key: 'unrated', label: 'Unrated', icon: 'star', clear: set('unrated', false) });
+    if (f.pick === 1) out.push({ key: 'pick', label: 'Picks', icon: 'flag', clear: set('pick', null) });
+    if (f.pick === 0) out.push({ key: 'pick', label: 'Unflagged', icon: 'flag', clear: set('pick', null) });
+    for (const c of f.lc) {
+      out.push({ key: 'lc-' + c, label: c === 'none' ? 'No label' : (LABELS.find((l) => l.color === c)?.name ?? c), icon: 'tag', tone: c === 'none' ? undefined : c, clear: () => store.setFilter('lc', f.lc.filter((x) => x !== c)) });
+    }
+    if (f.kinds.length) out.push({ key: 'kinds', label: f.kinds.length > 1 ? 'TIFF & PNG' : (KIND_NAMES[f.kinds[0]] ?? 'Other'), icon: 'image', clear: set('kinds', []) });
+    if (f.dateFrom || f.dateTo) {
+      const label = f.dateFrom && f.dateTo ? `${f.dateFrom} – ${f.dateTo}` : f.dateFrom ? `From ${f.dateFrom}` : `Until ${f.dateTo}`;
+      out.push({ key: 'dates', label, icon: 'calendar', clear: () => { store.filters.dateFrom = ''; store.setFilter('dateTo', ''); } });
+    }
+    if (f.cam) out.push({ key: 'cam', label: f.cam, icon: 'camera', clear: set('cam', '') });
+    if (f.lens) out.push({ key: 'lens', label: f.lens, icon: 'aperture', clear: set('lens', '') });
+    if (f.gps === 1 && !onMap) out.push({ key: 'gps', label: 'With GPS', icon: 'pin', clear: set('gps', null) });
+    if (f.gps === 0) out.push({ key: 'gps', label: 'Without GPS', icon: 'pin', clear: set('gps', null) });
+    if (f.kw) out.push({ key: 'kw', label: f.kw.split('|').pop() ?? f.kw, icon: 'tag', clear: set('kw', '') });
+    if (f.onlyRejected) out.push({ key: 'rej', label: 'Rejected only', icon: 'reject', clear: () => { store.filters.showRejected = false; store.setFilter('onlyRejected', false); } });
+    if (f.ppl) out.push({ key: 'ppl', label: f.ppl === '0' ? 'No people' : `${f.ppl.replace('-', '–').replace(/–$/, '+')} ${f.ppl === '1' ? 'person' : 'people'}`, icon: 'users', clear: set('ppl', '') });
+    if (f.shot) out.push({ key: 'shot', label: f.shot === 'portrait' ? 'Portraits' : 'Groups', icon: 'user', clear: set('shot', '') });
+    if (f.eyes) out.push({ key: 'eyes', label: f.eyes === 'closed' ? 'Eyes closed' : 'Eyes open', icon: f.eyes === 'closed' ? 'eye-closed' : 'eye', clear: set('eyes', '') });
+    for (const k of f.issue ?? []) {
+      const is = ISSUES.find((x) => x.key === k);
+      out.push({ key: 'issue-' + k, label: is?.label ?? k, icon: is?.icon ?? 'focus', tone: k, clear: () => store.setFilter('issue', (f.issue ?? []).filter((x) => x !== k)) });
+    }
+    if (f.weak) out.push({ key: 'weak', label: 'Weaker frames', icon: 'stack', clear: set('weak', false) });
+    return out;
+  });
 
   /** A name describing the view, as a starting point. */
   function suggestName(): string {
@@ -92,10 +127,6 @@
     if (!name) return;
     close();
     await store.saveCollection(name, !asNew && coll && typeof coll.id === 'number' ? coll.id : undefined);
-  }
-
-  function setDate(k: 'dateFrom' | 'dateTo', v: string) {
-    store.setFilter(k, v);
   }
 
   const baseSorts: [SortKey, string][] = [
@@ -280,6 +311,19 @@
     </div>
   {/if}
 
+  {#if fchips.length}
+    <div class="fchips" aria-label="Filters in effect">
+      {#each fchips as c (c.key)}
+        <span class="fchip" data-tone={c.tone}>
+          <Icon name={c.icon} size={12} />
+          <span class="ellipsis">{c.label}</span>
+          <button onclick={c.clear} aria-label={`Remove the filter: ${c.label}`} title="Remove"><Icon name="x" size={11} stroke={2.4} /></button>
+        </span>
+      {/each}
+      {#if fchips.length > 1}<button class="clear-all" onclick={clearFilters}>Clear all</button>{/if}
+    </div>
+  {/if}
+
   {#if noteOpen && album}
     <form class="notebox" onsubmit={(e) => { e.preventDefault(); noteOpen = false; if (album) albums.setNote(album, noteText); }}>
       <!-- svelte-ignore a11y_autofocus -->
@@ -312,107 +356,15 @@
       </button>
     {/if}
 
-    <Popover bind:open={filterOpen} align="right" width="19rem">
+    <Popover bind:open={filterOpen} align="right" width="25rem" flush sheet label="Filters">
       {#snippet trigger(toggle, open)}
-        <button class="btn sm" class:on={open || activeFilters > 0} onclick={() => { toggle(); loadFacets(); }}>
+        <button class="btn sm" class:on={open || activeFilters > 0} onclick={toggle} title="Filter the photos shown" aria-haspopup="dialog" aria-expanded={open}>
           <Icon name="filter" />{#if !store.mobile}<span class="t">Filter</span>{/if}
           {#if activeFilters > 0}<span class="badge">{activeFilters}</span>{/if}
         </button>
       {/snippet}
-      {#snippet children()}
-        <div class="filters">
-          <div class="fl">Rating</div>
-          <div class="stars">
-            {#each [0, 1, 2, 3, 4, 5] as r}
-              <button class="btn sm" class:on={!f.unrated && f.rmin === r} onclick={() => { store.filters.unrated = false; store.setFilter('rmin', r); }}>
-                {r === 0 ? 'Any' : `≥ ${r}★`}
-              </button>
-            {/each}
-            <button class="btn sm" class:on={f.unrated} onclick={() => { store.filters.rmin = 0; store.setFilter('unrated', !f.unrated); }}>Unrated</button>
-          </div>
-          <div class="fl">Label</div>
-          <div class="row wrap">
-            {#each LABELS as l}
-              <button class="lbl" class:on={f.lc.includes(l.color)} onclick={() => toggleLabel(l.color)} title={l.name}>
-                <span class="label-dot label-{l.color}"></span>
-              </button>
-            {/each}
-            <button class="btn sm" class:on={f.lc.includes('none')} onclick={() => toggleLabel('none')}>None</button>
-          </div>
-          <div class="fl">Flag</div>
-          <div class="seg small" use:segmented>
-            <button class:on={f.pick == null} onclick={() => store.setFilter('pick', null)}>All</button>
-            <button class:on={f.pick === 1} onclick={() => store.setFilter('pick', 1)}>Picks</button>
-            <button class:on={f.pick === 0} onclick={() => store.setFilter('pick', 0)}>Unflagged</button>
-          </div>
-          <div class="fl">File type</div>
-          <div class="seg small" use:segmented>
-            <button class:on={!f.kinds.length} onclick={() => store.setFilter('kinds', [])}>All</button>
-            <button class:on={f.kinds.length === 1 && f.kinds[0] === 1} onclick={() => store.setFilter('kinds', [1])}>RAW</button>
-            <button class:on={f.kinds.length === 1 && f.kinds[0] === 2} onclick={() => store.setFilter('kinds', [2])}>JPEG</button>
-            <button class:on={f.kinds.length === 1 && f.kinds[0] === 5} onclick={() => store.setFilter('kinds', [5])}>HEIC</button>
-            <button class:on={f.kinds.length > 1} onclick={() => store.setFilter('kinds', [3, 4])}>Other</button>
-          </div>
-          <div class="fl">Capture date</div>
-          <div class="dates">
-            <input class="field" type="date" value={f.dateFrom} max={f.dateTo || undefined} onchange={(e) => setDate('dateFrom', (e.target as HTMLInputElement).value)} aria-label="From" />
-            <span class="dim">to</span>
-            <input class="field" type="date" value={f.dateTo} min={f.dateFrom || undefined} onchange={(e) => setDate('dateTo', (e.target as HTMLInputElement).value)} aria-label="To" />
-          </div>
-          {#if !onMap}
-            <div class="fl">Location</div>
-            <div class="seg small" use:segmented>
-              <button class:on={f.gps == null} onclick={() => store.setFilter('gps', null)}>All</button>
-              <button class:on={f.gps === 1} onclick={() => store.setFilter('gps', 1)}>With GPS</button>
-              <button class:on={f.gps === 0} onclick={() => store.setFilter('gps', 0)}>Without</button>
-            </div>
-          {/if}
-          <div class="fl">Camera & lens</div>
-          <select class="field" value={f.cam} onchange={(e) => store.setFilter('cam', (e.target as HTMLSelectElement).value)}>
-            <option value="">All cameras</option>
-            {#each facets?.cameras ?? [] as [name, n]}<option value={name}>{name} ({n})</option>{/each}
-          </select>
-          <select class="field" value={f.lens} onchange={(e) => store.setFilter('lens', (e.target as HTMLSelectElement).value)}>
-            <option value="">All lenses</option>
-            {#each facets?.lenses ?? [] as [name, n]}<option value={name}>{name} ({n})</option>{/each}
-          </select>
-          {#if f.kw}
-            <div class="fl">Keyword</div>
-            <span class="chip">{f.kw}<button onclick={() => store.setFilter('kw', '')} aria-label="Remove"><Icon name="x" size={12} /></button></span>
-          {/if}
-          <div class="fl">People</div>
-          <div class="seg small" use:segmented>
-            {#each [['', 'Any'], ['0', 'None'], ['1', '1'], ['2', '2'], ['3-5', '3–5'], ['6-', '6+']] as [v, label] (v)}
-              <button class:on={(f.ppl ?? '') === v} onclick={() => store.setFilter('ppl', v)}>{label}</button>
-            {/each}
-          </div>
-          <div class="seg small" use:segmented>
-            <button class:on={!f.shot} onclick={() => store.setFilter('shot', '')}>Any shot</button>
-            <button class:on={f.shot === 'portrait'} onclick={() => store.setFilter('shot', 'portrait')} title="One person, close">Portraits</button>
-            <button class:on={f.shot === 'group'} onclick={() => store.setFilter('shot', 'group')} title="Three people or more">Groups</button>
-          </div>
-          <div class="seg small" use:segmented>
-            <button class:on={!f.eyes} onclick={() => store.setFilter('eyes', '')}>Any eyes</button>
-            <button class:on={f.eyes === 'open'} onclick={() => store.setFilter('eyes', 'open')} title="Every face looked at has its eyes open">Eyes open</button>
-            <button class:on={f.eyes === 'closed'} onclick={() => store.setFilter('eyes', 'closed')} title="Someone's eyes are closed">Eyes closed</button>
-          </div>
-          <div class="fl">Possible rejects <span class="dim hint">any of</span></div>
-          <div class="row wrap">
-            {#each ISSUES as is (is.key)}
-              <button class="btn sm issue-chip {is.key}" class:on={(f.issue ?? []).includes(is.key)} onclick={() => toggleIssue(is.key)} title={is.hint}><Icon name={is.icon} size={13} />{is.label}</button>
-            {/each}
-            <button class="btn sm issue-chip weak" class:on={!!f.weak} onclick={() => store.setFilter('weak', !f.weak)} title="Every frame of a series but its best (the one you rated or picked, else open eyes and the sharpest)"><Icon name="stack" size={13} />Weaker frames</button>
-          </div>
-          <div class="fl">Rejected photos</div>
-          <div class="seg small" use:segmented>
-            <button class:on={!f.showRejected && !f.onlyRejected} onclick={() => { store.filters.onlyRejected = false; store.setFilter('showRejected', false); }}>Hide</button>
-            <button class:on={f.showRejected && !f.onlyRejected} onclick={() => { store.filters.onlyRejected = false; store.setFilter('showRejected', true); }}>Show</button>
-            <button class:on={f.onlyRejected} onclick={() => { store.filters.showRejected = true; store.setFilter('onlyRejected', true); }}>Only</button>
-          </div>
-          <div class="foot">
-            <button class="btn sm ghost" onclick={clearFilters} disabled={activeFilters === 0}>Reset filters</button>
-          </div>
-        </div>
+      {#snippet children(close)}
+        <FilterPanel {onMap} {count} {close} />
       {/snippet}
     </Popover>
 
@@ -654,10 +606,89 @@
   .cullbar .grow {
     flex: 1;
   }
-  .fl .hint {
-    font-weight: 450;
-    text-transform: none;
-    letter-spacing: 0;
+  /* The filters in effect, one chip each. */
+  .fchips {
+    order: 11;
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.3125rem;
+    margin: -0.125rem 0 0.0625rem;
+    animation: cullbar-in var(--dur-slow) var(--ease-out);
+  }
+  :global(.mobile) .fchips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin-right: -0.5rem;
+    padding-right: 0.5rem;
+  }
+  :global(.mobile) .fchips > * {
+    flex: none;
+  }
+  .fchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    max-width: 16rem;
+    height: 1.5rem;
+    padding: 0 0.25rem 0 0.5rem;
+    border-radius: 99px;
+    background: var(--accent-bg);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+    color: var(--text);
+    font-size: var(--fs-sm);
+    font-weight: 560;
+    animation: chip-in var(--dur) var(--ease-spring);
+  }
+  .fchip :global(svg) {
+    flex: none;
+    color: var(--accent);
+  }
+  .fchip[data-tone='red'] :global(svg:first-child) { color: var(--label-red); }
+  .fchip[data-tone='yellow'] :global(svg:first-child) { color: var(--label-yellow); }
+  .fchip[data-tone='green'] :global(svg:first-child) { color: var(--label-green); }
+  .fchip[data-tone='blue'] :global(svg:first-child) { color: var(--label-blue); }
+  .fchip[data-tone='purple'] :global(svg:first-child) { color: var(--label-purple); }
+  .fchip[data-tone='blur'] :global(svg:first-child) { color: #f59e0b; }
+  .fchip[data-tone='eyes'] :global(svg:first-child) { color: #ff5c61; }
+  .fchip[data-tone='over'] :global(svg:first-child) { color: #fb7a3c; }
+  .fchip[data-tone='under'] :global(svg:first-child) { color: #6b8cff; }
+  .fchip button {
+    display: grid;
+    place-items: center;
+    width: 1.125rem;
+    height: 1.125rem;
+    border: 0;
+    border-radius: 50%;
+    background: none;
+    color: var(--text-3);
+    cursor: pointer;
+    padding: 0;
+  }
+  .fchip button:hover {
+    background: var(--surface-3);
+    color: var(--text);
+  }
+  .fchip button :global(svg) {
+    color: inherit;
+  }
+  .clear-all {
+    border: 0;
+    background: none;
+    color: var(--text-3);
+    font: inherit;
+    font-size: var(--fs-sm);
+    font-weight: 560;
+    cursor: pointer;
+    padding: 0 0.375rem;
+    height: 1.5rem;
+    border-radius: var(--r-sm);
+  }
+  .clear-all:hover {
+    color: var(--text);
+    background: var(--surface-2);
   }
   .crumbs {
     display: flex;
@@ -862,12 +893,6 @@
   .size:active::-webkit-slider-thumb {
     transform: scale(1.2);
   }
-  .filters {
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-    padding: 0.375rem 0.5rem 0.25rem;
-  }
   .fl {
     font-size: var(--fs-xs);
     color: var(--text-3);
@@ -875,57 +900,6 @@
     margin-top: 0.5rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-  }
-  .stars,
-  .wrap {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem;
-  }
-  .lbl {
-    width: 1.75rem;
-    height: 1.75rem;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--border-strong);
-    border-radius: 50%;
-    background: var(--surface);
-    cursor: pointer;
-    transition:
-      transform var(--dur-fast) var(--ease-spring),
-      box-shadow var(--dur);
-  }
-  .lbl:hover {
-    transform: scale(1.08);
-  }
-  .lbl.on {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--accent);
-  }
-  .seg.small > button {
-    height: 1.75rem;
-    font-size: var(--fs-sm);
-    flex: 1;
-  }
-  .seg.small {
-    display: flex;
-  }
-  .filters select {
-    width: 100%;
-    height: 2rem;
-    font-size: var(--fs-sm);
-  }
-  .dates {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-  }
-  .dates .field {
-    flex: 1;
-    min-width: 0;
-    height: 2rem;
-    font-size: var(--fs-sm);
-    padding: 0 0.375rem;
   }
   .modified {
     font-size: var(--fs-sm);
@@ -945,13 +919,6 @@
   .row.end {
     justify-content: flex-end;
     flex-wrap: wrap;
-  }
-  .foot {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 0.375rem;
-    border-top: 1px solid var(--border);
-    padding-top: 0.375rem;
   }
   @media (max-width: 760px) {
     .crumb.current {

@@ -109,21 +109,55 @@ pub fn migrate(c: &Connection) -> Result<()> {
         crate::db::set_meta(c, "cull_version", &VERSION.to_string())?;
     }
     if crate::db::get_meta(c, "cull_rules").and_then(|v| v.parse::<i64>().ok()) != Some(RULES) {
-        rederive(c)?;
+        rederive_default(c)?;
         crate::db::set_meta(c, "cull_rules", &RULES.to_string())?;
     }
     Ok(())
 }
 
-/// Works every stored photo's issues out again from its measurements (as `issues`).
-fn rederive(c: &Connection) -> Result<()> {
+/// The thresholds that make a measurement a possible reject (Settings → Advanced).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Thresholds {
+    pub blurry: f64,
+    pub closed: f64,
+    pub clipped: f64,
+    pub dark: f64,
+}
+
+impl Default for Thresholds {
+    fn default() -> Thresholds {
+        Thresholds { blurry: BLURRY, closed: CLOSED, clipped: CLIPPED_AT, dark: DARK_AT }
+    }
+}
+
+/// The thresholds in effect.
+pub fn thresholds() -> Thresholds {
+    crate::tuning::get().cull_rules()
+}
+
+/// Works every stored photo's issues out again from its measurements (as `issues`),
+/// and the faces with closed eyes from the eye scores kept per face.
+fn rederive_default(c: &Connection) -> Result<()> {
+    rederive(c, &thresholds(), false)
+}
+
+/// `recount_eyes`: the closed-eyes threshold changed, so the faces with closed eyes are
+/// counted again from each face's score.
+pub fn rederive(c: &Connection, t: &Thresholds, recount_eyes: bool) -> Result<()> {
+    if recount_eyes {
+        c.execute(
+            "UPDATE cull SET closed = (SELECT count(*) FROM cull_faces cf WHERE cf.photo_id = cull.photo_id AND cf.closed >= ?1)
+             WHERE closed IS NOT NULL",
+            [t.closed],
+        )?;
+    }
     c.execute(
         "UPDATE cull SET issues =
             (CASE WHEN focus IS NOT NULL AND focus < ?1 THEN ?4 ELSE 0 END)
           | (CASE WHEN closed IS NOT NULL AND closed > 0 THEN ?5 ELSE 0 END)
           | (CASE WHEN over IS NOT NULL AND over >= ?2 THEN ?6 ELSE 0 END)
           | (CASE WHEN under IS NOT NULL AND under >= ?3 THEN ?7 ELSE 0 END)",
-        rusqlite::params![BLURRY, CLIPPED_AT, DARK_AT, ISSUE_BLUR, ISSUE_EYES, ISSUE_CLIPPED, ISSUE_DARK],
+        rusqlite::params![t.blurry, t.clipped, t.dark, ISSUE_BLUR, ISSUE_EYES, ISSUE_CLIPPED, ISSUE_DARK],
     )?;
     Ok(())
 }
@@ -195,17 +229,21 @@ pub fn status_json(state: &AppState) -> Value {
 
 /// The issues of a photo from its measurements.
 pub fn issues(focus: Option<f64>, closed: Option<i64>, over: Option<f64>, under: Option<f64>) -> i64 {
+    issues_with(&thresholds(), focus, closed, over, under)
+}
+
+pub fn issues_with(t: &Thresholds, focus: Option<f64>, closed: Option<i64>, over: Option<f64>, under: Option<f64>) -> i64 {
     let mut i = 0;
-    if focus.is_some_and(|f| f < BLURRY) {
+    if focus.is_some_and(|f| f < t.blurry) {
         i |= ISSUE_BLUR;
     }
     if closed.is_some_and(|n| n > 0) {
         i |= ISSUE_EYES;
     }
-    if over.is_some_and(|o| o >= CLIPPED_AT) {
+    if over.is_some_and(|o| o >= t.clipped) {
         i |= ISSUE_CLIPPED;
     }
-    if under.is_some_and(|u| u >= DARK_AT) {
+    if under.is_some_and(|u| u >= t.dark) {
         i |= ISSUE_DARK;
     }
     i
