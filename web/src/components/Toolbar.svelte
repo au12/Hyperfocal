@@ -154,6 +154,16 @@
     for (let i = 0; i < sk.length; i++) if (sk[i] && sk[i] !== sk[i - 1]) n++;
     return n;
   });
+  /** Reviews the series at the cursor, else the next one after it, else the first. */
+  function reviewSeries() {
+    const sk = store.list.sk;
+    if (!sk) return;
+    const c = store.cursor;
+    let i = sk[c] ? c : -1;
+    if (i < 0) for (let j = c + 1; j < sk.length; j++) if (sk[j]) { i = j; break; }
+    if (i < 0) i = sk.findIndex((k) => !!k);
+    if (i >= 0) cull.review(i);
+  }
   const album = $derived(albums.current);
   const visual = $derived(store.visualShown());
   const sorts = $derived<[SortKey, string][]>([
@@ -291,7 +301,8 @@
       <span class="cb-title" title="Culling"><Icon name="focus" size={14} /><span class="t">Culling</span></span>
       {#if stacks > 0}
         <span class="cb-sep"></span>
-        <button class="btn sm ghost" onclick={cull.expandAll} title="Show every frame of every series"><Icon name="stack" size={13} />Unfold {stacks} {stacks === 1 ? 'series' : 'series'}</button>
+        <button class="btn sm cb-review" onclick={reviewSeries} title={`Go through the series one by one, frames side by side${store.keyHint('review')}`}><Icon name="layers" size={13} />Review {stacks} series</button>
+        <button class="btn sm ghost" onclick={cull.expandAll} title="Show every frame of every series"><Icon name="stack" size={13} /><span class="cb-long">Unfold all</span></button>
         {#if cull.open.size > 0}<button class="btn sm ghost" onclick={cull.collapseAll}>Fold all</button>{/if}
       {/if}
       <span class="cb-sep"></span>
@@ -303,7 +314,7 @@
       <span class="grow"></span>
       {#if measuring && cs}
         <span class="cb-progress" title="Every photo is measured once, in the background (the ones on screen first): sharpness of the subject from the RAW{cs.eyes ? ', closed eyes' : ''} and clipping">
-          <span class="spinner"></span>{cs.done.toLocaleString()} of {cs.total.toLocaleString()} measured
+          <span class="spinner"></span><span class="tnum">{cs.done.toLocaleString()}<span class="dim">/{cs.total.toLocaleString()}</span></span><span class="cb-long">measured</span>
         </span>
       {:else if cs?.phase === 'off'}
         <span class="cb-progress dim" title="HYPERFOCAL_CULL=0 is set">Measurements are off</span>
@@ -467,7 +478,8 @@
   }
   @container toolbar (max-width: 60rem) {
     .cullbar .cb-title .t,
-    .cullbar .cb-label {
+    .cullbar .cb-label,
+    .cullbar .cb-long {
       display: none;
     }
   }
@@ -492,7 +504,9 @@
     flex-basis: 100%;
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
     gap: 0.375rem;
     margin: 0.125rem -0.25rem -0.125rem;
     padding: 0.375rem 0.25rem 0.0625rem;
@@ -603,8 +617,19 @@
     color: var(--text-2);
     font-variant-numeric: tabular-nums;
   }
+  .cullbar::-webkit-scrollbar {
+    display: none;
+  }
+  .cullbar > * {
+    flex: none;
+  }
   .cullbar .grow {
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0.5rem;
+  }
+  .cb-review {
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    color: var(--text);
   }
   /* The filters in effect, one chip each. */
   .fchips {
