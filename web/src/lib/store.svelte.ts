@@ -1592,7 +1592,8 @@ class Store {
   go = (delta: number, keep = false) => {
     const n = this.list.id.length;
     if (!n) return;
-    const i = Math.max(0, Math.min(n - 1, (this.loupe ? this.current : this.cursor) + delta));
+    // Reviewing a series, moves stay within it.
+    const i = cull.clamp(Math.max(0, Math.min(n - 1, (this.loupe ? this.current : this.cursor) + delta)));
     if (this.loupe) {
       if (i !== this.current) {
         this.step(i);
@@ -1882,6 +1883,7 @@ class Store {
     if (idxs.length === L.id.length) return;
     const next = {} as PhotoList;
     for (const c of Object.keys(L) as (keyof PhotoList)[]) (next as any)[c] = idxs.map((i) => (L as any)[c][i]);
+    cull.rekey(next, out);
     const oldCurrent = this.current;
     const oldCursor = this.cursor;
     this.list = next;
@@ -1892,11 +1894,16 @@ class Store {
     this.current = Math.min(Math.max(0, oldCurrent - before(oldCurrent)), Math.max(0, next.id.length - 1));
     this.cursor = Math.min(Math.max(0, oldCursor - before(oldCursor)), Math.max(0, next.id.length - 1));
     if (stepBack && this.current > 0) this.current--;
+    if (cull.focus != null) {
+      this.cursor = cull.clamp(this.cursor);
+      this.current = cull.clamp(this.current);
+    }
     for (const id of gone) this.selected.delete(id);
     if (next.id.length === 0) this.loupe = false;
     this.pruneCompare();
     this.reflow++;
     this.rev++;
+    cull.afterDrop();
   };
 
   /** Shows the photos on screen in a new order (an album rearranged): `order` lists

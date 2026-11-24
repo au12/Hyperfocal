@@ -832,7 +832,7 @@
         style:width={`${t.w}px`}
         style:height={`${t.h}px`}
         onclick={(e) => onClick(i, e)}
-        ondblclick={() => !store.mobile && store.openLoupe(i)}
+        ondblclick={() => !store.mobile && (sk !== 0 && !unfolded ? cull.review(i) : store.openLoupe(i))}
         onpointerdown={(e) => onDown(i, e)}
         oncontextmenu={(e) => store.mobile && e.preventDefault()}
         role="gridcell"
@@ -863,10 +863,10 @@
               <button
                 class="stack-pill"
                 class:open={unfolded}
-                onclick={(e) => { e.stopPropagation(); cull.toggleStack(sk); }}
+                onclick={(e) => { e.stopPropagation(); if (unfolded) cull.toggleStack(sk); else cull.review(i); }}
                 ondblclick={(e) => e.stopPropagation()}
                 onpointerdown={(e) => e.stopPropagation()}
-                title={unfolded ? `Fold the series back to its best frame${store.keyHint('stack')}` : `A series of ${sn}: this is its best frame. Show them all${store.keyHint('stack')}`}
+                title={unfolded ? `Fold the series back to its best frame${store.keyHint('stack')}` : `A series of ${sn}: this is its best frame. Review them side by side${store.keyHint('review')}`}
               >
                 <Icon name="stack" size={12} stroke={2.2} /><span class="tnum">{sn}</span>{#if unfolded && !narrow}<Icon name="chevron-left" size={11} stroke={2.4} />{/if}
               </button>

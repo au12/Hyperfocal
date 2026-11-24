@@ -114,7 +114,7 @@
             <button class="btn sm" onclick={() => cull.showFrame(series.best, series.key)}><Icon name="arrow-up-right" />Go to best</button>
           {/if}
           {#if !ro}
-            <button class="btn sm keep" onclick={() => data && cull.keepBest(data)} title={'Move the other frames to the reject folder (undoable)' + store.keyHint('keepBest')}><Icon name="check" />Keep best</button>
+            <button class="btn sm keep" onclick={() => (cull.focus != null ? cull.keepBestHere() : data && cull.keepBest(data))} title={'Move the other frames to the reject folder (undoable)' + store.keyHint('keepBest')}><Icon name="check" />Keep best</button>
           {/if}
         </div>
       </div>

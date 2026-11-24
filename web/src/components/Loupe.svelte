@@ -84,6 +84,14 @@
   const filmHalf = $derived(Math.max(4, Math.ceil(filmW / (6.25 * remPx) / 2) + 1));
   /** The photo indexes the filmstrip shows (out-of-range ones are spacers), keyed by
    * photo so the strip slides as you move. */
+  /** Reviewing a series, the strip and the counter cover only its frames. */
+  const span = $derived.by(() => {
+    void store.rev;
+    void i;
+    return culling.focus != null ? culling.range() : null;
+  });
+  const lo = $derived(span ? span[0] : 0);
+  const hi = $derived(span ? span[1] : L.id.length);
   const filmSlots = $derived(Array.from({ length: filmHalf * 2 + 1 }, (_, k) => i - filmHalf + k));
   const ev = $derived(store.viewer.evOn ? store.viewer.ev : 0);
   const fitScale = $derived(Math.min(cw / dispW, ch / dispH));
@@ -858,7 +866,7 @@
     <button class="btn ghost icon" onclick={() => store.closeLoupe()} title="Back to grid (G / Esc)"><Icon name="arrow-left" /></button>
     <div class="title">
       <div class="fname ellipsis">{L.n[i] ?? ''}</div>
-      <div class="sub dim tnum">{[`${i + 1} / ${L.id.length}`, exif ? exif.folder || 'Library' : ''].filter(Boolean).join(' · ')}</div>
+      <div class="sub dim tnum">{[span ? `Frame ${i - lo + 1} of ${hi - lo} in the series` : `${i + 1} / ${L.id.length}`, exif ? exif.folder || 'Library' : ''].filter(Boolean).join(' · ')}</div>
     </div>
 
     {#if !store.mobile}
@@ -973,8 +981,8 @@
       {#if inReject}<div class="rejected-banner">In {store.status?.reject_dir ?? '_Rejected'}</div>{/if}
 
       {#if !store.mobile}
-        <button class="nav prev" onclick={() => store.go(-1)} disabled={i === 0} aria-label="Previous"><Icon name="chevron-left" size={28} /></button>
-        <button class="nav next" onclick={() => store.go(1)} disabled={i >= L.id.length - 1} aria-label="Next"><Icon name="chevron" size={28} /></button>
+        <button class="nav prev" onclick={() => store.go(-1)} disabled={i <= lo} aria-label="Previous"><Icon name="chevron-left" size={28} /></button>
+        <button class="nav next" onclick={() => store.go(1)} disabled={i >= hi - 1} aria-label="Next"><Icon name="chevron" size={28} /></button>
       {/if}
     </div>
 
@@ -1017,10 +1025,10 @@
     {#if store.panels.filmstrip && !store.panels.hidden}
       <div class="film" bind:clientWidth={filmW}>
         <!-- The strip slides with each photo; scrubbing, it steps (a slide per photo can't keep up). -->
-        {#each filmSlots as j (j >= 0 && j < L.id.length ? L.id[j] : `g${j}`)}
+        {#each filmSlots as j (j >= lo && j < hi ? L.id[j] : `g${j}`)}
           {@const _r = store.rev}
           <div class="fslot" animate:flip={{ duration: reduced() || store.scrubbing ? 0 : 280 }}>
-            {#if j >= 0 && j < L.id.length}
+            {#if j >= lo && j < hi}
               <button class="fthumb" class:cur={j === i} onclick={() => store.goTo(j)} title={L.n[j]}>
                 <img src={urls.thumb(L.id[j], L.v[j], store.thumbRev[L.id[j]])} alt="" loading="lazy" draggable="false" />
                 {#if L.r[j] > 0 && _r >= 0}<span class="fs">{'★'.repeat(L.r[j])}</span>{/if}

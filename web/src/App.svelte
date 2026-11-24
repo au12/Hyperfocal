@@ -25,6 +25,7 @@
   import BulkBar from './components/BulkBar.svelte';
   import MobileNav from './components/MobileNav.svelte';
   import PeopleView from './components/PeopleView.svelte';
+  import SeriesView from './components/SeriesView.svelte';
   import AlbumPicker from './components/AlbumPicker.svelte';
   import ImmichDialog from './components/ImmichDialog.svelte';
   import PanelEdge from './components/PanelEdge.svelte';
@@ -159,6 +160,28 @@
         default: return false;
       }
     }
+    // Reviewing a series: ←/→ stay within it (store.go), ↑/↓ move to the series before
+    // and after, Esc goes back (from the single view: to the series).
+    if (cull.focus != null) {
+      switch (a) {
+        case 'up': case 'pageUp': cull.step(-1); return true;
+        case 'down': case 'pageDown': cull.step(1); return true;
+        case 'keepBest': cull.keepBestHere(); return true;
+        case 'review': return true;
+        case 'stack':
+          if (inLoupe) store.closeLoupe();
+          cull.leave();
+          return true;
+        case 'escape':
+          if (inLoupe) store.closeLoupe();
+          else cull.leave();
+          return true;
+        case 'selectDown': case 'selectUp': return true;
+        case 'map': case 'people': case 'search':
+          cull.leave();
+          break;
+      }
+    }
     const step = STEPS[a];
     if (e.repeat && inLoupe && step) {
       heldStep = e.code;
@@ -177,7 +200,13 @@
       case 'pageUp': inLoupe ? store.go(-10) : gridCtl.page(-1); break;
       case 'up': if (inLoupe) return false; gridCtl.vertical(-1); break;
       case 'down': if (inLoupe) return false; gridCtl.vertical(1); break;
-      case 'open': if (!inLoupe) store.openLoupe(store.cursor); break;
+      case 'open':
+        if (inLoupe) break;
+        // Enter on a folded series reviews it.
+        if (cull.on() && cull.focus == null && store.list.sk?.[store.cursor] && !cull.open.has(store.list.sk[store.cursor])) cull.review();
+        else store.openLoupe(store.cursor);
+        break;
+      case 'review': cull.review(); break;
       case 'escape':
         // Esc does not leave full screen: on the library page a quick double press does.
         if (inLoupe) store.closeLoupe();
@@ -361,13 +390,17 @@
         {#if store.view === 'people'}
           <PeopleView />
         {:else}
-          <Toolbar />
-          {#if store.view === 'map'}
-            <MapView />
+          {#if cull.focus != null && store.view === 'grid'}
+            <SeriesView />
           {:else}
-            <Grid />
+            <Toolbar />
+            {#if store.view === 'map'}
+              <MapView />
+            {:else}
+              <Grid />
+            {/if}
+            <BulkBar />
           {/if}
-          <BulkBar />
         {/if}
       </section>
       {#if !store.mobile && store.view === 'grid'}

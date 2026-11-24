@@ -16,7 +16,7 @@ export type Action =
   | 'selectFirst' | 'selectLast' | 'selectPageDown' | 'selectPageUp' | 'selectAll' | 'selectNone' | 'selectInvert'
   | 'rotateCcw' | 'rotateCw' | 'rotate180'
   | 'histogram' | 'info' | 'filmstrip' | 'folders' | 'hidePanels' | 'help' | 'search' | 'undo' | 'map' | 'faces' | 'people'
-  | 'cull' | 'stack' | 'closeups' | 'keepBest';
+  | 'cull' | 'stack' | 'closeups' | 'keepBest' | 'review';
 
 type Bindings = Partial<Record<Action, string[]>>;
 export type KeyOverrides = Partial<Record<Action, string[]>>;
@@ -123,7 +123,8 @@ const FRV: Bindings = {
   cull: ['Shift+C'],
   stack: ['Shift+G'],
   closeups: ['V'],
-  keepBest: ['Ctrl+Shift+K'],
+  keepBest: ['Shift+K', 'Ctrl+Shift+K'],
+  review: ['R'],
 };
 
 const LR: Bindings = {
@@ -163,7 +164,7 @@ export const ACTION_LABELS: [string, [Action, string][]][] = [
     ['editTitle', 'Edit title & caption'], ['keywords', 'Add keywords'], ['location', 'Set location on map'],
     ['albumAdd', 'Add to the target album (the last one used)'], ['albumPick', 'Add to an album…'], ['albumRemove', 'Take out of the album shown'],
     ['rotateCcw', 'Rotate left'], ['rotateCw', 'Rotate right'], ['rotate180', 'Rotate 180°'], ['undo', 'Undo last change'],
-    ['cull', 'Culling on / off (stacks, possible rejects)'], ['stack', 'Unfold / fold the series'], ['keepBest', 'Keep the best of the series, reject the others'],
+    ['cull', 'Culling on / off (stacks, possible rejects)'], ['stack', 'Unfold / fold the series'], ['keepBest', 'Keep the best of the series, reject the others'], ['review', 'Review the series frame by frame (←/→ frames, ↑/↓ series, Esc back)'],
   ]],
   ['Selection & search', [
     ['selectToggle', 'Select / deselect'], ['selectNext', 'Select / deselect and next'], ['selectPrev', 'Previous and select / deselect'],
