@@ -8,6 +8,7 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api, ISSUE_BLUR, ISSUE_EYES, ISSUE_OVER, ISSUE_UNDER, type CullIssue, type CullPhoto, type CullStatus } from './api';
 import { store } from './store.svelte';
+import { tuning } from './tuning.svelte';
 
 export interface IssueInfo {
   key: CullIssue;
@@ -29,13 +30,13 @@ export const issueOf = (k: CullIssue) => ISSUES.find((i) => i.key === k)!;
 /** Sharpness 0..1 in words. */
 export function focusWord(f: number | null | undefined): string {
   if (f == null) return 'Not measured';
-  return f >= 0.7 ? 'Sharp' : f >= 0.3 ? 'Soft' : 'Blurry';
+  return f >= tuning.sharp() ? 'Sharp' : f >= tuning.blurry() ? 'Soft' : 'Blurry';
 }
 
 /** A colour class for a sharpness: good, fair, poor. */
 export function focusTone(f: number | null | undefined): 'good' | 'fair' | 'poor' | 'none' {
   if (f == null) return 'none';
-  return f >= 0.7 ? 'good' : f >= 0.3 ? 'fair' : 'poor';
+  return f >= tuning.sharp() ? 'good' : f >= tuning.blurry() ? 'fair' : 'poor';
 }
 
 class Cull {
@@ -161,6 +162,13 @@ class Cull {
       }, 1500);
     }
     this.rev++;
+  };
+
+  /** New advanced settings: series, best frames and badges may all have changed. */
+  onTuning = () => {
+    this.photos.clear();
+    this.rev++;
+    if (this.on()) store.reload(true);
   };
 
   /** Bumped when measurements arrive (the single view asks again). */

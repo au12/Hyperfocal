@@ -237,11 +237,14 @@
             {/each}
           </div>
         {:else if dupes.mode === 'series'}
-          <select class="field" value={String(dupes.gap)} onchange={(e) => { dupes.gap = +(e.target as HTMLSelectElement).value; dupes.load(); }} aria-label="Longest pause within a series">
-            <option value="0">Bursts (same second)</option>
+          <select class="field" value={dupes.gap == null ? '' : String(dupes.gap)} onchange={(e) => { const v = (e.target as HTMLSelectElement).value; dupes.gap = v === '' ? null : +v; dupes.load(); }} aria-label="Longest pause within a series">
+            <option value="">As in culling</option>
+            <option value="0">Same second only</option>
             <option value="2">Up to 2 s apart</option>
-            <option value="5">Up to 5 s apart</option>
-            <option value="15">Up to 15 s apart</option>
+            <option value="10">Up to 10 s apart</option>
+            <option value="30">Up to 30 s apart</option>
+            <option value="60">Up to 1 min apart</option>
+            <option value="300">Up to 5 min apart</option>
           </select>
         {/if}
       </div>

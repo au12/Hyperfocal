@@ -447,6 +447,39 @@ export interface CullPhoto {
   } | null;
 }
 
+/** Advanced settings (Settings → Advanced): the numbers behind series, the best frame,
+ * possible rejects, Find similar, search and duplicates. */
+export interface Tuning {
+  series_burst: number;
+  series_gap: number;
+  series_strictness: number;
+  series_scene: number;
+  series_min: number;
+  series_cameras: boolean;
+  best_eyes_first: boolean;
+  best_tie: number;
+  cull_blurry: number;
+  cull_sharp: number;
+  cull_closed: number;
+  cull_clipped: number;
+  cull_dark: number;
+  like_floor: number;
+  search_floor: number;
+  near_strict: number;
+  near_normal: number;
+  near_loose: number;
+  alike_strict: number;
+  alike_normal: number;
+  alike_loose: number;
+}
+
+export interface SeriesStats {
+  photos: number;
+  series: number;
+  in_series: number;
+  largest: number;
+}
+
 export type DupeMode = 'exact' | 'near' | 'series' | 'visual';
 export type DupeScope = 'library' | 'folder' | 'against';
 export type DupeLevel = 'strict' | 'normal' | 'loose';
@@ -814,6 +847,11 @@ export const api = {
   cullPhoto: (id: number, signal?: AbortSignal) => req<CullPhoto>('GET', `cull/photo/${id}`, undefined, undefined, signal),
   cullStatus: () => req<CullStatus>('GET', 'cull/status'),
   cullMeasure: (ids: number[]) => req<{ ok: boolean }>('POST', 'cull/measure', { ids }),
+  tuning: () => req<{ values: Tuning; defaults: Tuning }>('GET', 'tuning'),
+  setTuning: (patch: Partial<Tuning>) => req<{ values: Tuning; defaults: Tuning }>('PUT', 'tuning', patch),
+  resetTuning: () => req<{ values: Tuning; defaults: Tuning }>('DELETE', 'tuning'),
+  previewSeries: (p: { folder?: number; burst: number; gap: number; strictness: number; scene: number; min: number; cameras: boolean }, signal?: AbortSignal) =>
+    req<{ now: SeriesStats; candidate: SeriesStats; ms: number }>('GET', 'tuning/series', undefined, { ...p, cameras: p.cameras ? 1 : 0 }, signal),
   login: (password: string) => req<{ ok: boolean }>('POST', 'login', { password }),
   logout: () => req<{ ok: boolean }>('POST', 'logout', {}),
 };

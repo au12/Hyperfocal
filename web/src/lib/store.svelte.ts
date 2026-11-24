@@ -29,6 +29,7 @@ import { people } from './people.svelte';
 import { dupes } from './dupes.svelte';
 import { albums, albumKey, albumSpec } from './albums.svelte';
 import { cull } from './cull.svelte';
+import { tuning } from './tuning.svelte';
 import { nav } from './nav.svelte';
 
 export const LABELS: { color: LabelColor; name: string; key: string }[] = [
@@ -559,6 +560,7 @@ class Store {
     this.connectEvents();
     document.addEventListener('visibilitychange', this.onVisibility);
     people.loadStatus();
+    tuning.load();
     await Promise.all([this.loadCollections().catch(() => {}), albums.load()]);
     this.loadTimeline();
     const hash = new URLSearchParams(location.hash.slice(1));
@@ -703,6 +705,9 @@ class Store {
         this.dupesRev++;
       } else if (e.type === 'cull') {
         cull.onEvent(e);
+      } else if (e.type === 'tuning') {
+        tuning.load().then(() => cull.onTuning());
+        this.dupesRev++;
       } else if (e.type === 'ml') {
         const { type, ...m } = e;
         if (this.status) this.status = { ...this.status, ml: m as MlStatus };

@@ -6,8 +6,9 @@ class Dupes {
   mode = $state<DupeMode>('exact');
   scope = $state<DupeScope>('library');
   level = $state<DupeLevel>('normal');
-  /** Series: the longest pause between two frames, seconds. */
-  gap = $state(2);
+  /** Series: the longest pause between two frames, seconds (null: as culling finds them,
+   * Settings → Advanced). */
+  gap = $state<number | null>(null);
   /** The folder of the folder scopes. */
   folder = $state<number | null>(null);
   report = $state.raw<DupeReport | null>(null);
@@ -37,7 +38,7 @@ class Dupes {
           scope: folder == null ? 'library' : this.scope,
           folder,
           level: this.mode === 'near' || this.mode === 'visual' ? this.level : undefined,
-          gap: this.mode === 'series' ? this.gap : undefined,
+          gap: this.mode === 'series' ? (this.gap ?? undefined) : undefined,
         },
         ctl.signal,
       );

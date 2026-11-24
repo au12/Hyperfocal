@@ -28,9 +28,9 @@ pub struct ReportQuery {
     folder: Option<i64>,
     /// Near-duplicates: strict, normal (default), loose.
     level: Option<String>,
-    /// Series: longest pause, seconds (default 2).
+    /// Series: longest pause, seconds (default: Settings → Advanced).
     gap: Option<i64>,
-    /// Series: fewest frames (default 2).
+    /// Series: fewest frames (default: Settings → Advanced).
     min: Option<usize>,
     limit: Option<usize>,
 }

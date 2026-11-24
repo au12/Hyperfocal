@@ -1,4 +1,11 @@
+<script lang="ts" module>
+  export type SettingsSection = 'general' | 'culling' | 'viewer' | 'offline' | 'advanced' | 'library';
+  /** The section shown, kept while the dialog is closed (or set to open on one). */
+  export const settingsNav = $state({ section: 'general' as SettingsSection });
+</script>
+
 <script lang="ts">
+  import AdvancedSettings from './AdvancedSettings.svelte';
   import { store, applyTheme } from '../lib/store.svelte';
   import { api } from '../lib/api';
   import { offlineSupported, setOffline, clearOffline, offlineUsage } from '../lib/offline';
@@ -48,6 +55,30 @@
 
   const st = $derived(store.status);
 
+  const sections: { id: SettingsSection; label: string; icon: string }[] = [
+    { id: 'general', label: 'General', icon: 'sliders' },
+    { id: 'culling', label: 'Culling', icon: 'layers' },
+    { id: 'viewer', label: 'Viewer', icon: 'eye' },
+    { id: 'offline', label: 'Offline', icon: 'download' },
+    { id: 'advanced', label: 'Advanced', icon: 'gauge' },
+    { id: 'library', label: 'Library', icon: 'info' },
+  ];
+  let bodyEl = $state<HTMLElement | null>(null);
+  function go(id: SettingsSection) {
+    settingsNav.section = id;
+    bodyEl?.scrollTo({ top: 0 });
+  }
+  function navKey(e: KeyboardEvent) {
+    const i = sections.findIndex((x) => x.id === settingsNav.section);
+    const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const n = sections[(i + step + sections.length) % sections.length];
+    go(n.id);
+    (document.getElementById(`set-tab-${n.id}`) as HTMLElement | null)?.focus();
+  }
+  const sec = $derived(settingsNav.section);
+
   const fmtMin = (m: number) => (m < 2 ? `${Math.round(m * 60)} s` : `${Math.round(m)} min`);
 
   /** What the AI engine does: its features, where it runs, and the space its models take. */
@@ -61,13 +92,20 @@
 </script>
 
 <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (store.dialog = null)}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-label="Settings">
+  <div class="dialog settings" role="dialog" aria-modal="true" aria-label="Settings">
     <header>
       <Icon name="settings" />
       <h2>Settings</h2>
       <button class="btn ghost icon" onclick={() => (store.dialog = null)} aria-label="Close"><Icon name="x" /></button>
     </header>
-    <div class="body">
+    <div class="split">
+    <div class="snav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+      {#each sections as x (x.id)}
+        <button id={`set-tab-${x.id}`} role="tab" aria-selected={sec === x.id} aria-controls="set-panel" tabindex={sec === x.id ? 0 : -1} class:on={sec === x.id} onclick={() => go(x.id)} onkeydown={navKey}><Icon name={x.icon} size={15} /><span>{x.label}</span></button>
+      {/each}
+    </div>
+    <div class="body" id="set-panel" role="tabpanel" aria-labelledby={`set-tab-${sec}`} bind:this={bodyEl}>
+      {#if sec === 'general'}
       <h3>Appearance</h3>
       <div class="opt">
         <span>Theme</span>
@@ -79,8 +117,8 @@
       </div>
       <label class="opt"><span>Show file names on thumbnails</span><span class="switch"><input type="checkbox" checked={s.showNames} onchange={(e) => set('showNames', (e.target as HTMLInputElement).checked)} /><span></span></span></label>
       <label class="opt"><span>Neutral gray background in the single view</span><span class="switch"><input type="checkbox" checked={s.bgGray} onchange={(e) => set('bgGray', (e.target as HTMLInputElement).checked)} /><span></span></span></label>
-
-      <h3>Culling</h3>
+      {:else if sec === 'culling'}
+      <h3>Shortcuts</h3>
       <div class="opt">
         <span>Keyboard shortcuts</span>
         <div class="seg">
@@ -92,6 +130,15 @@
         <span>Your own shortcuts{#if Object.keys(store.keyOverrides()).length}{` (${Object.keys(store.keyOverrides()).length} changed)`}{/if}</span>
         <button class="btn sm" onclick={() => (store.dialog = 'help')}><Icon name="keyboard" />Customize…</button>
       </div>
+      <h3>Moving on</h3>
+      <label class="opt"><span>Next photo after rating or labelling</span><span class="switch"><input type="checkbox" checked={s.advanceAfterRate} onchange={(e) => set('advanceAfterRate', (e.target as HTMLInputElement).checked)} /><span></span></span></label>
+      <label class="opt"><span>Show the next photo after a reject</span><span class="switch"><input type="checkbox" checked={s.advanceAfterReject} onchange={(e) => set('advanceAfterReject', (e.target as HTMLInputElement).checked)} /><span></span></span></label>
+      <div class="opt">
+        <span>Series, best frames and possible rejects</span>
+        <button class="btn sm" onclick={() => go('advanced')}><Icon name="gauge" />Fine-tune…</button>
+      </div>
+      {:else if sec === 'viewer'}
+      <h3>Opening photos</h3>
       <div class="opt">
         <span>Single view opens as</span>
         <div class="seg">
@@ -99,8 +146,6 @@
           <button class:on={s.defaultSource === 'raw'} onclick={() => { set('defaultSource', 'raw'); store.setViewer('source', 'raw'); }}>RAW</button>
         </div>
       </div>
-      <label class="opt"><span>Next photo after rating or labelling</span><span class="switch"><input type="checkbox" checked={s.advanceAfterRate} onchange={(e) => set('advanceAfterRate', (e.target as HTMLInputElement).checked)} /><span></span></span></label>
-      <label class="opt"><span>Show the next photo after a reject</span><span class="switch"><input type="checkbox" checked={s.advanceAfterReject} onchange={(e) => set('advanceAfterReject', (e.target as HTMLInputElement).checked)} /><span></span></span></label>
       <label class="opt"><span>Photos to prefetch ahead</span>
         <select class="field small" value={s.prefetch} onchange={(e) => set('prefetch', +(e.target as HTMLSelectElement).value)}>
           {#each [0, 1, 2, 3, 4, 6, 8] as n}<option value={n}>{n}</option>{/each}
@@ -142,7 +187,7 @@
       </div>
       <p class="note dim">Zoomed in to 75% or more, the RAW view shows the full sensor resolution, demosaiced (RCD) tile by tile: on this device's graphics chip (more data over the network, instant tone changes) or on the server (smaller JPEG tiles). Auto uses the graphics chip on computers and the server on phones and tablets.</p>
       <p class="note dim">Per channel, as in FastRawViewer. Overexposed: cyan = red clipped, magenta = green, yellow = blue, black = all channels. Underexposed: red, green or blue for that channel, mixed when several are (magenta = red and blue), white = all. In RAW view both are measured on the raw data, before white balance: clipped within 0.05 EV of the sensor's saturation, underexposed 7.7 EV below it. Sharpening levels 1 and 2 use a 1 and 2 pixel radius.</p>
-
+      {:else if sec === 'offline'}
       <h3>Offline</h3>
       {#if offlineSupported}
         <label class="opt"><span>Keep thumbnails, previews and folder lists for offline use</span><span class="switch"><input type="checkbox" checked={s.offlineCache} onchange={(e) => toggleOffline((e.target as HTMLInputElement).checked)} /><span></span></span></label>
@@ -154,7 +199,9 @@
       {:else}
         <p class="note dim">Offline copies need a secure connection: open Hyperfocal over HTTPS (for example through your reverse proxy) to keep thumbnails and previews for offline use.</p>
       {/if}
-
+      {:else if sec === 'advanced'}
+      <AdvancedSettings />
+      {:else}
       <h3>Library</h3>
       {#if st}
         <dl>
@@ -190,11 +237,67 @@
         <button class="btn" onclick={rescan} disabled={rescanning}><Icon name="refresh" /> Re-scan library</button>
         {#if st?.auth}<button class="btn" onclick={logout}><Icon name="logout" /> Sign out</button>{/if}
       </div>
+      {/if}
+    </div>
     </div>
   </div>
 </div>
 
 <style>
+  .dialog.settings {
+    width: min(52rem, 100%);
+    height: min(90vh, 44rem);
+  }
+  .split {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .snav {
+    flex: none;
+    width: 11rem;
+    padding: 0.75rem 0.5rem;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    background: var(--surface-2);
+  }
+  .snav button {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    height: 2.125rem;
+    padding: 0 0.625rem;
+    border: 0;
+    border-radius: var(--r);
+    background: none;
+    color: var(--text-2);
+    font: inherit;
+    font-weight: 550;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--dur-fast), color var(--dur-fast);
+  }
+  .snav button:hover:not(.on) {
+    background: var(--sheen);
+    color: var(--text);
+  }
+  .snav button.on {
+    background: var(--accent-bg);
+    color: var(--text);
+  }
+  .snav button.on :global(svg) {
+    color: var(--accent);
+  }
+  .split > .body {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+  }
+  .small {
+    font-size: var(--fs-sm);
+  }
   h3 {
     margin: 1.25rem 0 0.5rem;
     font-size: var(--fs);
@@ -262,6 +365,25 @@
   @media (max-width: 760px) {
     .opt {
       flex-wrap: wrap;
+    }
+    .dialog.settings {
+      height: 100%;
+    }
+    .split {
+      flex-direction: column;
+    }
+    .snav {
+      width: auto;
+      flex-direction: row;
+      overflow-x: auto;
+      padding: 0.5rem;
+      border-right: 0;
+      border-bottom: 1px solid var(--border);
+      scrollbar-width: none;
+    }
+    .snav button {
+      flex: none;
+      gap: 0.375rem;
     }
   }
 </style>
