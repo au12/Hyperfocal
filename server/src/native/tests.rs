@@ -11,6 +11,13 @@ use crate::meta;
 use crate::model::Kind;
 use std::time::Instant;
 
+#[test]
+fn flashraw_version_is_the_locked_one() {
+    let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock")).unwrap();
+    let v = Decoders::detect().flashraw;
+    assert!(lock.contains(&format!("name = \"flashraw\"\nversion = \"{v}\"\n")), "{v}");
+}
+
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
 }

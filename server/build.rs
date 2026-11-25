@@ -1,10 +1,27 @@
 //! Generates the LibRaw bindings (feature `libraw`) from the installed headers, so
-//! struct layouts always match the library the binary links against.
+//! struct layouts always match the library the binary links against; and reads the
+//! FlashRaw version from Cargo.lock, so a Dependabot bump shows in the logs and Settings
+//! without a code change.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=Cargo.lock");
+    let lock = std::fs::read_to_string("Cargo.lock").unwrap_or_default();
+    println!("cargo:rustc-env=HYPERFOCAL_FLASHRAW_VERSION={}", locked_version(&lock, "flashraw").unwrap_or("unknown"));
     #[cfg(feature = "libraw")]
     libraw::generate();
+}
+
+/// The version of package `name` in a Cargo.lock.
+fn locked_version<'a>(lock: &'a str, name: &str) -> Option<&'a str> {
+    let want = format!("name = \"{name}\"");
+    let mut lines = lock.lines();
+    while let Some(l) = lines.next() {
+        if l.trim() == want {
+            return lines.next()?.trim().strip_prefix("version = \"")?.strip_suffix('"');
+        }
+    }
+    None
 }
 
 #[cfg(feature = "libraw")]

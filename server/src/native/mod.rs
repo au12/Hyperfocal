@@ -182,7 +182,7 @@ impl Decoders {
     pub fn detect() -> Decoders {
         let v = versions();
         Decoders {
-            flashraw: "0.3.1",
+            flashraw: env!("HYPERFOCAL_FLASHRAW_VERSION"),
             libraw: v.libraw,
             libheif: v.libheif,
             raw: if prefer_libraw() { "libraw" } else { "flashraw" },
