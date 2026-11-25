@@ -30,6 +30,7 @@
   import ImmichDialog from './components/ImmichDialog.svelte';
   import PanelEdge from './components/PanelEdge.svelte';
   import ContextMenu from './components/ContextMenu.svelte';
+  import DebugBadge from './components/DebugBadge.svelte';
   import { albums } from './lib/albums.svelte';
   import { cull } from './lib/cull.svelte';
 
@@ -455,6 +456,7 @@
   {#if store.dialog === 'duplicates'}<DuplicatesDialog />{/if}
 {/if}
 <ContextMenu />
+{#if store.status?.debug?.enabled && !store.needLogin}<DebugBadge />{/if}
 <Toasts />
 
 <style>

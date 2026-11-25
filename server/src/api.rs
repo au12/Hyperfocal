@@ -144,6 +144,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(crate::immich::routes())
         .merge(crate::cull::api::routes())
         .merge(crate::tuning::routes())
+        .merge(crate::telemetry::api::routes())
         .route("/login", post(login))
         .route("/logout", post(logout))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -239,6 +240,7 @@ async fn status(State(state): St, headers: HeaderMap) -> ApiResult<Json<Value>> 
         "visual": crate::visual::status_json(&state),
         "cull": crate::cull::status_json(&state),
         "ml": state.ml.status(),
+        "debug": crate::telemetry::status_json(),
         "auth": state.cfg.password.is_some(),
         "logged_in": true,
     })))

@@ -30,7 +30,10 @@ pub fn open(path: &Path) -> Result<Pool> {
              PRAGMA cache_size=-32768;
              PRAGMA mmap_size=268435456;
              PRAGMA analysis_limit=2000;",
-        )
+        )?;
+        // Debug mode: every statement's time and full-scan steps.
+        crate::telemetry::sql::install(c);
+        Ok(())
     });
     let pool = r2d2::Pool::builder().max_size(12).build(manager).context("opening database")?;
     let conn = pool.get()?;

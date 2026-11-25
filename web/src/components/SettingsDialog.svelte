@@ -1,11 +1,12 @@
 <script lang="ts" module>
-  export type SettingsSection = 'general' | 'culling' | 'viewer' | 'offline' | 'advanced' | 'library';
+  export type SettingsSection = 'general' | 'culling' | 'viewer' | 'offline' | 'advanced' | 'library' | 'debug';
   /** The section shown, kept while the dialog is closed (or set to open on one). */
   export const settingsNav = $state({ section: 'general' as SettingsSection });
 </script>
 
 <script lang="ts">
   import AdvancedSettings from './AdvancedSettings.svelte';
+  import DebugPanel from './DebugPanel.svelte';
   import { store, applyTheme } from '../lib/store.svelte';
   import { api } from '../lib/api';
   import { offlineSupported, setOffline, clearOffline, offlineUsage } from '../lib/offline';
@@ -55,14 +56,16 @@
 
   const st = $derived(store.status);
 
-  const sections: { id: SettingsSection; label: string; icon: string }[] = [
+  const sections: { id: SettingsSection; label: string; icon: string }[] = $derived([
     { id: 'general', label: 'General', icon: 'sliders' },
     { id: 'culling', label: 'Culling', icon: 'layers' },
     { id: 'viewer', label: 'Viewer', icon: 'eye' },
     { id: 'offline', label: 'Offline', icon: 'download' },
     { id: 'advanced', label: 'Advanced', icon: 'gauge' },
     { id: 'library', label: 'Library', icon: 'info' },
-  ];
+    // Only while debug mode is on (HYPERFOCAL_DEBUG).
+    ...(store.status?.debug?.enabled ? [{ id: 'debug' as SettingsSection, label: 'Debug', icon: 'bug' }] : []),
+  ]);
   let bodyEl = $state<HTMLElement | null>(null);
   function go(id: SettingsSection) {
     settingsNav.section = id;
@@ -201,6 +204,8 @@
       {/if}
       {:else if sec === 'advanced'}
       <AdvancedSettings />
+      {:else if sec === 'debug' && store.status?.debug?.enabled}
+      <DebugPanel />
       {:else}
       <h3>Library</h3>
       {#if st}

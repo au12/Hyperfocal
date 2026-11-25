@@ -156,6 +156,9 @@ fn hex(h: &Xxh3) -> String {
 /// (scope, hash) of a file: its image data for formats that carry editable metadata,
 /// else all of it. A file whose image data cannot be found is hashed whole.
 pub fn hash_file(path: &Path, pace: &mut Pace) -> io::Result<(i64, String)> {
+    // Debug mode: time per file, including the pacing that keeps array disks unhurried.
+    let mut t = crate::tel_op!("integrity.hash", 10_000);
+    t.detail(|| path.display().to_string());
     let f = File::open(path)?;
     let len = f.metadata()?.len();
     advise(&f, false);
@@ -163,6 +166,10 @@ pub fn hash_file(path: &Path, pace: &mut Pace) -> io::Result<(i64, String)> {
     let mut r = Paced { f, pace };
     let res = hash_open(&mut r, len, want);
     advise(&r.f, true);
+    t.check(&res);
+    if res.is_ok() {
+        crate::tel_count!("integrity.bytes", len);
+    }
     res
 }
 

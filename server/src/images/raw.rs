@@ -395,6 +395,23 @@ pub fn develop_path(path: &Path, wb_mode: WbMode, under_ev: f32) -> Result<Devel
 
 /// As [`develop_path`], also returning the sensor data when `keep` (Bayer sensors).
 pub fn develop_path_keep(path: &Path, wb_mode: WbMode, under_ev: f32, keep: bool) -> Result<(Developed, Option<Bayer>)> {
+    let r = develop_path_keep_inner(path, wb_mode, under_ev, keep);
+    if crate::telemetry::on() {
+        // Debug mode: decoding and developing apart, per decoder.
+        match &r {
+            Ok((d, _)) => {
+                let ms = |v: f32| std::time::Duration::from_micros((v.max(0.0) * 1000.0) as u64);
+                crate::telemetry::record(&format!("raw.decode.{}", d.decoder.to_ascii_lowercase()), ms(d.decode_ms), false);
+                crate::telemetry::record("raw.develop", ms(d.develop_ms), false);
+            }
+            Err(_) if cancel::is_cancelled() => crate::telemetry::count("raw.cancelled", 1),
+            Err(_) => crate::telemetry::count("raw.failed", 1),
+        }
+    }
+    r
+}
+
+fn develop_path_keep_inner(path: &Path, wb_mode: WbMode, under_ev: f32, keep: bool) -> Result<(Developed, Option<Bayer>)> {
     if native::prefer_libraw() {
         return develop_libraw_keep(path, wb_mode, under_ev, keep);
     }
@@ -403,6 +420,8 @@ pub fn develop_path_keep(path: &Path, wb_mode: WbMode, under_ev: f32, keep: bool
         // Stopped, not failed: LibRaw must not start over on a file nobody waits for.
         Err(_) if cancel::is_cancelled() => Err(Cancelled.into()),
         Err(e) if native::LIBRAW => {
+            crate::tel_count!("raw.libraw_fallback");
+            tracing::debug!("FlashRaw could not develop {} ({e}): LibRaw takes over", path.display());
             develop_libraw_keep(path, wb_mode, under_ev, keep).map_err(|e2| anyhow!("FlashRaw: {e}; LibRaw: {e2:#}"))
         }
         Err(e) => Err(anyhow!(e)),

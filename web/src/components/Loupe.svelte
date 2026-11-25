@@ -19,6 +19,7 @@
   import { flip } from 'svelte/animate';
   import { flyImage, segmented, bump, reduced, type Rect } from '../lib/motion';
   import { albums } from '../lib/albums.svelte';
+  import { tel } from '../lib/telemetry';
 
   let stage: HTMLDivElement | undefined = $state();
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -66,6 +67,32 @@
   let imgRect = $state<{ x: number; y: number; w: number; h: number } | null>(null);
   let sheet = $state<null | 'info' | 'tools' | 'rate'>(null);
   let currentBmp: Decoded | null = null;
+
+  // Debug mode: how long after moving to a photo (or settling on it after scrubbing) its
+  // thumbnail and then its own image show. The flags say what has been timed already.
+  let navT = 0;
+  let navThumb = true;
+  let navImage = true;
+  let navSettled = false;
+  function navStart() {
+    if (!tel.on) return;
+    navT = performance.now();
+    navThumb = false;
+    // While scrubbing the image waits on purpose: it is timed from when the view settles.
+    navImage = store.scrubbing;
+    navSettled = false;
+  }
+  function navShown(kind: 'thumb' | 'preview' | 'full' | 'raw') {
+    if (!tel.on) return;
+    const ms = performance.now() - navT;
+    if (kind === 'thumb') {
+      if (!navThumb) tel.time(store.scrubbing ? 'viewer.thumb.scrub' : 'viewer.thumb', ms);
+      navThumb = true;
+    } else if (!navImage) {
+      tel.time(`viewer.${navSettled ? 'settle' : 'show'}.${kind}`, ms);
+      navImage = true;
+    }
+  }
 
   const L = $derived(store.list);
   const i = $derived(store.current);
@@ -159,6 +186,7 @@
     shownUrl = d.url;
     shownKind = kind;
     shownId = id;
+    navShown(kind);
     if (kind !== 'thumb') loadError = '';
     if (store.panels.histogram && !useRaw) computeJpegHist(d);
     requestDraw();
@@ -606,12 +634,14 @@
         fit = true;
         rawInfo = null;
         loadError = '';
+        navStart();
       });
     }
   });
 
   // Reload when the photo, the source or any server-side render parameter changes, and
   // when scrubbing starts or stops.
+  let wasScrubbing = false;
   $effect(() => {
     void id;
     void store.viewer.source;
@@ -622,7 +652,16 @@
     void ch;
     void store.rev;
     void store.scrubbing;
-    untrack(() => load());
+    untrack(() => {
+      // Settled after scrubbing with only the thumbnail up: the image is timed from now.
+      if (wasScrubbing && !store.scrubbing && tel.on && shownKind === 'thumb') {
+        navT = performance.now();
+        navImage = false;
+        navSettled = true;
+      }
+      wasScrubbing = store.scrubbing;
+      load();
+    });
   });
 
   // Higher resolution when zooming in.

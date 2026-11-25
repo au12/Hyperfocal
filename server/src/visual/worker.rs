@@ -284,6 +284,17 @@ fn worker(state: &Arc<AppState>) {
 /// Embeds a batch: thumbnails to the AI engine, embeddings to the index. Returns how
 /// many were stored; an error when the engine failed (try again later).
 fn embed_batch(state: &AppState, client: &Client, batch: &[PhotoRec]) -> Result<usize> {
+    let mut t = crate::tel_op!("visual.batch", 10_000);
+    t.detail(|| format!("{} photos", batch.len()));
+    let r = embed_batch_inner(state, client, batch);
+    t.check(&r);
+    if let Ok(n) = &r {
+        crate::tel_count!("visual.embedded", *n);
+    }
+    r
+}
+
+fn embed_batch_inner(state: &AppState, client: &Client, batch: &[PhotoRec]) -> Result<usize> {
     let mut recs = Vec::with_capacity(batch.len());
     let mut images = Vec::with_capacity(batch.len());
     for r in batch {

@@ -1017,6 +1017,7 @@ dependencies = [
  "futures-util",
  "half",
  "hmac",
+ "http-body",
  "image",
  "kamadak-exif",
  "libc",

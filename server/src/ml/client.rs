@@ -74,6 +74,19 @@ pub struct Analysis {
     pub faces: Vec<Face>,
     #[serde(default)]
     pub animals: Vec<Animal>,
+    /// How long each step took in the engine (decode, face_detect...), ms.
+    #[serde(default)]
+    pub ms: std::collections::HashMap<String, f64>,
+}
+
+/// Debug mode: the time of a request to the engine, and its bytes.
+fn timer(path: &str, bytes: usize) -> crate::telemetry::Timer {
+    if !crate::telemetry::on() {
+        return crate::telemetry::Timer::OFF;
+    }
+    let name = format!("ml{}", path.trim_start_matches("/v1").replace('/', "."));
+    crate::telemetry::count(&format!("{name}.bytes"), bytes as u64);
+    crate::telemetry::Timer::named(&name, 5000)
 }
 
 /// The HTTP agent for the engine (connections are reused between requests).
@@ -144,6 +157,19 @@ impl Client {
 
     /// Faces and animals in an upright JPEG.
     pub fn analyze(&self, jpeg: &[u8]) -> std::result::Result<Analysis, MlError> {
+        let mut t = timer("/v1/analyze", jpeg.len());
+        let r = self.analyze_inner(jpeg);
+        t.check(&r);
+        if let (Ok(a), true) = (&r, t.is_on()) {
+            // The engine's own steps: where its time goes (and how long it queued, as the rest).
+            for (step, ms) in &a.ms {
+                crate::telemetry::record(&format!("ml.engine.{step}"), std::time::Duration::from_micros((ms.max(0.0) * 1000.0) as u64), false);
+            }
+        }
+        r
+    }
+
+    fn analyze_inner(&self, jpeg: &[u8]) -> std::result::Result<Analysis, MlError> {
         let d = self.dest(true)?;
         let mut r = Self::auth(&d, self.agent.post(&format!("{}/v1/analyze", d.base)))
             .content_type("image/jpeg")
@@ -217,6 +243,13 @@ impl Client {
     }
 
     fn post_json(&self, path: &str, ctype: &str, body: &[u8]) -> std::result::Result<serde_json::Value, MlError> {
+        let mut t = timer(path, body.len());
+        let r = self.post_json_inner(path, ctype, body);
+        t.check(&r);
+        r
+    }
+
+    fn post_json_inner(&self, path: &str, ctype: &str, body: &[u8]) -> std::result::Result<serde_json::Value, MlError> {
         let d = self.dest(true)?;
         let mut r = Self::auth(&d, self.agent.post(&format!("{}{path}", d.base)))
             .content_type(ctype)
@@ -234,6 +267,13 @@ impl Client {
     }
 
     fn post_for_embs(&self, path: &str, ctype: &str, body: &[u8], dim: usize) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {
+        let mut t = timer(path, body.len());
+        let r = self.post_for_embs_inner(path, ctype, body, dim);
+        t.check(&r);
+        r
+    }
+
+    fn post_for_embs_inner(&self, path: &str, ctype: &str, body: &[u8], dim: usize) -> std::result::Result<Vec<Option<Vec<f32>>>, MlError> {
         let d = self.dest(true)?;
         let mut r = Self::auth(&d, self.agent.post(&format!("{}{path}", d.base)))
             .content_type(ctype)

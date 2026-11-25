@@ -6,6 +6,8 @@
 // running one is aborted, which over HTTP/1.1 also closes its connection, so for small
 // images (thumbnails) `cancelOthers` can leave the running ones to finish.
 
+import { tel } from '../telemetry';
+
 export interface Decoded {
   bmp: ImageBitmap;
   w: number;
@@ -27,6 +29,31 @@ interface Entry {
 
 const aborted = () => new DOMException('Cancelled', 'AbortError');
 
+/** Every cache, for debug mode's count of decoded images held in memory. */
+const caches = new Set<WeakRef<ImageCache>>();
+
+function held(): { n: number; bytes: number } {
+  let n = 0;
+  let bytes = 0;
+  for (const r of caches) {
+    const c = r.deref();
+    if (!c) caches.delete(r);
+    else {
+      const s = c.held();
+      n += s.n;
+      bytes += s.bytes;
+    }
+  }
+  return { n, bytes };
+}
+tel.gauge('bitmaps', () => held().n);
+tel.gauge('bitmaps_mb', () => held().bytes / 1048576);
+
+/** What a URL loads, for timings: raw, preview, jpeg, thumb… */
+function kindOf(url: string): string {
+  return url.match(/\/photo\/\d+\/([a-z]+)/)?.[1] ?? 'other';
+}
+
 export class ImageCache {
   private m = new Map<string, Entry>();
   private tick = 0;
@@ -36,7 +63,22 @@ export class ImageCache {
   constructor(
     private max = 12,
     private slots = Infinity,
-  ) {}
+  ) {
+    caches.add(new WeakRef(this));
+  }
+
+  /** Decoded images held, and their memory (4 bytes a pixel). */
+  held(): { n: number; bytes: number } {
+    let n = 0;
+    let bytes = 0;
+    for (const e of this.m.values()) {
+      if (e.done) {
+        n++;
+        bytes += e.done.w * e.done.h * 4;
+      }
+    }
+    return { n, bytes };
+  }
 
   setMaxTexture(n: number) {
     this.maxTex = n;
@@ -107,7 +149,17 @@ export class ImageCache {
   }
 
   private async load(url: string, entry: Entry): Promise<Decoded> {
+    try {
+      return await this.loadTimed(url, entry);
+    } catch (e) {
+      if (tel.on) tel.count(`img.${(e as Error).name === 'AbortError' ? 'aborted' : 'failed'}.${kindOf(url)}`);
+      throw e;
+    }
+  }
+
+  private async loadTimed(url: string, entry: Entry): Promise<Decoded> {
     const { signal } = entry.ctl;
+    const t0 = performance.now();
     const res = await fetch(url, { signal, priority: entry.low ? 'low' : 'high', credentials: 'same-origin' } as RequestInit);
     if (!res.ok) {
       let msg = res.statusText;
@@ -119,7 +171,14 @@ export class ImageCache {
       throw new Error(msg);
     }
     const blob = await res.blob();
+    const t1 = performance.now();
     let bmp = await createImageBitmap(blob);
+    if (tel.on) {
+      // Debug mode: getting the bytes, then decoding them (off the main thread).
+      const k = kindOf(url);
+      tel.time(`img.fetch.${k}${entry.low ? '.ahead' : ''}`, t1 - t0);
+      tel.time(`img.decode.${k}`, performance.now() - t1);
+    }
     if (bmp.width > this.maxTex || bmp.height > this.maxTex) {
       const s = this.maxTex / Math.max(bmp.width, bmp.height);
       const small = await createImageBitmap(bmp, { resizeWidth: Math.floor(bmp.width * s), resizeHeight: Math.floor(bmp.height * s), resizeQuality: 'high' });

@@ -33,11 +33,15 @@ pub fn check() -> anyhow::Result<()> {
 /// cancelled: a large RAW file on a spinning array disk takes a while to read.
 pub fn read(path: &std::path::Path) -> anyhow::Result<Vec<u8>> {
     use std::io::Read;
+    // Debug mode: how long reading originals takes (array disks spinning up show here).
+    let mut t = crate::tel_op!("raw.read", 1000);
+    t.detail(|| path.display().to_string());
     let mut f = std::fs::File::open(path)?;
     let mut data = Vec::with_capacity(f.metadata().map(|m| m.len() as usize).unwrap_or(0));
     loop {
         check()?;
         if (&mut f).take(4 << 20).read_to_end(&mut data)? == 0 {
+            crate::tel_count!("raw.read_bytes", data.len());
             return Ok(data);
         }
     }

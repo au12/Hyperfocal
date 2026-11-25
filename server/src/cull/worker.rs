@@ -138,12 +138,20 @@ fn needs(c: &Connection, mode: Mode, id: i64) -> Result<Option<PhotoRec>> {
 
 /// Wait while someone is looking at photos or the library is being scanned.
 fn yield_to_others(state: &AppState) {
+    // Debug mode: time spent giving way (a timer that measured nothing is dropped).
+    let mut t = crate::tel_op!("cull.yield", 60_000);
+    let start = Instant::now();
     let mut waited = false;
     loop {
         let scanning = state.progress.read().phase != "idle";
         if !state.images.busy() && !scanning {
             if waited {
                 set_phase(state, "measuring", None);
+            }
+            if start.elapsed() < Duration::from_millis(1) {
+                t.discard();
+            } else {
+                t.detail(|| if waited { "the scan".into() } else { "the viewer".into() });
             }
             break;
         }
@@ -319,6 +327,14 @@ struct Eye {
 /// an error: the AI engine is away (measure it again later). `yields`: a photo of the
 /// pass, not one asked for, so its development gives way to the viewer.
 pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[u8], rec: &PhotoRec, yields: bool) -> Result<bool> {
+    let mut t = crate::tel_op!("cull.photo", 5000);
+    t.detail(|| format!("photo {}", rec.id));
+    let r = one_inner(state, client, mode, lut, rec, yields);
+    t.check(&r);
+    r
+}
+
+fn one_inner(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[u8], rec: &PhotoRec, yields: bool) -> Result<bool> {
     let c = state.db.get()?;
     let Some(loc) = repo::load(&c, rec.id)? else { return Ok(false) };
     if loc.folder_is_reject {
@@ -338,9 +354,19 @@ pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[
             yield_to_others(state);
             continue;
         }
+        let mut t = crate::tel_op!("cull.load", 3000);
+        t.detail(|| src.display().to_string());
         match cancel::scope(&token, || measure::load(&src, kind, loc.rec.orientation as u8, lut)) {
-            Err(_) if token.is_cancelled() => yield_to_others(state),
-            r => break r,
+            Err(_) if token.is_cancelled() => {
+                // The viewer took the cores: measured again at the next quiet moment.
+                t.discard();
+                crate::tel_count!("cull.preempted");
+                yield_to_others(state)
+            }
+            r => {
+                t.check(&r);
+                break r;
+            }
         }
     };
     let image = match image {
@@ -364,6 +390,7 @@ pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[
             let mut closed = 0i64;
             for part in crops.chunks(EYES_BATCH) {
                 let data: Vec<Vec<u8>> = part.iter().map(|p| p.1.clone()).collect();
+                crate::tel_count!("cull.eye_crops", data.len());
                 match client.check_eyes(&data) {
                     Ok(res) => {
                         for ((det, _, at), r) in part.iter().zip(res) {
@@ -432,6 +459,8 @@ pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[
 }
 
 fn save_error(state: &AppState, rec: &PhotoRec, faces_at: i64, err: &str) -> Result<()> {
+    crate::tel_count!("cull.errors");
+    tracing::debug!("cull: photo {} could not be measured: {err}", rec.id);
     let c = state.db.get()?;
     c.execute(
         "INSERT INTO cull(photo_id, size, mtime, orientation, faces_at, at, error, issues) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
