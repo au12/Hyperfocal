@@ -1283,7 +1283,7 @@ pub fn tile_rect(dev: &Developed, tx: usize, ty: usize) -> Result<[usize; 4]> {
     let (fw, fh) = dev.full.map(|(w, h)| (w as usize, h as usize)).ok_or_else(|| anyhow!("this RAW file has no full-resolution view"))?;
     let (x, y) = (tx.saturating_mul(TILE), ty.saturating_mul(TILE));
     if x >= fw || y >= fh {
-        return Err(anyhow!("no such tile"));
+        return Err(crate::api::missing("tile"));
     }
     Ok([x, y, TILE.min(fw - x), TILE.min(fh - y)])
 }

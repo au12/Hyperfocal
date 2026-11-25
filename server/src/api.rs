@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
-use rusqlite::{Connection, ToSql, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, ToSql, params_from_iter};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -32,9 +32,50 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// "No such album / person / folder…": a request for something that is not there (404,
+/// where any other error is the server's: 500).
+#[derive(Debug)]
+pub struct Missing(pub &'static str);
+
+impl std::fmt::Display for Missing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no such {}", self.0)
+    }
+}
+
+impl std::error::Error for Missing {}
+
+pub fn missing(what: &'static str) -> anyhow::Error {
+    anyhow::Error::new(Missing(what))
+}
+
+/// A request the server will not carry out as asked (a name taken, a value out of range,
+/// a photo not ready yet): the client's to change (422).
+#[derive(Debug)]
+pub struct Invalid(pub String);
+
+impl std::fmt::Display for Invalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Invalid {}
+
+pub fn invalid(msg: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(Invalid(msg.into()))
+}
+
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
-        ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+        let status = if e.chain().any(|c| c.is::<Missing>()) {
+            StatusCode::NOT_FOUND
+        } else if e.chain().any(|c| c.is::<Invalid>()) {
+            StatusCode::UNPROCESSABLE_ENTITY
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        ApiError(status, format!("{e:#}"))
     }
 }
 
@@ -326,7 +367,8 @@ fn build_where(c: &Connection, q: &ListQuery, trigram: bool) -> anyhow::Result<(
     let mut a: Vec<Box<dyn ToSql>> = Vec::new();
     let mut folder_is_reject = false;
     if let Some(fid) = q.folder {
-        let (path, is_rej): (String, i64) = c.query_row("SELECT path, is_reject FROM folders WHERE id = ?1", [fid], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let (path, is_rej): (String, i64) =
+            c.query_row("SELECT path, is_reject FROM folders WHERE id = ?1", [fid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?.ok_or_else(|| missing("folder"))?;
         folder_is_reject = is_rej != 0;
         if q.rec.unwrap_or(0) == 1 {
             if !path.is_empty() {

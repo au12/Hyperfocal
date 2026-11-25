@@ -58,7 +58,7 @@ impl Pyramid {
         let (w, h) = self.dims(l);
         let (x, y) = (tx.saturating_mul(TILE), ty.saturating_mul(TILE));
         if x >= w || y >= h {
-            return Err(anyhow!("no such tile"));
+            return Err(crate::api::missing("tile"));
         }
         Ok([x, y, TILE.min(w - x), TILE.min(h - y)])
     }

@@ -300,7 +300,7 @@ pub fn search_text(state: &AppState, q: &str) -> Result<Vec<(i64, f32)>> {
 /// Photos that look like this one, best first (the photo itself first).
 pub fn search_like(state: &AppState, id: i64) -> Result<Vec<(i64, f32)>> {
     let ix = state.visual.index.read();
-    let v = ix.vector(id).ok_or_else(|| anyhow!("this photo has not been looked at for search yet; try again in a while"))?.to_vec();
+    let v = ix.vector(id).ok_or_else(|| crate::api::invalid("this photo has not been looked at for search yet; try again in a while"))?.to_vec();
     Ok(ix.search(&v, crate::tuning::get().like_floor as f32, None, MAX_HITS))
 }
 

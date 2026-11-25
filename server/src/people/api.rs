@@ -158,7 +158,7 @@ async fn list(State(state): St, Query(q): Query<ListQuery>) -> ApiResult<Json<Va
         // asked for (and below it).
         let (scope, scope_args): (String, Vec<String>) = match q.folder {
             Some(fid) => {
-                let path: String = c.query_row("SELECT path FROM folders WHERE id = ?1", [fid], |r| r.get(0)).map_err(|_| anyhow::anyhow!("no such folder"))?;
+                let path: String = c.query_row("SELECT path FROM folders WHERE id = ?1", [fid], |r| r.get(0)).map_err(|_| crate::api::missing("folder"))?;
                 if path.is_empty() {
                     (String::new(), Vec::new())
                 } else {
@@ -586,11 +586,11 @@ async fn assign(State(state): St, Json(b): Json<AssignBody>) -> ApiResult<Json<V
         change(&st, |tx, eng, w| {
             let dets = load_dets(tx, &ids)?;
             if dets.is_empty() {
-                anyhow::bail!("no such detection");
+                return Err(crate::api::missing("detection"));
             }
             let faces = dets.iter().any(|d| d.kind == FACE);
             if faces && dets.iter().any(|d| d.kind != FACE) {
-                anyhow::bail!("faces and animals cannot be one subject");
+                return Err(crate::api::invalid("faces and animals cannot be one subject"));
             }
             let target = match (subject, &name) {
                 (Some(s), _) => s,
@@ -604,9 +604,9 @@ async fn assign(State(state): St, Json(b): Json<AssignBody>) -> ApiResult<Json<V
             let (tkind, tspecies): (i64, i64) = tx
                 .query_row("SELECT kind, species FROM subjects WHERE id = ?1", [target], |r| Ok((r.get(0)?, r.get(1)?)))
                 .optional()?
-                .ok_or_else(|| anyhow::anyhow!("no such person or pet"))?;
+                .ok_or_else(|| crate::api::missing("person or pet"))?;
             if (tkind == PERSON) != faces {
-                anyhow::bail!("{} cannot be given to a {}", if faces { "a face" } else { "an animal" }, if tkind == PERSON { "person" } else { "pet" });
+                return Err(crate::api::invalid(format!("{} cannot be given to a {}", if faces { "a face" } else { "an animal" }, if tkind == PERSON { "person" } else { "pet" })));
             }
             let mut touched = Vec::new();
             let mut released = Vec::new();
@@ -671,7 +671,7 @@ async fn confirm(State(state): St, Json(b): Json<ConfirmBody>) -> ApiResult<Json
                     .prepare("SELECT id FROM detections WHERE subject_id = ?1 AND state = ?2")?
                     .query_map(params![s, AUTO], |r| r.get(0))?
                     .collect::<rusqlite::Result<_>>()?,
-                _ => anyhow::bail!("detections or a subject"),
+                _ => return Err(crate::api::invalid("detections or a subject")),
             };
             let dets = load_dets(tx, &ids)?;
             let mut n = 0;
@@ -937,7 +937,7 @@ async fn update(State(state): St, Path(id): Path<i64>, Json(b): Json<UpdateBody>
             let (kind, old): (i64, Option<String>) = tx
                 .query_row("SELECT kind, name FROM subjects WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
                 .optional()?
-                .ok_or_else(|| anyhow::anyhow!("no such person or pet"))?;
+                .ok_or_else(|| crate::api::missing("person or pet"))?;
             if let Some(name) = &new_name {
                 if let Some(n) = name
                     && let Some(other) = tx
@@ -1045,15 +1045,15 @@ async fn merge(State(state): St, Json(b): Json<MergeBody>) -> ApiResult<Json<Val
             let (kind, into_name): (i64, Option<String>) = tx
                 .query_row("SELECT kind, name FROM subjects WHERE id = ?1", [into], |r| Ok((r.get(0)?, r.get(1)?)))
                 .optional()?
-                .ok_or_else(|| anyhow::anyhow!("no such person or pet"))?;
+                .ok_or_else(|| crate::api::missing("person or pet"))?;
             let mut names: Vec<String> = Vec::new();
             for &f in &from {
                 let (k, n): (i64, Option<String>) = tx
                     .query_row("SELECT kind, name FROM subjects WHERE id = ?1", [f], |r| Ok((r.get(0)?, r.get(1)?)))
                     .optional()?
-                    .ok_or_else(|| anyhow::anyhow!("no such person or pet"))?;
+                    .ok_or_else(|| crate::api::missing("person or pet"))?;
                 if k != kind {
-                    anyhow::bail!("people and pets cannot be merged");
+                    return Err(crate::api::invalid("people and pets cannot be merged"));
                 }
                 if let Some(n) = n {
                     names.push(n);

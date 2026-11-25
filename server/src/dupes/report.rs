@@ -7,7 +7,7 @@
 
 use super::{bursts, mih, phash};
 use crate::model::{Kind, PhotoRec};
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use rusqlite::{Connection, ToSql, params_from_iter};
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -166,7 +166,7 @@ pub(crate) fn subtree(path: &str, args: &mut Vec<Box<dyn ToSql>>) -> String {
 }
 
 pub(crate) fn folder_path(c: &Connection, id: i64) -> Result<String> {
-    c.query_row("SELECT path FROM folders WHERE id = ?1", [id], |r| r.get(0)).map_err(|_| anyhow!("no such folder"))
+    c.query_row("SELECT path FROM folders WHERE id = ?1", [id], |r| r.get(0)).map_err(|_| crate::api::missing("folder"))
 }
 
 /// The photos (as shown) in a folder and below it.

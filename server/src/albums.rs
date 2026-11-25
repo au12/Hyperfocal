@@ -8,7 +8,7 @@
 
 use crate::api::{ApiError, ApiResult, St, bad};
 use crate::state::{AppState, Event};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -122,7 +122,7 @@ fn album_exists(c: &Connection, id: i64) -> Result<bool> {
 }
 
 fn album_name(c: &Connection, id: i64) -> Result<String> {
-    c.query_row("SELECT name FROM albums WHERE id = ?1", [id], |r| r.get(0)).optional()?.ok_or_else(|| anyhow!("no such album"))
+    c.query_row("SELECT name FROM albums WHERE id = ?1", [id], |r| r.get(0)).optional()?.ok_or_else(|| crate::api::missing("album"))
 }
 
 fn touch(c: &Connection, id: i64) -> Result<()> {
@@ -214,7 +214,7 @@ fn add(tx: &Transaction, album: i64, ids: &[i64], before: Option<i64>) -> Result
     }
     let count: i64 = tx.query_row("SELECT count(*) FROM album_photos WHERE album_id = ?1", [album], |r| r.get(0))?;
     if count + todo.len() as i64 > MAX_MEMBERS {
-        bail!("an album holds at most {MAX_MEMBERS} photos");
+        return Err(crate::api::invalid(format!("an album holds at most {MAX_MEMBERS} photos")));
     }
     let before = before.filter(|b| present.contains(b));
     let (lo, hi) = gap_before(tx, album, before, &HashSet::new())?;
@@ -330,7 +330,7 @@ fn album_json(c: &Connection, id: i64) -> Result<Value> {
         }))
     })
     .optional()?
-    .ok_or_else(|| anyhow!("no such album"))
+    .ok_or_else(|| crate::api::missing("album"))
 }
 
 /// Deletes an album (never its photos). Returns what is needed to bring it back.
@@ -365,14 +365,14 @@ fn edit(tx: &Transaction, id: i64, name: Option<&str>, note: Option<Option<&str>
         let n = clean_name(n)?;
         let clash: Option<i64> = tx.query_row("SELECT id FROM albums WHERE name = ?1 COLLATE NOCASE AND id != ?2", params![n, id], |r| r.get(0)).optional()?;
         if clash.is_some() {
-            bail!("there is already an album called “{n}”");
+            return Err(crate::api::invalid(format!("there is already an album called “{n}”")));
         }
         tx.execute("UPDATE albums SET name = ?2 WHERE id = ?1", params![id, n])?;
     }
     if let Some(n) = note {
         let n = n.map(str::trim).filter(|s| !s.is_empty());
         if n.is_some_and(|s| s.chars().count() > 2000) {
-            bail!("a note of at most 2000 characters");
+            return Err(crate::api::invalid(format!("a note of at most 2000 characters")));
         }
         tx.execute("UPDATE albums SET note = ?2 WHERE id = ?1", params![id, n])?;
     }
@@ -380,7 +380,7 @@ fn edit(tx: &Transaction, id: i64, name: Option<&str>, note: Option<Option<&str>
         if let Some(p) = cv {
             let member = tx.query_row("SELECT 1 FROM album_photos WHERE album_id = ?1 AND photo_id = ?2", params![id, p], |_| Ok(())).optional()?.is_some();
             if !member {
-                bail!("the cover must be a photo of the album");
+                return Err(crate::api::invalid(format!("the cover must be a photo of the album")));
             }
         }
         tx.execute("UPDATE albums SET cover = ?2 WHERE id = ?1", params![id, cv])?;
@@ -392,7 +392,7 @@ fn edit(tx: &Transaction, id: i64, name: Option<&str>, note: Option<Option<&str>
 fn clean_name(n: &str) -> Result<String> {
     let n = n.trim();
     if n.is_empty() || n.chars().count() > 120 {
-        bail!("an album needs a name of at most 120 characters");
+        return Err(crate::api::invalid(format!("an album needs a name of at most 120 characters")));
     }
     Ok(n.to_string())
 }
@@ -400,7 +400,7 @@ fn clean_name(n: &str) -> Result<String> {
 fn create(tx: &Transaction, name: &str, note: Option<&str>) -> Result<i64> {
     let name = clean_name(name)?;
     if tx.query_row("SELECT 1 FROM albums WHERE name = ?1 COLLATE NOCASE", [&name], |_| Ok(())).optional()?.is_some() {
-        bail!("there is already an album called “{name}”");
+        return Err(crate::api::invalid(format!("there is already an album called “{name}”")));
     }
     let now = crate::db::now_ms();
     let position: i64 = tx.query_row("SELECT COALESCE(max(position), 0) + 1 FROM albums", [], |r| r.get(0))?;
@@ -498,7 +498,7 @@ pub fn undo_entry(state: &AppState, jid: i64, v: &Value, new_batch: &str, of_bat
     let op = v["op"].as_str().unwrap_or("");
     let mut touched = Vec::new();
     if op != "delete" && op != "create" && !album_exists(&tx, album)? {
-        bail!("the album is gone");
+        return Err(crate::api::missing("album"));
     }
     let inverse = match op {
         "create" => {
@@ -541,7 +541,7 @@ pub fn undo_entry(state: &AppState, jid: i64, v: &Value, new_batch: &str, of_bat
             )?;
             json!({ "op": "edit", "album": album, "before": before })
         }
-        _ => bail!("bad journal entry"),
+        _ => return Err(crate::api::invalid(format!("bad journal entry"))),
     };
     let summary = format!("Undo: {}", tx.query_row("SELECT summary FROM journal WHERE id = ?1", [jid], |r| r.get::<_, Option<String>>(0))?.unwrap_or_default());
     let mut inverse = inverse;
