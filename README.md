@@ -293,7 +293,7 @@ An end-to-end test runs every write path against a scratch library and compares 
 
 ## Screenshots
 
-**Culling.** A portrait session with culling on: each series is one tile until it is unfolded, its best frame is marked, and blurry frames, closed eyes and clipping are flagged. In the single view, `V` lines up the faces of the whole series:
+**Culling.** A Christmas market shoot with culling on: each series is one tile until it is unfolded, its best frame is marked, and blurry frames, closed eyes and clipping are flagged. In the single view, `V` lines up the faces of the whole series:
 
 ![Culling: series as stacks, the best frame and the possible rejects](docs/screenshots/desktop-culling.jpg)
 
@@ -335,7 +335,7 @@ Duplicates: a folder of exports checked against the rest of the library (a mirro
 
 ![Duplicates on a phone](docs/screenshots/mobile-duplicates.jpg)
 
-<sub>The demo library is made of CC0 sample RAW files from [raw.pixls.us](https://raw.pixls.us/); CC0 photos of pets by D Coetzee, iezalel williams, Artem Beliaikin and Mustang Joe (Flickr, found with [Openverse](https://openverse.org/)); and AI-generated portraits of no real person from the [Open and Closed Eyes Dataset](https://huggingface.co/datasets/MichalMlodawski/closed-open-eyes) by Michał Młodawski (ODC-By 1.0), with blinks and blur added for the culling screenshots. Names are invented.</sub>
+<sub>The demo library is made of the author's own landscape and animal photos; CC0 photos of real people by [freestocks.org](https://www.flickr.com/photos/135396164@N05/) (Flickr); CC0 sample RAW files from [raw.pixls.us](https://raw.pixls.us/); and, in the older screenshots, CC0 photos of pets by D Coetzee, iezalel williams, Artem Beliaikin and Mustang Joe (Flickr, found with [Openverse](https://openverse.org/)). No photo is AI-generated, and none was altered for the screenshots: the closed eyes are as shot. The people's names are invented.</sub>
 
 ## Install on Unraid
 
@@ -642,7 +642,7 @@ The GitHub Action in `.github/workflows/docker.yml` runs the tests (including a 
 - [FastRawViewer](https://www.fastrawviewer.com/) and [Excire Foto](https://excire.com/): the workflows this follows
 - People & pets models: [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT), [AuraFace](https://huggingface.co/fal/AuraFace-v1) (Apache-2.0), [RF-DETR](https://github.com/roboflow/rf-detr) (Apache-2.0), [pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base) (Apache-2.0), run with [ONNX Runtime](https://onnxruntime.ai/) (MIT) through [ort](https://ort.pyke.io/) (MIT/Apache-2.0), with preprocessing that follows [OpenCV](https://opencv.org/)'s (Apache-2.0)
 - Eye checks: [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) (Apache-2.0); search by content: [SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-224) (Apache-2.0), with Hugging Face's [tokenizers](https://github.com/huggingface/tokenizers) (Apache-2.0)
-- Photos in the screenshots: [raw.pixls.us](https://raw.pixls.us/) (CC0), CC0 pet photos from Flickr via [Openverse](https://openverse.org/), and AI-generated portraits from the [Open and Closed Eyes Dataset](https://huggingface.co/datasets/MichalMlodawski/closed-open-eyes) (ODC-By 1.0)
+- Photos in the screenshots: the author's own landscapes and animals, CC0 photos of real people by [freestocks.org](https://www.flickr.com/photos/135396164@N05/) (Flickr), [raw.pixls.us](https://raw.pixls.us/) (CC0) and CC0 pet photos from Flickr via [Openverse](https://openverse.org/). None is AI-generated
 
 ## License
 
