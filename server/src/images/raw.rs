@@ -6,6 +6,7 @@
 //! histogram, applies white balance and the camera matrix, and stores linear sRGB as
 //! half floats. Every view mode is then a cheap table lookup on that buffer.
 
+use super::cancel::{self, Cancelled};
 use super::simd;
 use super::tone::f16_bits;
 use crate::native::{self, LibrawRaw};
@@ -386,7 +387,8 @@ pub struct BayerFrame<'a> {
 }
 
 /// Develops a RAW file: FlashRaw in-process, LibRaw (in the helper process) when
-/// FlashRaw cannot read it or `HYPERFOCAL_RAW_DECODER=libraw`.
+/// FlashRaw cannot read it or `HYPERFOCAL_RAW_DECODER=libraw`. Under a cancel token
+/// (`cancel::scope`), it stops soon after the token is cancelled, with [`Cancelled`].
 pub fn develop_path(path: &Path, wb_mode: WbMode, under_ev: f32) -> Result<Developed> {
     Ok(develop_path_keep(path, wb_mode, under_ev, false)?.0)
 }
@@ -396,8 +398,10 @@ pub fn develop_path_keep(path: &Path, wb_mode: WbMode, under_ev: f32, keep: bool
     if native::prefer_libraw() {
         return develop_libraw_keep(path, wb_mode, under_ev, keep);
     }
-    match catch(|| -> Result<(Developed, Option<Bayer>)> { develop_keep(std::fs::read(path)?, wb_mode, under_ev, keep) }) {
+    match catch(|| -> Result<(Developed, Option<Bayer>)> { develop_keep(cancel::read(path)?, wb_mode, under_ev, keep) }) {
         Ok(d) => Ok(d),
+        // Stopped, not failed: LibRaw must not start over on a file nobody waits for.
+        Err(_) if cancel::is_cancelled() => Err(Cancelled.into()),
         Err(e) if native::LIBRAW => {
             develop_libraw_keep(path, wb_mode, under_ev, keep).map_err(|e2| anyhow!("FlashRaw: {e}; LibRaw: {e2:#}"))
         }
@@ -411,10 +415,11 @@ pub fn bayer_path(path: &Path) -> Result<Bayer> {
     let flash = if native::prefer_libraw() {
         Err("LibRaw is preferred".to_string())
     } else {
-        catch(|| -> Result<Option<Bayer>> { Ok(flash_bayer(std::fs::read(path)?, t0)?.ok()) })
+        catch(|| -> Result<Option<Bayer>> { Ok(flash_bayer(cancel::read(path)?, t0)?.ok()) })
     };
     match flash {
         Ok(Some(b)) => Ok(b),
+        _ if cancel::is_cancelled() => Err(Cancelled.into()),
         _ if native::LIBRAW => match native::libraw_raw(path, WbMode::Asshot)? {
             LibrawRaw::Bayer(info, data) => Ok(libraw_bayer(info, data, t0)),
             LibrawRaw::Rgb16(..) => Err(anyhow!("full-resolution views need Bayer sensor data")),
@@ -433,6 +438,7 @@ fn develop_keep(data: Vec<u8>, wb_mode: WbMode, under_ev: f32, keep: bool) -> Re
     let t0 = Instant::now();
     match flash_bayer(data, t0)? {
         Ok(b) => {
+            cancel::check()?;
             let d = b.develop(wb_mode, under_ev, t0)?;
             Ok((d, keep.then_some(b)))
         }
@@ -447,7 +453,7 @@ fn flash_bayer(data: Vec<u8>, t0: Instant) -> Result<std::result::Result<Bayer, 
     let raw = FlashRaw::open(data).map_err(|e| anyhow!("{e}"))?;
     let baseline = raw.metadata().dng.as_ref().and_then(|d| d.baseline_exposure).unwrap_or(0.0) as f32;
     let mut frame = raw
-        .decode(DecodeOptions { output: OutputFormat::RawU16, ..Default::default() })
+        .decode(DecodeOptions { output: OutputFormat::RawU16, cancel: cancel::current(), ..Default::default() })
         .map_err(|e| anyhow!("{e}"))?;
     let decode_ms = t0.elapsed().as_secs_f32() * 1000.0;
 
@@ -548,6 +554,7 @@ fn develop_libraw_keep(path: &Path, wb_mode: WbMode, under_ev: f32, keep: bool) 
     let t0 = Instant::now();
     match native::libraw_raw(path, wb_mode)? {
         LibrawRaw::Bayer(info, data) => {
+            cancel::check()?;
             let b = libraw_bayer(info, data, t0);
             let d = b.develop(wb_mode, under_ev, t0)?;
             Ok((d, keep.then_some(b)))
@@ -1169,10 +1176,12 @@ fn develop_fallback(raw: &FlashRaw, wb_mode: WbMode, under_ev: f32, baseline: f3
         white_balance: wbm,
         highlights: Highlights::Clip,
         preview_fallback: true,
+        cancel: cancel::current(),
         ..Default::default()
     };
     let frame = match raw.decode(opts.clone()) {
         Ok(f) => f,
+        Err(e) if e.is_cancelled() => return Err(Cancelled.into()),
         Err(_) => {
             opts.demosaic = Demosaic::Bilinear;
             raw.decode(opts).map_err(|e| anyhow!("{e}"))?

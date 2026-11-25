@@ -210,6 +210,22 @@ mod process {
     }
 
     #[test]
+    fn stopped_at_once_when_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let hang = script(dir.path(), "hang", "exec sleep 30");
+        let token = cancel::CancelToken::new();
+        let later = token.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            later.cancel();
+        });
+        let t = Instant::now();
+        let e = cancel::scope(&token, || run_with(&hang, vec![], Duration::from_secs(30))).unwrap_err();
+        assert!(e.is::<cancel::Cancelled>(), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    #[test]
     fn unit_tests_never_spawn_themselves() {
         assert!(helper_exe().is_err() || std::env::var_os("HYPERFOCAL_HELPER_EXE").is_some());
     }

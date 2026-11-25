@@ -525,6 +525,10 @@ These numbers are from a 2-vCPU test VM; an Unraid server will be faster.
 | Full-resolution RAW tile (512×512, RCD), on the server | 10 ms |
 | Culling measurements of a RAW file (development, sharpness, clipping), in the background | 0.3–0.4 s |
 | A closed-eyes check, per face (AI engine, CPU) | about 25 ms |
+| RAW view of the next photo, when the view left the one before mid-development | as fast as on an idle server (was 20–55% slower) |
+| First RAW view while culling develops a photo in the background | as fast as on an idle server (was 25–55% slower) |
+
+A RAW development nobody waits for any more is stopped. When the single view moves past a photo before its RAW view is ready, FlashRaw lets go of the cores within a few milliseconds (a few tens for some CR2 and DNG files) instead of finishing a development nobody will see, and the culling pass stops the one it is in the middle of as soon as you open a RAW view (it makes it again later). A photo's render, RAW info and clipping mask share one development, which carries on while any of them still waits. Measured with Canon R6 and R5 CR3, 5D Mark IV CR2 and Pentax K-1 II DNG files.
 
 Thumbnails and previews made in the background are encoded with mozjpeg's trellis quantization (pure Rust): at the same SSIMULACRA2 score as libjpeg-turbo, thumbnails are about 12% smaller and 2048-pixel previews about 7% smaller (up to 26%), measured on real photos. Images made while you wait (a preview opened before it was made, tiles, RAW renders) still use libjpeg-turbo, which encodes about 15 times faster. WebP was measured too and rejected: 4% smaller at best, inconsistent, and 25 times slower to encode.
 

@@ -4,6 +4,7 @@
 
 use super::focus::{self, Gray};
 use super::SUBJECT_MIN_PX;
+use crate::images::cancel;
 use crate::images::jpeg::{self, Rgb};
 use crate::images::raw::{self, WbMode};
 use crate::model::Kind;
@@ -45,6 +46,9 @@ pub fn load(path: &Path, kind: Kind, orientation: u8, lut: &[u8]) -> Result<Imag
                 let img = raw::render(&dev, lut, dev.w.max(dev.h) as usize);
                 return Ok(Image { img: jpeg::orient(img, orientation), over: dev.over[3] as f64, under: dev.under[3] as f64 });
             }
+            // Stopped for the viewer (see worker::one): measured again later, never from
+            // the embedded preview instead.
+            Err(_) if cancel::is_cancelled() => return Err(cancel::Cancelled.into()),
             // Not a sensor this build develops: its embedded preview.
             Err(e) => tracing::debug!("cull: developing {}: {e}", path.display()),
         }

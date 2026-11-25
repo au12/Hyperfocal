@@ -171,15 +171,28 @@
     masks.update(base, url, store.viewer.over || store.viewer.under);
   }
 
+  /** The RAW info request on its way, and what it is for. */
+  let rawInfoReq: { key: string; ctl: AbortController } | null = null;
+
   async function loadRawInfo() {
+    const want = useRaw && store.settings.rawDetail !== 'off';
+    const key = want ? `${id}|${v}|${store.viewer.wb}` : '';
+    if (rawInfoReq?.key === key) return;
+    // One for the photo before is given up: the server then stops developing it.
+    rawInfoReq?.ctl.abort();
+    rawInfoReq = null;
     rawInfo = null;
-    if (!useRaw || store.settings.rawDetail === 'off') return;
+    if (!want) return;
     const pid = id;
+    const req = { key, ctl: new AbortController() };
+    rawInfoReq = req;
     try {
-      const r = await api.rawinfo(pid, v, store.viewer.wb);
+      const r = await api.rawinfo(pid, v, store.viewer.wb, req.ctl.signal);
       if (id === pid) rawInfo = r;
     } catch {
-      /* no full-resolution view for this one */
+      /* no full-resolution view for this one, or given up */
+    } finally {
+      if (rawInfoReq === req) rawInfoReq = null;
     }
   }
 

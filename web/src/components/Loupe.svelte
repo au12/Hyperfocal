@@ -257,8 +257,21 @@
     masks.update(base, url, store.viewer.over || store.viewer.under);
   }
 
+  /** The RAW info request on its way, and what it is for. */
+  let rawInfoReq: { key: string; ctl: AbortController } | null = null;
+
   async function loadRawInfo() {
-    if (id == null) {
+    const pid = id;
+    // Needed for the histogram and for the full-resolution view; not while scrubbing.
+    const want = pid != null && useRaw && (store.panels.histogram || store.settings.rawDetail !== 'off') && !store.scrubbing;
+    const key = want ? `${pid}|${v}|${store.viewer.wb}` : '';
+    // One for a photo the view has left is given up: the server then stops developing
+    // it, unless its image is still wanted (the photo behind is kept ready).
+    if (rawInfoReq && rawInfoReq.key !== key) {
+      rawInfoReq.ctl.abort();
+      rawInfoReq = null;
+    }
+    if (pid == null) {
       rawInfo = null;
       return;
     }
@@ -267,17 +280,20 @@
       if (currentBmp && store.panels.histogram) computeJpegHist(currentBmp);
       return;
     }
-    // Needed for the histogram and for the full-resolution view; not while scrubbing.
-    if ((!store.panels.histogram && store.settings.rawDetail === 'off') || store.scrubbing) {
+    if (!want) {
       rawInfo = null;
       return;
     }
-    const pid = id;
+    if (rawInfoReq) return;
+    const req = { key, ctl: new AbortController() };
+    rawInfoReq = req;
     try {
-      const r = await api.rawinfo(pid, v, store.viewer.wb);
+      const r = await api.rawinfo(pid, v, store.viewer.wb, req.ctl.signal);
       if (id === pid) rawInfo = r;
     } catch {
-      rawInfo = null;
+      if (!req.ctl.signal.aborted) rawInfo = null;
+    } finally {
+      if (rawInfoReq === req) rawInfoReq = null;
     }
   }
 

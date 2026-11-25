@@ -421,7 +421,7 @@ mod tests {
             };
             let st = state.clone();
             let lut = lut.clone();
-            assert!(tokio::task::spawn_blocking(move || super::worker::one(&st, None, mode, &lut, &rec).unwrap()).await.unwrap());
+            assert!(tokio::task::spawn_blocking(move || super::worker::one(&st, None, mode, &lut, &rec, false).unwrap()).await.unwrap());
         }
         let (focus, issues): (Vec<f64>, Vec<i64>) = {
             let c = state.db.get().unwrap();

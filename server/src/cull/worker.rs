@@ -7,6 +7,7 @@
 
 use super::measure::{self, Subject};
 use super::thresholds;
+use crate::images::cancel::{self, CancelToken};
 use crate::images::tone::{self, ToneMode};
 use crate::model::{Kind, PhotoRec};
 use crate::ml::{Client, MlError};
@@ -248,7 +249,7 @@ fn worker(state: &Arc<AppState>) {
                 if !priority {
                     yield_to_others(state);
                 }
-                match one(state, client.as_ref(), mode, &lut, rec) {
+                match one(state, client.as_ref(), mode, &lut, rec, !priority) {
                     Ok(true) => {
                         fresh.push(rec.id);
                         let now = Instant::now();
@@ -315,8 +316,9 @@ struct Eye {
 }
 
 /// Measures a photo and keeps the result. Ok(false): nothing to do (gone, rejected);
-/// an error: the AI engine is away (measure it again later).
-pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[u8], rec: &PhotoRec) -> Result<bool> {
+/// an error: the AI engine is away (measure it again later). `yields`: a photo of the
+/// pass, not one asked for, so its development gives way to the viewer.
+pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[u8], rec: &PhotoRec, yields: bool) -> Result<bool> {
     let c = state.db.get()?;
     let Some(loc) = repo::load(&c, rec.id)? else { return Ok(false) };
     if loc.folder_is_reject {
@@ -327,7 +329,21 @@ pub(super) fn one(state: &AppState, client: Option<&Client>, mode: Mode, lut: &[
     drop(c);
     let src = crate::scan::photo_path(state, &loc.folder_path, &loc.rec.name);
     let kind = Kind::from_i32(loc.rec.kind);
-    let image = match measure::load(&src, kind, loc.rec.orientation as u8, lut) {
+    let image = loop {
+        // The viewer outranks the pass: a development it needs the cores for is stopped
+        // (FlashRaw lets go within milliseconds) and made again at the next quiet moment,
+        // never recorded as an error.
+        let token = if yields { state.images.background_token() } else { CancelToken::new() };
+        if yields && state.images.busy() {
+            yield_to_others(state);
+            continue;
+        }
+        match cancel::scope(&token, || measure::load(&src, kind, loc.rec.orientation as u8, lut)) {
+            Err(_) if token.is_cancelled() => yield_to_others(state),
+            r => break r,
+        }
+    };
+    let image = match image {
         Ok(i) => i,
         Err(e) => {
             save_error(state, &loc.rec, faces_at, &format!("{e:#}"))?;

@@ -2,10 +2,12 @@
 //! with disk and memory caches. Everything here only *reads* the library; caches
 //! live in the cache directory.
 
+pub mod cancel;
 pub mod canon;
 #[cfg(any(feature = "heic", test))]
 pub mod color;
 pub mod demosaic;
+mod flight;
 pub mod jpeg;
 pub mod pyramid;
 pub mod raw;
@@ -20,6 +22,8 @@ use crate::repo::{self, Located};
 use crate::scan;
 use crate::state::AppState;
 use anyhow::{Result, anyhow};
+use cancel::CancelToken;
+use flight::Flights;
 use jpeg::Rgb;
 use parking_lot::{Condvar, Mutex};
 use raw::{Developed, WbMode};
@@ -27,7 +31,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tone::ToneMode;
 
@@ -108,31 +112,55 @@ impl Drop for Busy<'_> {
     }
 }
 
-/// Lets the photo on screen jump ahead of prefetching.
+/// Lets the photo on screen jump ahead of prefetching. A permit is owned, so the work
+/// it was taken for can hold it until that work has actually stopped.
 pub struct Gate {
-    sem: tokio::sync::Semaphore,
+    sem: Arc<tokio::sync::Semaphore>,
     total: usize,
     high: AtomicUsize,
     notify: tokio::sync::Notify,
 }
 
+/// Counts a high-priority wait in [`Gate::high`] for as long as it lives: a wait can be
+/// given up at its `.await`, and the count must still go down, or low priority would
+/// wait forever.
+struct HighWait<'a>(&'a Gate);
+
+impl<'a> HighWait<'a> {
+    fn new(g: &'a Gate) -> HighWait<'a> {
+        g.high.fetch_add(1, Ordering::SeqCst);
+        HighWait(g)
+    }
+}
+
+impl Drop for HighWait<'_> {
+    fn drop(&mut self) {
+        self.0.high.fetch_sub(1, Ordering::SeqCst);
+        self.0.notify.notify_waiters();
+    }
+}
+
 impl Gate {
     fn new(permits: usize) -> Gate {
-        Gate { sem: tokio::sync::Semaphore::new(permits.max(1)), total: permits.max(1), high: AtomicUsize::new(0), notify: tokio::sync::Notify::new() }
+        Gate { sem: Arc::new(tokio::sync::Semaphore::new(permits.max(1))), total: permits.max(1), high: AtomicUsize::new(0), notify: tokio::sync::Notify::new() }
     }
-    pub async fn acquire(&self, high: bool) -> tokio::sync::SemaphorePermit<'_> {
-        if high {
-            self.high.fetch_add(1, Ordering::SeqCst);
-            let p = self.sem.acquire().await.expect("gate closed");
-            self.high.fetch_sub(1, Ordering::SeqCst);
-            self.notify.notify_waiters();
-            return p;
-        }
+
+    pub async fn acquire(&self, high: bool) -> tokio::sync::OwnedSemaphorePermit {
+        self.acquire_as(&AtomicBool::new(high)).await
+    }
+
+    /// As [`Gate::acquire`], with a priority that can rise while it waits (a viewer
+    /// request joined work a prefetch started).
+    pub async fn acquire_as(&self, high: &AtomicBool) -> tokio::sync::OwnedSemaphorePermit {
         loop {
-            if self.high.load(Ordering::SeqCst) == 0 {
-                if let Ok(p) = self.sem.try_acquire() {
-                    return p;
-                }
+            if high.load(Ordering::SeqCst) {
+                let _wait = HighWait::new(self);
+                return self.sem.clone().acquire_owned().await.expect("gate closed");
+            }
+            if self.high.load(Ordering::SeqCst) == 0
+                && let Ok(p) = self.sem.clone().try_acquire_owned()
+            {
+                return p;
             }
             tokio::select! {
                 _ = self.notify.notified() => {}
@@ -167,9 +195,6 @@ struct TileKey {
     ty: usize,
 }
 
-type Inflight = Arc<tokio::sync::Mutex<Option<std::result::Result<Arc<Developed>, String>>>>;
-type BayerInflight = Arc<tokio::sync::Mutex<Option<std::result::Result<Arc<raw::Bayer>, String>>>>;
-
 pub struct Images {
     pub index_pool: rayon::ThreadPool,
     /// Thumbnails, in pack files (see `thumbstore`).
@@ -177,19 +202,24 @@ pub struct Images {
     previews_dir: PathBuf,
     preview_budget: u64,
     thumb_sem: tokio::sync::Semaphore,
-    gate: Gate,
-    developed: Mutex<Lru<DevKey, Arc<Developed>>>,
-    inflight: Mutex<HashMap<DevKey, Inflight>>,
+    gate: Arc<Gate>,
+    developed: Arc<Mutex<Lru<DevKey, Arc<Developed>>>>,
+    /// Developments running (see `flight`): shared by the requests that wait for them,
+    /// cancelled when they have all gone.
+    dev_flights: Arc<Flights<DevKey, Developed>>,
     rendered: Mutex<Lru<RenderKey, Arc<Vec<u8>>>>,
     luts: Mutex<HashMap<(ToneMode, i32), Arc<Vec<u8>>>>,
     queue: Mutex<(VecDeque<i64>, HashSet<i64>)>,
     queue_cv: Condvar,
     interactive: AtomicUsize,
+    /// The cancel token of background work that gives way to the viewer (see
+    /// [`Images::background_token`]).
+    preempt: Mutex<Option<CancelToken>>,
     /// Preview requests per size, for pre-rendering at the size viewers use.
     preview_sizes: Mutex<[u64; PREVIEW_SIZES.len()]>,
     /// Sensor data of the photos being inspected, for full-resolution tiles.
-    bayers: Mutex<Lru<(i64, u64), Arc<raw::Bayer>>>,
-    bayer_inflight: Mutex<HashMap<(i64, u64), BayerInflight>>,
+    bayers: Arc<Mutex<BayerLru>>,
+    bayer_flights: Arc<Flights<(i64, u64), raw::Bayer>>,
     tiles: Mutex<Lru<TileKey, Arc<Vec<u8>>>>,
     /// Tiles demosaic on one core each: about as many at once as there are cores.
     tile_sem: tokio::sync::Semaphore,
@@ -225,6 +255,7 @@ impl PyrSource {
 }
 
 type PyrInflight = Arc<tokio::sync::Mutex<Option<std::result::Result<Arc<Rgb>, String>>>>;
+type BayerLru = Lru<(i64, u64), Arc<raw::Bayer>>;
 
 /// The preview sizes (long edge) the API serves.
 pub const PREVIEW_SIZES: [usize; 6] = [1024, 1600, 2048, 2560, 3200, 4096];
@@ -282,6 +313,13 @@ pub fn load_display_rgb(path: &Path, kind: Kind, min_long: usize) -> Result<Rgb>
         }
         // An embedded thumbnail when it is big enough, else the primary image.
         Kind::Heic => Ok(native::heic_thumb(path, min_long, 0)?.0),
+    }
+}
+
+/// Logs a development the viewer gave up on (on a failure of the work under way).
+fn stopped(src: &Path) {
+    if cancel::is_cancelled() {
+        tracing::debug!("stopped developing {}: nobody waits for it any more", src.display());
     }
 }
 
@@ -376,17 +414,18 @@ impl Images {
             previews_dir: cfg.cache_dir.join("previews"),
             preview_budget: cfg.preview_cache_mb as u64 * 1024 * 1024,
             thumb_sem: tokio::sync::Semaphore::new(cores.clamp(2, 8)),
-            gate: Gate::new(cfg.decode_concurrency),
-            developed: Mutex::new(Lru::new(cfg.raw_cache_mb * 1024 * 1024)),
-            inflight: Mutex::new(HashMap::new()),
+            gate: Arc::new(Gate::new(cfg.decode_concurrency)),
+            developed: Arc::new(Mutex::new(Lru::new(cfg.raw_cache_mb * 1024 * 1024))),
+            dev_flights: Flights::new(),
             rendered: Mutex::new(Lru::new(256 * 1024 * 1024)),
             luts: Mutex::new(HashMap::new()),
             queue: Mutex::new((VecDeque::new(), HashSet::new())),
             queue_cv: Condvar::new(),
             interactive: AtomicUsize::new(0),
+            preempt: Mutex::new(None),
             preview_sizes: Mutex::new([0; PREVIEW_SIZES.len()]),
-            bayers: Mutex::new(Lru::new(320 * 1024 * 1024)),
-            bayer_inflight: Mutex::new(HashMap::new()),
+            bayers: Arc::new(Mutex::new(Lru::new(320 * 1024 * 1024))),
+            bayer_flights: Flights::new(),
             tiles: Mutex::new(Lru::new(96 * 1024 * 1024)),
             tile_sem: tokio::sync::Semaphore::new(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 16)),
             ev_masks: Mutex::new(Lru::new(48 * 1024 * 1024)),
@@ -444,6 +483,33 @@ impl Images {
         self.interactive.load(Ordering::SeqCst) > 0 || self.gate.sem.available_permits() < self.gate.total
     }
 
+    /// A cancel token for background RAW work that gives way to the viewer (culling):
+    /// it is cancelled as soon as a viewer request starts work of its own, and FlashRaw
+    /// then frees the cores within milliseconds. Take it before checking [`Images::busy`];
+    /// work stopped this way waits for a quiet moment and starts again.
+    pub fn background_token(&self) -> CancelToken {
+        self.preempt.lock().get_or_insert_with(CancelToken::new).clone()
+    }
+
+    /// Stops the background work running now (see [`Images::background_token`]).
+    fn preempt(&self) {
+        if let Some(t) = self.preempt.lock().take() {
+            t.cancel();
+        }
+    }
+
+    #[cfg(test)]
+    fn dev_flights_running(&self) -> usize {
+        self.dev_flights.running()
+    }
+
+    /// Viewer work starting now: counted while the guard lives, and the background work
+    /// it outranks stops.
+    fn viewer_work(&self) -> Busy<'_> {
+        self.preempt();
+        Busy::new(&self.interactive)
+    }
+
     /// Thumbnails waiting to be built in the background.
     pub fn thumbs_queued(&self) -> usize {
         self.queue.lock().0.len()
@@ -464,7 +530,7 @@ impl Images {
             self.queue_first(id);
             return Ok((d, true));
         }
-        let busy = Busy::new(&self.interactive);
+        let busy = self.viewer_work();
         let _p = self.thumb_sem.acquire().await?;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         let orient = loc.rec.orientation as u8;
@@ -538,7 +604,7 @@ impl Images {
             touch(&path);
             return Ok(path);
         }
-        let busy = Busy::new(&self.interactive);
+        let busy = self.viewer_work();
         let _p = self.thumb_sem.acquire().await?;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         let kind = Kind::from_i32(loc.rec.kind);
@@ -557,12 +623,19 @@ impl Images {
         let kind = Kind::from_i32(loc.rec.kind);
         match kind {
             Kind::Raw => {
-                tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
-                    if let Some(b) = full_embedded_jpeg(&src) {
-                        return Ok(b);
-                    }
-                    let img = load_display_rgb(&src, kind, 4096)?;
-                    jpeg::encode(&img, 88, false)
+                // Without a full-size embedded JPEG the file is developed (not cached):
+                // stopped if the viewer moves on first.
+                let stop = cancel::CancelOnDrop::default();
+                let token = stop.token();
+                tokio::task::spawn_blocking(move || {
+                    cancel::scope(&token, || -> Result<Vec<u8>> {
+                        if let Some(b) = full_embedded_jpeg(&src) {
+                            return Ok(b);
+                        }
+                        let img = load_display_rgb(&src, kind, 4096)?;
+                        cancel::check()?;
+                        jpeg::encode(&img, 88, false)
+                    })
                 })
                 .await?
             }
@@ -574,7 +647,8 @@ impl Images {
         }
     }
 
-    /// Developed RAW data (single-flight, memory cached).
+    /// Developed RAW data (memory cached). Requests for the same photo share one
+    /// development, which is cancelled when they have all gone (see `flight`).
     pub async fn developed(&self, state: &AppState, loc: &Located, wb: WbMode, high: bool) -> Result<Arc<Developed>> {
         if Kind::from_i32(loc.rec.kind) != Kind::Raw {
             return Err(anyhow!("not a RAW file"));
@@ -583,66 +657,40 @@ impl Images {
         if let Some(d) = self.developed.lock().get(&key) {
             return Ok(d);
         }
-        let cell = {
-            let mut inflight = self.inflight.lock();
-            inflight.entry(key.clone()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None))).clone()
-        };
-        let mut slot = cell.lock().await;
-        if let Some(r) = slot.as_ref() {
-            return r.clone().map_err(|e| anyhow!(e));
-        }
-        if let Some(d) = self.developed.lock().get(&key) {
-            return Ok(d);
-        }
-        let _permit = self.gate.acquire(high).await;
+        self.preempt();
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         // The photo being viewed keeps its sensor data, for 1:1 tiles without decoding again.
         let keep = high;
-        let res = tokio::task::spawn_blocking(move || raw::develop_path_keep(&src, wb, raw::UE_EV, keep)).await.map_err(|e| anyhow!("{e}")).and_then(|r| r);
-        let res = res
-            .map(|(d, b)| {
-                if let Some(b) = b {
-                    let size = b.bytes();
-                    self.bayers.lock().put((key.id, key.sig), Arc::new(b), size);
-                }
-                Arc::new(d)
-            })
-            .map_err(|e| format!("{e:#}"));
-        if let Ok(d) = &res {
-            let size = d.bytes();
-            self.developed.lock().put(key.clone(), d.clone(), size);
-        }
-        *slot = Some(res.clone());
-        drop(slot);
-        self.inflight.lock().remove(&key);
-        res.map_err(|e| anyhow!(e))
+        let (developed, bayers, k) = (self.developed.clone(), self.bayers.clone(), key.clone());
+        let work = move || -> Result<Arc<Developed>> {
+            let (d, b) = raw::develop_path_keep(&src, wb, raw::UE_EV, keep).inspect_err(|_| stopped(&src))?;
+            if let Some(b) = b {
+                let size = b.bytes();
+                bayers.lock().put((k.id, k.sig), Arc::new(b), size);
+            }
+            let d = Arc::new(d);
+            developed.lock().put(k, d.clone(), d.bytes());
+            Ok(d)
+        };
+        self.dev_flights.get(key.clone(), high, &self.gate, || self.developed.lock().get(&key), work).await
     }
 
-    /// The sensor data of a RAW file (cached for the photos being inspected).
+    /// The sensor data of a RAW file (cached for the photos being inspected; shared and
+    /// cancelled as [`Images::developed`] is).
     pub async fn bayer(&self, state: &AppState, loc: &Located) -> Result<Arc<raw::Bayer>> {
         let key = (loc.rec.id, sig(&loc.rec));
         if let Some(b) = self.bayers.lock().get(&key) {
             return Ok(b);
         }
-        let cell = self.bayer_inflight.lock().entry(key).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None))).clone();
-        let mut slot = cell.lock().await;
-        if let Some(r) = slot.as_ref() {
-            return r.clone().map_err(|e| anyhow!(e));
-        }
-        if let Some(b) = self.bayers.lock().get(&key) {
-            return Ok(b);
-        }
-        let _permit = self.gate.acquire(true).await;
+        self.preempt();
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
-        let res = tokio::task::spawn_blocking(move || raw::bayer_path(&src)).await.map_err(|e| anyhow!("{e}")).and_then(|r| r);
-        let res = res.map(Arc::new).map_err(|e| format!("{e:#}"));
-        if let Ok(b) = &res {
-            self.bayers.lock().put(key, b.clone(), b.bytes());
-        }
-        *slot = Some(res.clone());
-        drop(slot);
-        self.bayer_inflight.lock().remove(&key);
-        res.map_err(|e| anyhow!(e))
+        let bayers = self.bayers.clone();
+        let work = move || -> Result<Arc<raw::Bayer>> {
+            let b = Arc::new(raw::bayer_path(&src).inspect_err(|_| stopped(&src))?);
+            bayers.lock().put(key, b.clone(), b.bytes());
+            Ok(b)
+        };
+        self.bayer_flights.get(key, true, &self.gate, || self.bayers.lock().get(&key), work).await
     }
 
     /// A full-resolution tile of a RAW file as JPEG bytes (see `raw::render_tile`).
@@ -653,7 +701,7 @@ impl Images {
         if let Some(b) = self.tiles.lock().get(&tkey) {
             return Ok(b);
         }
-        let busy = Busy::new(&self.interactive);
+        let busy = self.viewer_work();
         let res = async {
             let dev = self.developed(state, loc, wb, true).await?;
             raw::tile_rect(&dev, tx, ty)?;
@@ -686,7 +734,7 @@ impl Images {
         if let Some(b) = self.ev_masks.lock().get(&key) {
             return Ok(b);
         }
-        let busy = Busy::new(&self.interactive);
+        let busy = self.viewer_work();
         let bayer = if dev.oe.is_some() { Some(self.bayer(state, loc).await?) } else { None };
         let res = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
             let mask = raw::mask_for_ev(&dev, bayer.as_deref(), ev)?;
@@ -780,7 +828,7 @@ impl Images {
         if let Some(b) = self.pyr_tiles.lock().get(&key) {
             return Ok(b);
         }
-        let busy = Busy::new(&self.interactive);
+        let busy = self.viewer_work();
         let res = async {
             let p = self.pyramid(state, loc).await?;
             let rect = p.tile_rect(l, tx, ty)?;
@@ -809,7 +857,7 @@ impl Images {
         if let Some(b) = self.tiles.lock().get(&tkey) {
             return Ok(b);
         }
-        let busy = Busy::new(&self.interactive);
+        let busy = self.viewer_work();
         let res = async {
             let dev = self.developed(state, loc, wb, true).await?;
             raw::tile_rect(&dev, tx, ty)?;
@@ -1220,5 +1268,67 @@ fn trim_dir(dir: &Path, budget: u64) {
         if p.starts_with(dir) && std::fs::remove_file(&p).is_ok() {
             total -= len;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cancel::Cancelled;
+
+    fn tiny_dng() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.dng")
+    }
+
+    #[test]
+    fn viewer_work_stops_background_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let images = Images::new(&crate::config::Config::for_tests(tmp.path())).unwrap();
+        let t = images.background_token();
+        assert!(!t.is_cancelled() && !images.busy());
+        let busy = images.viewer_work();
+        assert!(t.is_cancelled() && images.busy());
+        // Background work that starts later is not born cancelled.
+        assert!(!images.background_token().is_cancelled());
+        drop(busy);
+        assert!(!images.busy());
+    }
+
+    /// Stopped is not failed: no LibRaw, no embedded preview, no error for culling to keep.
+    #[test]
+    fn a_cancelled_development_falls_back_to_nothing() {
+        let t = CancelToken::new();
+        t.cancel();
+        let e = cancel::scope(&t, || raw::develop_path(&tiny_dng(), WbMode::Asshot, raw::UE_EV)).err().unwrap();
+        assert!(e.is::<Cancelled>(), "{e:#}");
+        let e = cancel::scope(&t, || raw::bayer_path(&tiny_dng())).err().unwrap();
+        assert!(e.is::<Cancelled>(), "{e:#}");
+        let lut = tone::build_lut(ToneMode::Normal, RENDER_BOOST_EV);
+        let e = cancel::scope(&t, || crate::cull::measure::load(&tiny_dng(), Kind::Raw, 1, &lut)).err().unwrap();
+        assert!(e.is::<Cancelled>(), "{e:#}");
+        // Not cancelled: develops as before.
+        assert!(cancel::scope(&CancelToken::new(), || raw::develop_path(&tiny_dng(), WbMode::Asshot, raw::UE_EV)).is_ok());
+    }
+
+    /// The viewer's requests for one photo share one development, which is then cached.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn requests_share_a_development() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = crate::config::Config::for_tests(tmp.path());
+        std::fs::create_dir_all(cfg.photos_root.join("Shoot")).unwrap();
+        std::fs::copy(tiny_dng(), cfg.photos_root.join("Shoot/T.DNG")).unwrap();
+        let state = crate::build_state(cfg).await.unwrap();
+        assert!(scan::sync_tree(&state).unwrap());
+        let folder: i64 = state.db.get().unwrap().query_row("SELECT id FROM folders WHERE path = 'Shoot'", [], |r| r.get(0)).unwrap();
+        scan::scan_folder(&state, folder, true).unwrap();
+        let id: i64 = state.db.get().unwrap().query_row("SELECT id FROM photos", [], |r| r.get(0)).unwrap();
+        let loc = repo::load(&state.db.get().unwrap(), id).unwrap().unwrap();
+        let (a, b) = tokio::join!(state.images.developed(&state, &loc, WbMode::Asshot, true), state.images.developed(&state, &loc, WbMode::Asshot, true));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert!(Arc::ptr_eq(&a, &b));
+        assert!(Arc::ptr_eq(&a, &state.images.developed(&state, &loc, WbMode::Asshot, true).await.unwrap()));
+        // The photo being viewed kept its sensor data for 1:1 tiles.
+        assert!(state.images.bayers.lock().len() == 1);
+        assert_eq!(state.images.dev_flights_running(), 0);
     }
 }

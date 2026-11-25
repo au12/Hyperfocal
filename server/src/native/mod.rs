@@ -17,6 +17,7 @@ mod libraw;
 #[cfg(test)]
 mod tests;
 
+use crate::images::cancel;
 use crate::images::jpeg::Rgb;
 use crate::images::raw::WbMode;
 use anyhow::{Result, anyhow, bail};
@@ -106,14 +107,18 @@ fn run_with(exe: &Path, args: Vec<OsString>, timeout: Duration) -> Result<Vec<u8
 
     let deadline = Instant::now() + timeout;
     let mut nap = Duration::from_millis(1);
+    // Nobody waits for the result any more (see images::cancel): the helper is stopped at
+    // once, as a FlashRaw decode would stop.
+    let mut cancelled = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
-            Ok(None) if Instant::now() < deadline => {
+            Ok(None) if Instant::now() < deadline && !cancel::is_cancelled() => {
                 std::thread::sleep(nap);
                 nap = (nap * 2).min(Duration::from_millis(20));
             }
-            _ => {
+            r => {
+                cancelled = r.is_ok() && cancel::is_cancelled();
                 let _ = child.kill();
                 let _ = child.wait();
                 break None;
@@ -123,6 +128,9 @@ fn run_with(exe: &Path, args: Vec<OsString>, timeout: Duration) -> Result<Vec<u8
     let out = out_t.join().map_err(|_| anyhow!("native helper reader failed"))?;
     let err = err_t.join().unwrap_or_default();
     let Some(status) = status else {
+        if cancelled {
+            return Err(cancel::Cancelled.into());
+        }
         bail!("the native helper took longer than {}s and was stopped", timeout.as_secs());
     };
     let out = out?;
