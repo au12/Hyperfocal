@@ -407,6 +407,14 @@ struct Prepared {
 }
 
 fn prepare(state: &AppState, id: i64) -> Result<Option<Prepared>, String> {
+    let mut t = crate::tel_op!("people.prepare", 3000);
+    t.detail(|| format!("photo {id}"));
+    let r = prepare_inner(state, id);
+    t.check(&r);
+    r
+}
+
+fn prepare_inner(state: &AppState, id: i64) -> Result<Option<Prepared>, String> {
     let c = state.db.get().map_err(|e| e.to_string())?;
     let Some(loc) = repo::load(&c, id).map_err(|e| e.to_string())? else { return Ok(None) };
     let pair: Option<i64> = c.query_row("SELECT pair_of FROM photos WHERE id = ?1", [id], |r| r.get(0)).map_err(|e| e.to_string())?;
@@ -436,8 +444,10 @@ fn process(state: &Arc<AppState>, client: &Client, key: &str, batch: Vec<i64>, p
     let done = parking_lot::Mutex::new(Vec::<(i64, Instant)>::new());
     let workers = state.cfg.ml_concurrency.clamp(1, 16);
     std::thread::scope(|s| {
-        for _ in 0..workers {
-            s.spawn(|| {
+        for i in 0..workers {
+            // Named, so debug mode can tell their CPU time apart.
+            let b = std::thread::Builder::new().name(format!("people-{i}"));
+            b.spawn_scoped(s, || {
                 loop {
                     if stop.load(Ordering::Relaxed) {
                         return;
@@ -459,7 +469,8 @@ fn process(state: &Arc<AppState>, client: &Client, key: &str, batch: Vec<i64>, p
                         }
                     }
                 }
-            });
+            })
+            .expect("spawn people worker");
         }
     });
     let done = done.into_inner();
@@ -477,6 +488,8 @@ fn process(state: &Arc<AppState>, client: &Client, key: &str, batch: Vec<i64>, p
 /// Analyse one photo. Ok(true): analysed; Ok(false): skipped or failed on its own (an
 /// unreadable file); Err: the engine is unreachable.
 fn one(state: &Arc<AppState>, client: &Client, key: &str, id: i64) -> Result<bool, String> {
+    let mut t = crate::tel_op!("people.photo", 5000);
+    t.detail(|| format!("photo {id}"));
     let prep = match prepare(state, id) {
         Ok(Some(p)) => p,
         Ok(None) => return Ok(false),
@@ -494,7 +507,11 @@ fn one(state: &Arc<AppState>, client: &Client, key: &str, id: i64) -> Result<boo
             return Ok(false);
         }
     };
-    match store(state, &prep, &a, key) {
+    let stored = {
+        let _t = crate::tel_op!("people.store", 2000);
+        store(state, &prep, &a, key)
+    };
+    match stored {
         Ok(()) => Ok(true),
         Err(e) => {
             tracing::warn!("people: storing the analysis of {}: {e:#}", prep.loc.rec.name);
@@ -504,6 +521,7 @@ fn one(state: &Arc<AppState>, client: &Client, key: &str, id: i64) -> Result<boo
 }
 
 fn record_error(state: &AppState, id: i64, key: &str, err: &str) {
+    crate::tel_count!("people.errors");
     let Ok(c) = state.db.get() else { return };
     tracing::debug!("people: photo {id} not analysed: {err}");
     let _ = c.execute(
@@ -1024,6 +1042,7 @@ fn resyncs(state: &Arc<AppState>) {
 }
 
 fn run_regroup(state: &Arc<AppState>) {
+    let _t = crate::tel_op!("people.regroup", 60_000);
     set_phase(state, "grouping", None);
     let t = Instant::now();
     let st = state.clone();

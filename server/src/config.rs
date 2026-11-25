@@ -77,13 +77,15 @@ pub struct Config {
     /// Where Immich sees the photo folder, when it reads it as an external library (so
     /// photos it has are found by path instead of being uploaded).
     pub immich_library_path: Option<String>,
+    /// Debug mode (`HYPERFOCAL_DEBUG`): detailed telemetry, see `crate::telemetry`.
+    pub debug: crate::telemetry::DebugConfig,
 }
 
-fn env_str(key: &str) -> Option<String> {
+pub(crate) fn env_str(key: &str) -> Option<String> {
     std::env::var(key).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-fn env_bool(key: &str, default: bool) -> bool {
+pub(crate) fn env_bool(key: &str, default: bool) -> bool {
     match env_str(key).as_deref().map(|s| s.to_ascii_lowercase()) {
         Some(v) if ["1", "true", "yes", "on"].contains(&v.as_str()) => true,
         Some(v) if ["0", "false", "no", "off"].contains(&v.as_str()) => false,
@@ -91,7 +93,7 @@ fn env_bool(key: &str, default: bool) -> bool {
     }
 }
 
-fn env_num<T: std::str::FromStr>(key: &str, default: T) -> T {
+pub(crate) fn env_num<T: std::str::FromStr>(key: &str, default: T) -> T {
     env_str(key).and_then(|s| s.parse().ok()).unwrap_or(default)
 }
 
@@ -137,6 +139,7 @@ impl Config {
             immich_api_key: None,
             immich_public_url: None,
             immich_library_path: None,
+            debug: crate::telemetry::DebugConfig::off(&root.join("config")),
         }
     }
 
@@ -145,6 +148,7 @@ impl Config {
         let config_dir = PathBuf::from(env_str("HYPERFOCAL_CONFIG").unwrap_or_else(|| "/config".into()));
         let cache_dir = env_str("HYPERFOCAL_CACHE").map(PathBuf::from).unwrap_or_else(|| config_dir.join("cache"));
         let ml = crate::ml::MlConfig::from_env(&config_dir);
+        let debug = crate::telemetry::DebugConfig::from_env(&config_dir);
         let reject_dir = env_str("HYPERFOCAL_REJECT_DIR").unwrap_or_else(|| "_Rejected".into());
         let reject_dir = if reject_dir.contains('/') || reject_dir.contains('\\') || reject_dir.starts_with("..") {
             "_Rejected".into()
@@ -189,6 +193,7 @@ impl Config {
             immich_api_key: env_str("HYPERFOCAL_IMMICH_API_KEY"),
             immich_public_url: env_str("HYPERFOCAL_IMMICH_PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
             immich_library_path: env_str("HYPERFOCAL_IMMICH_LIBRARY_PATH").map(|p| p.trim_end_matches('/').to_string()).filter(|p| !p.is_empty()),
+            debug,
         }
     }
 }

@@ -137,6 +137,8 @@ fn run(state: &Arc<AppState>) {
         let started = Instant::now();
         match start(&plan) {
             Ok((mut child, port)) => {
+                // Debug mode: how long loading the models took.
+                crate::telemetry::record(&format!("ml.engine.start.{}", device.as_str()), started.elapsed(), false);
                 tracing::info!("AI engine ready on the {}{}: {}", if device == Device::Cuda { "GPU" } else { "CPU" }, gpu.as_ref().map(|g| format!(" ({g})")).unwrap_or_default(), features(&cfg));
                 state.ml.set_endpoint(Some(Endpoint { base: format!("http://127.0.0.1:{port}"), token: token.clone() }));
                 set(state, |s| {
@@ -162,6 +164,7 @@ fn run(state: &Arc<AppState>) {
                         } else {
                             format!("no AI work for {}", span(idle))
                         };
+                        crate::tel_count!("ml.engine.sleeps");
                         tracing::info!("AI engine stopped ({why}), its memory freed; it starts again when needed");
                         set(state, |s| {
                             s.phase = "asleep".into();
@@ -183,6 +186,7 @@ fn run(state: &Arc<AppState>) {
                     failures = 0;
                 }
                 failures += 1;
+                crate::tel_count!("ml.engine.crashes");
                 tracing::error!("AI engine stopped ({why}); starting it again");
                 if device == Device::Cuda && failures >= 2 && cpu_only.is_none() {
                     cpu_only = Some(format!("The AI engine stopped twice on the GPU ({why}): it runs on the CPU until Hyperfocal restarts."));

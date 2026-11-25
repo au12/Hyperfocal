@@ -11,6 +11,8 @@
 // Loads go through ordinary images (cheaper in the browser than fetch and blobs); the
 // tile's own <img> gets the URL once it is in the browser's cache.
 
+import { tel, routeOf } from './telemetry';
+
 interface Want {
   url: string;
   /** Position in the photo list: the grid ranks by it. */
@@ -18,6 +20,8 @@ interface Want {
   /** Tiles waiting for it. None: wanted only ahead of scrolling. */
   tiles: Set<HTMLImageElement>;
   ahead: boolean;
+  /** When it was first wanted (debug mode times the wait for a turn). */
+  since: number;
 }
 
 interface Load {
@@ -70,7 +74,7 @@ export class ThumbLoader {
     }
     let w = this.wants.get(url);
     if (!w) {
-      w = { url, i, tiles: new Set(), ahead: false };
+      w = { url, i, tiles: new Set(), ahead: false, since: performance.now() };
       this.wants.set(url, w);
     }
     w.i = i;
@@ -97,7 +101,7 @@ export class ThumbLoader {
       keep.add(url);
       let w = this.wants.get(url);
       if (!w) {
-        w = { url, i, tiles: new Set(), ahead: true };
+        w = { url, i, tiles: new Set(), ahead: true, since: performance.now() };
         this.wants.set(url, w);
       }
       w.ahead = true;
@@ -137,8 +141,9 @@ export class ThumbLoader {
       this.loads.delete(w.url);
       l.img.onload = l.img.onerror = null;
       l.img.removeAttribute('src'); // cancels the request
+      tel.count('thumb.cancelled');
       this.schedule();
-    }
+    } else if (!l) tel.count('thumb.dropped_waiting');
   }
 
   private schedule() {
@@ -170,9 +175,17 @@ export class ThumbLoader {
     const img = new Image();
     const load: Load = { img, t0: performance.now() };
     this.loads.set(url, load);
+    if (tel.on) {
+      tel.time(onScreen ? 'thumb.wait' : 'thumb.wait_ahead', load.t0 - w.since);
+      tel.count(onScreen ? 'thumb.loads' : 'thumb.loads_ahead');
+    }
     const done = (ok: boolean) => {
       img.onload = img.onerror = null;
       if (this.loads.get(url) !== load) return;
+      if (tel.on) {
+        tel.time(onScreen ? 'thumb.load' : 'thumb.load_ahead', performance.now() - load.t0, !ok);
+        if (!ok) tel.error('thumb', 'thumbnail failed to load: ' + (routeOf(new URL(url, location.href).pathname) ?? url));
+      }
       this.loads.delete(url);
       const now = this.wants.get(url);
       this.wants.delete(url);

@@ -41,6 +41,7 @@ struct WalkedDir {
 /// Walk the folder tree and sync the `folders` table. Returns false when the library
 /// looks unavailable (nothing is pruned in that case).
 pub fn sync_tree(state: &AppState) -> Result<bool> {
+    let _t = crate::tel_op!("scan.walk", 60_000);
     let root = &state.cfg.photos_root;
     let mut dirs = vec![WalkedDir { rel: String::new(), name: String::new(), parent: None }];
     let mut failed: Vec<String> = Vec::new();
@@ -206,6 +207,19 @@ pub fn scan_folder(state: &AppState, folder_id: i64, force: bool) -> Result<Fold
 }
 
 fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<FolderScan> {
+    let mut timer = crate::tel_op!("scan.folder", 10_000);
+    let r = scan_folder_inner(state, folder_id, force);
+    match &r {
+        Ok(f) => timer.detail(|| format!("folder {folder_id}: {} files, {} new or changed, {} gone", f.total, f.changed, f.removed)),
+        Err(e) => {
+            timer.fail();
+            timer.detail(|| format!("folder {folder_id}: {e:#}"));
+        }
+    }
+    r
+}
+
+fn scan_folder_inner(state: &AppState, folder_id: i64, force: bool) -> Result<FolderScan> {
     let conn = state.db.get()?;
     let (rel, is_reject): (String, bool) =
         conn.query_row("SELECT path, is_reject FROM folders WHERE id = ?1", [folder_id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)))?;
@@ -310,10 +324,16 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
                     ..Default::default()
                 };
                 let sidecar_xmp = sc.as_ref().and_then(|s| meta::read_sidecar(&dir.join(&s.0)));
+                let mut t = crate::tel_op!("scan.meta", 1000);
+                t.detail(|| path.display().to_string());
                 // A parser that panics on one malformed file must not stop the scanner.
-                match crate::images::raw::catch(|| meta::read_file_meta(&path, f.kind)) {
+                let read = crate::images::raw::catch(|| meta::read_file_meta(&path, f.kind));
+                t.check(&read);
+                drop(t);
+                match read {
                     Ok(fm) => meta::merge_into(&mut rec, &fm, sidecar_xmp.as_ref()),
                     Err(e) => {
+                        tracing::debug!("metadata of {} could not be read: {e}", path.display());
                         rec.meta_err = Some(e);
                         meta::merge_into(&mut rec, &meta::FileMeta { orientation: 1, ..Default::default() }, sidecar_xmp.as_ref());
                     }
@@ -324,7 +344,10 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
     });
 
     let changed = recs.len();
+    crate::tel_count!("scan.files_read", changed);
+    crate::tel_count!("scan.files_removed", removed.len());
     if changed > 0 || !removed.is_empty() {
+        let _t = crate::tel_op!("scan.db_write", 5000);
         let mut conn = state.db.get()?;
         let tx = conn.transaction()?;
         // Photos indexed before whose file or sidecar changed: names of people and pets
@@ -370,6 +393,7 @@ fn scan_folder_locked(state: &AppState, folder_id: i64, force: bool) -> Result<F
 }
 
 fn full_scan(state: &AppState, rx: &std::sync::mpsc::Receiver<ScanMsg>) -> Result<()> {
+    let _t = crate::tel_op!("scan.full", 3_600_000);
     let started = Instant::now();
     {
         let mut p = state.progress.write();

@@ -31,6 +31,7 @@ import { albums, albumKey, albumSpec } from './albums.svelte';
 import { cull } from './cull.svelte';
 import { tuning } from './tuning.svelte';
 import { nav } from './nav.svelte';
+import { tel } from './telemetry';
 
 export const LABELS: { color: LabelColor; name: string; key: string }[] = [
   { color: 'red', name: 'Red', key: '6' },
@@ -552,6 +553,7 @@ class Store {
         return;
       }
       if (this.status.counts?.integrity) this.integrity = this.status.counts.integrity;
+      if (this.status.debug?.enabled) this.startTelemetry();
     } catch (e) {
       this.toast(`Server unreachable: ${(e as Error).message}`, 'error');
       return;
@@ -589,6 +591,23 @@ class Store {
     window.addEventListener('hashchange', this.onHash);
     nav.start();
   };
+
+  /** Debug mode is on (HYPERFOCAL_DEBUG): this browser reports what it sees (lib/telemetry). */
+  private startTelemetry() {
+    tel.context = () => ({
+      view: this.view,
+      loupe: this.loupe,
+      compare: !!this.compare,
+      photo: this.loupe ? this.list.id[this.current] : undefined,
+      photos: this.list.id.length,
+      folder: this.folderId,
+      scrubbing: this.scrubbing,
+      source: this.viewer.source,
+      mobile: this.mobile,
+      offline: this.offline,
+    });
+    tel.start({ version: this.status?.version ?? '' });
+  }
 
   private lastFolder(): number | null {
     const v = Number(localStorage.getItem('hf.folder'));
@@ -673,6 +692,7 @@ class Store {
       } catch {
         return;
       }
+      tel.sseMessage(e.type, m.data.length);
       if (e.type === 'progress' && this.status) {
         const { type, ...p } = e;
         this.status = { ...this.status, progress: p };
@@ -715,6 +735,7 @@ class Store {
     };
     es.onerror = () => {
       /* EventSource reconnects by itself */
+      tel.count('sse.error');
     };
   };
 

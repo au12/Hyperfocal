@@ -1,6 +1,8 @@
 // Typed client for the Hyperfocal API. All URLs are relative so the app works behind
 // a reverse proxy, on a sub-path or straight on the container port.
 
+import { tel, routeOf } from './telemetry';
+
 export type ToneMode = 'normal' | 'linear' | 'shadows' | 'highlights';
 export type WbMode = 'asshot' | 'daylight' | 'auto';
 export type LabelColor = 'red' | 'yellow' | 'green' | 'blue' | 'purple';
@@ -35,8 +37,20 @@ export interface Status {
   cull?: CullStatus;
   /** The built-in AI engine: its models, device and state. */
   ml?: MlStatus;
+  /** Debug mode (HYPERFOCAL_DEBUG): null when off. */
+  debug?: DebugStatus | null;
   auth: boolean;
   logged_in: boolean;
+}
+
+/** Debug mode: since when, how often it samples, and the space its files take. */
+export interface DebugStatus {
+  enabled: boolean;
+  since: number;
+  interval: number;
+  days: number;
+  max_mb: number;
+  dir_mb: number;
 }
 
 /** The built-in AI engine (faces and pets, search by content, closed eyes). */
@@ -729,7 +743,10 @@ async function req<T>(method: string, path: string, body?: unknown, params?: Rec
       signal,
     });
   } catch (e) {
-    if (e instanceof TypeError) setNet(true);
+    if (e instanceof TypeError) {
+      setNet(true);
+      tel.error('network', `${method} ${routeOf(apiUrl(path)) ?? path}: ${e.message}`);
+    }
     throw e;
   }
   setNet(res.headers.has('x-hf-offline'));
@@ -742,6 +759,7 @@ async function req<T>(method: string, path: string, body?: unknown, params?: Rec
       /* not json */
     }
     if (res.status === 401) window.dispatchEvent(new CustomEvent('hf-auth'));
+    else tel.error('api', `${method} ${routeOf(apiUrl(path)) ?? path}: ${res.status} ${msg}`);
     throw new ApiError(res.status, msg);
   }
   return res.json() as Promise<T>;
@@ -852,6 +870,15 @@ export const api = {
   resetTuning: () => req<{ values: Tuning; defaults: Tuning }>('DELETE', 'tuning'),
   previewSeries: (p: { folder?: number; burst: number; gap: number; strictness: number; scene: number; min: number; cameras: boolean }, signal?: AbortSignal) =>
     req<{ now: SeriesStats; candidate: SeriesStats; ms: number }>('GET', 'tuning/series', undefined, { ...p, cameras: p.cameras ? 1 : 0 }, signal),
+  /** Debug mode (HYPERFOCAL_DEBUG): the debug panel's data, a one-page summary, and
+   * handing memory the allocator holds back to the system. */
+  debugLive: () => req<Record<string, any>>('GET', 'debug/live'),
+  debugSummary: async (): Promise<string> => {
+    const r = await fetch(apiUrl('debug/summary'), { credentials: 'same-origin' });
+    if (!r.ok) throw new ApiError(r.status, r.statusText);
+    return r.text();
+  },
+  debugTrim: () => req<{ released: boolean; freed_mb: number; rss_before_mb: number; rss_after_mb: number; ms: number }>('POST', 'debug/trim', {}),
   login: (password: string) => req<{ ok: boolean }>('POST', 'login', { password }),
   logout: () => req<{ ok: boolean }>('POST', 'logout', {}),
 };
@@ -876,6 +903,8 @@ export const urls = {
   /** The tone curve of a RAW view (65536 bytes), for the GPU path. */
   lut: (mode: ToneMode, ev: number, ver: string) => apiUrl('lut', { mode: mode === 'normal' ? undefined : mode, ev: ev ? ev.toFixed(2) : undefined, v: ver || undefined }),
   events: () => apiUrl('events'),
+  /** The debug report (a .tar.gz) for the last `days` days. */
+  debugBundle: (days: number) => apiUrl('debug/bundle', { days }),
   /** A face or animal, cropped square (JPEG); `big`: twice the size, from a larger image
    * (close-ups for culling). */
   crop: (d: { id: number; v: string }, big = false) => apiUrl(`detection/${d.id}/crop`, { v: d.v, s: big ? 2 : undefined }),

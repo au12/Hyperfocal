@@ -800,6 +800,14 @@ async fn apply_meta_in(state: &Arc<AppState>, ids: &[i64], patch: &Patch, undo_o
 /// to date (`quick`: a culling-only change to an existing sidecar, indexed in place);
 /// otherwise the caller rescans the folder.
 async fn write_one(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_of: Option<&str>, summary: &str, quick: bool) -> Result<(i64, bool)> {
+    let mut t = crate::tel_op!("ops.write", 2000);
+    t.detail(|| format!("photo {id}: {summary}"));
+    let r = write_one_inner(state, id, patch, batch, undo_of, summary, quick).await;
+    t.check(&r);
+    r
+}
+
+async fn write_one_inner(state: &AppState, id: i64, patch: &Patch, batch: &str, undo_of: Option<&str>, summary: &str, quick: bool) -> Result<(i64, bool)> {
     let loc = {
         let c = state.db.get()?;
         repo::load(&c, id)?.ok_or_else(|| anyhow!("photo {id} not found"))?
@@ -976,6 +984,14 @@ async fn move_photos(state: &AppState, ids: &[i64], to_reject: bool, batch: Opti
 }
 
 fn move_one(state: &AppState, id: i64, to_reject: bool, batch: &str, undo_of: Option<&str>) -> Result<(i64, i64)> {
+    let mut t = crate::tel_op!("ops.move", 2000);
+    t.detail(|| format!("photo {id}"));
+    let r = move_one_inner(state, id, to_reject, batch, undo_of);
+    t.check(&r);
+    r
+}
+
+fn move_one_inner(state: &AppState, id: i64, to_reject: bool, batch: &str, undo_of: Option<&str>) -> Result<(i64, i64)> {
     let loc = {
         let c = state.db.get()?;
         repo::load(&c, id)?.ok_or_else(|| anyhow!("photo {id} not found"))?

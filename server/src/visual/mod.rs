@@ -87,6 +87,11 @@ impl Index {
         self.ids.len()
     }
 
+    /// Memory held (from capacities).
+    pub fn mem_bytes(&self) -> usize {
+        self.ids.capacity() * 8 + self.vecs.capacity() + self.norms.capacity() * 4 + self.slot.capacity() * (std::mem::size_of::<(i64, usize)>() + 1)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }

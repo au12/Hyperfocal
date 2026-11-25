@@ -473,6 +473,12 @@ impl ThumbStore {
         Ok(())
     }
 
+    /// Memory the in-memory index of the packs takes (an estimate from its capacity).
+    pub fn index_bytes(&self) -> usize {
+        let m = self.map.read();
+        m.capacity() * (std::mem::size_of::<((i64, Kind), Loc)>() + 1)
+    }
+
     pub fn stats(&self) -> Stats {
         let packs = self.packs.read();
         Stats {

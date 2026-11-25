@@ -53,19 +53,30 @@ pub struct Lru<K, V> {
     tick: u64,
     bytes: usize,
     cap: usize,
+    /// Lookups that found an entry and that did not, and entries pushed out (debug mode
+    /// reports them; counting costs nothing next to the lock already held).
+    hits: u64,
+    misses: u64,
+    evictions: u64,
 }
 
 impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
     pub fn new(cap: usize) -> Self {
-        Lru { map: HashMap::new(), tick: 0, bytes: 0, cap }
+        Lru { map: HashMap::new(), tick: 0, bytes: 0, cap, hits: 0, misses: 0, evictions: 0 }
     }
     pub fn get(&mut self, k: &K) -> Option<V> {
         self.tick += 1;
         let t = self.tick;
-        self.map.get_mut(k).map(|e| {
+        let v = self.map.get_mut(k).map(|e| {
             e.1 = t;
             e.0.clone()
-        })
+        });
+        if v.is_some() {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+        v
     }
     pub fn put(&mut self, k: K, v: V, size: usize) {
         self.tick += 1;
@@ -79,6 +90,7 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
                 Some(k) => {
                     if let Some(e) = self.map.remove(&k) {
                         self.bytes -= e.2;
+                        self.evictions += 1;
                     }
                 }
                 None => break,
@@ -90,6 +102,11 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
     }
     pub fn len(&self) -> usize {
         self.map.len()
+    }
+    /// Entries, MB held, MB allowed, hits, misses, evictions (for debug mode).
+    pub fn report(&self) -> serde_json::Value {
+        let mb = |b: usize| (b as f64 / 1_048_576.0 * 10.0).round() / 10.0;
+        serde_json::json!({"n": self.map.len(), "mb": mb(self.bytes), "cap_mb": mb(self.cap), "hits": self.hits, "misses": self.misses, "evictions": self.evictions})
     }
 }
 
@@ -300,6 +317,14 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 /// Decoded display source for a photo, in sensor orientation (HEIF: upright), with a
 /// long edge of at least `min_long` where the file allows it.
 pub fn load_display_rgb(path: &Path, kind: Kind, min_long: usize) -> Result<Rgb> {
+    let mut t = crate::tel_op!("img.load_display", 2000);
+    t.detail(|| format!("{} ({min_long} px)", path.display()));
+    let r = load_display_rgb_inner(path, kind, min_long);
+    t.check(&r);
+    r
+}
+
+fn load_display_rgb_inner(path: &Path, kind: Kind, min_long: usize) -> Result<Rgb> {
     match kind {
         Kind::Raw => load_raw_display(path, min_long),
         Kind::Jpeg => {
@@ -338,21 +363,29 @@ fn good_enough(long: usize, min_long: usize) -> bool {
 fn load_raw_display(path: &Path, min_long: usize) -> Result<Rgb> {
     let flash_ok = !native::prefer_libraw()
         && match raw::catch(|| flash_preview(path, min_long)) {
-            Ok(Some(img)) => return Ok(img),
+            Ok(Some(img)) => {
+                crate::tel_count!("raw.display.embedded");
+                return Ok(img);
+            }
             Ok(None) => true,
             Err(_) => false,
         };
     // FlashRaw cannot read the file (or LibRaw is preferred): LibRaw's previews.
     if !flash_ok && native::LIBRAW {
         match native::libraw_preview(path, min_long) {
-            Ok(p) if good_enough(p.long_edge(), min_long) => match p {
-                native::Preview::Jpeg { data, .. } => return jpeg::decode_scaled(&data, min_long),
-                native::Preview::Rgb(img) => return Ok(img),
-            },
+            Ok(p) if good_enough(p.long_edge(), min_long) => {
+                crate::tel_count!("raw.display.libraw_preview");
+                match p {
+                    native::Preview::Jpeg { data, .. } => return jpeg::decode_scaled(&data, min_long),
+                    native::Preview::Rgb(img) => return Ok(img),
+                }
+            }
             Ok(_) => {}
             Err(e) => tracing::debug!("LibRaw preview of {}: {e:#}", path.display()),
         }
     }
+    // No embedded preview big enough: the sensor data is developed (much slower).
+    crate::tel_count!("raw.display.developed");
     let dev = raw::develop_path(path, WbMode::Asshot, 10.0)?;
     let lut = tone::build_lut(ToneMode::Normal, RENDER_BOOST_EV);
     Ok(raw::render(&dev, &lut, min_long.max(1)))
@@ -416,7 +449,7 @@ impl Images {
             thumb_sem: tokio::sync::Semaphore::new(cores.clamp(2, 8)),
             gate: Arc::new(Gate::new(cfg.decode_concurrency)),
             developed: Arc::new(Mutex::new(Lru::new(cfg.raw_cache_mb * 1024 * 1024))),
-            dev_flights: Flights::new(),
+            dev_flights: Flights::new("develop"),
             rendered: Mutex::new(Lru::new(256 * 1024 * 1024)),
             luts: Mutex::new(HashMap::new()),
             queue: Mutex::new((VecDeque::new(), HashSet::new())),
@@ -425,7 +458,7 @@ impl Images {
             preempt: Mutex::new(None),
             preview_sizes: Mutex::new([0; PREVIEW_SIZES.len()]),
             bayers: Arc::new(Mutex::new(Lru::new(320 * 1024 * 1024))),
-            bayer_flights: Flights::new(),
+            bayer_flights: Flights::new("bayer"),
             tiles: Mutex::new(Lru::new(96 * 1024 * 1024)),
             tile_sem: tokio::sync::Semaphore::new(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 16)),
             ev_masks: Mutex::new(Lru::new(48 * 1024 * 1024)),
@@ -443,7 +476,11 @@ impl Images {
         if id <= 0 {
             return None;
         }
-        self.thumbs.get(id, sig, thumbstore::Kind::Thumb).or_else(|| self.legacy_thumb(id, sig))
+        let b = self.thumbs.get(id, sig, thumbstore::Kind::Thumb).or_else(|| self.legacy_thumb(id, sig));
+        if b.is_some() {
+            crate::tel_count!("thumb.hit");
+        }
+        b
     }
 
     /// A thumbnail of the old one-file-per-photo layout, while it is being moved into packs.
@@ -475,6 +512,36 @@ impl Images {
             "thumbs": t.entries, "thumb_packs": t.packs, "thumb_mb": t.bytes / 1048576, "thumb_live_mb": t.live_bytes / 1048576,
             "thumb_legacy": t.legacy_files,
         })
+    }
+
+    /// Every memory cache (entries, MB, cap, hits, misses, evictions), the thumbnail store,
+    /// and the queues and gates in front of the decoders: for debug mode's samples.
+    pub fn cache_report(&self) -> serde_json::Value {
+        let t = self.thumbs.stats();
+        let mb = |b: u64| (b as f64 / 1_048_576.0 * 10.0).round() / 10.0;
+        serde_json::json!({
+            "developed": self.developed.lock().report(),
+            "rendered": self.rendered.lock().report(),
+            "bayers": self.bayers.lock().report(),
+            "tiles": self.tiles.lock().report(),
+            "ev_masks": self.ev_masks.lock().report(),
+            "pyr_sources": self.pyr_sources.lock().report(),
+            "pyr_levels": self.pyr_levels.lock().report(),
+            "pyr_tiles": self.pyr_tiles.lock().report(),
+            "thumbs": {"n": t.entries, "packs": t.packs, "disk_mb": mb(t.bytes), "live_mb": mb(t.live_bytes), "legacy": t.legacy_files, "mb": mb(self.thumbs.index_bytes() as u64)},
+            "luts": self.luts.lock().len(),
+            "thumb_queue": self.queue.lock().0.len(),
+            "interactive": self.interactive.load(Ordering::Relaxed),
+            "decode_permits_free": self.gate.sem.available_permits(),
+            "decode_permits": self.gate.total,
+            "developing": self.dev_flights.len(),
+            "pyr_inflight": self.pyr_inflight.lock().len(),
+        })
+    }
+
+    /// Bytes of the previews on disk (walks the cache directory: not for every request).
+    pub fn previews_bytes(&self) -> u64 {
+        dir_size(&self.previews_dir)
     }
 
     /// Someone is waiting on a thumbnail, preview or RAW development right now:
@@ -521,8 +588,10 @@ impl Images {
     pub async fn thumb(&self, state: &AppState, loc: &Located) -> Result<(Vec<u8>, bool)> {
         let (id, sig) = (loc.rec.id, sig48(&loc.rec));
         if let Some(b) = self.thumbs.get(id, sig, thumbstore::Kind::Thumb).or_else(|| self.legacy_thumb(id, sig)) {
+            crate::tel_count!("thumb.hit");
             return Ok((b, false));
         }
+        crate::tel_count!("thumb.miss");
         let kind = Kind::from_i32(loc.rec.kind);
         if kind == Kind::Heic
             && let Some(d) = self.thumbs.get(id, sig, thumbstore::Kind::Draft)
@@ -534,6 +603,8 @@ impl Images {
         let _p = self.thumb_sem.acquire().await?;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         let orient = loc.rec.orientation as u8;
+        let mut t = crate::tel_op!("img.thumb.make", 500);
+        t.detail(|| loc.rec.name.clone());
         let res = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, bool)> {
             if kind == Kind::Heic {
                 let (img, info) = native::heic_thumb(&src, THUMB_LONG, DRAFT_MIN)?;
@@ -544,6 +615,10 @@ impl Images {
         })
         .await;
         drop(busy);
+        if !matches!(res, Ok(Ok(_))) {
+            t.fail();
+        }
+        drop(t);
         let (bytes, draft) = res??;
         let store_kind = if draft { thumbstore::Kind::Draft } else { thumbstore::Kind::Thumb };
         if let Err(e) = self.thumbs.put(id, sig, store_kind, &bytes) {
@@ -601,16 +676,24 @@ impl Images {
         }
         let path = self.preview_path(&loc.rec, long);
         if path.exists() {
+            crate::tel_count!("preview.hit");
             touch(&path);
             return Ok(path);
         }
+        crate::tel_count!("preview.miss");
         let busy = self.viewer_work();
         let _p = self.thumb_sem.acquire().await?;
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         let kind = Kind::from_i32(loc.rec.kind);
         let out = path.clone();
+        let mut t = crate::tel_op!("img.preview.make", 800);
+        t.detail(|| format!("{} ({long} px)", loc.rec.name));
         let res = tokio::task::spawn_blocking(move || make_preview(&src, kind, long, &out, false)).await;
         drop(busy);
+        if !matches!(res, Ok(Ok(_))) {
+            t.fail();
+        }
+        drop(t);
         res??;
         Ok(path)
     }
@@ -627,11 +710,15 @@ impl Images {
                 // stopped if the viewer moves on first.
                 let stop = cancel::CancelOnDrop::default();
                 let token = stop.token();
+                let mut t = crate::tel_op!("img.full_jpeg", 1000);
+                t.detail(|| loc.rec.name.clone());
                 tokio::task::spawn_blocking(move || {
+                    let _t = t;
                     cancel::scope(&token, || -> Result<Vec<u8>> {
                         if let Some(b) = full_embedded_jpeg(&src) {
                             return Ok(b);
                         }
+                        crate::tel_count!("raw.full_jpeg.developed");
                         let img = load_display_rgb(&src, kind, 4096)?;
                         cancel::check()?;
                         jpeg::encode(&img, 88, false)
@@ -657,6 +744,7 @@ impl Images {
         if let Some(d) = self.developed.lock().get(&key) {
             return Ok(d);
         }
+        crate::tel_count!("develop.requests");
         self.preempt();
         let src = scan::photo_path(state, &loc.folder_path, &loc.rec.name);
         // The photo being viewed keeps its sensor data, for 1:1 tiles without decoding again.
@@ -999,7 +1087,11 @@ impl Images {
                 tokio::time::sleep(Duration::from_secs(600)).await;
                 let dir = state.images.previews_dir.clone();
                 let budget = state.images.preview_budget;
-                let _ = tokio::task::spawn_blocking(move || trim_dir(&dir, budget)).await;
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _t = crate::tel_op!("previews.trim", 10_000);
+                    trim_dir(&dir, budget)
+                })
+                .await;
             }
         });
     }
@@ -1015,7 +1107,12 @@ pub fn build_thumb(st: &AppState, id: i64) -> bool {
     }
     let sig = sig48(&loc.rec);
     let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
-    match raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, true)) {
+    let mut t = crate::tel_op!("img.thumb.bg", 3000);
+    t.detail(|| src.display().to_string());
+    let made = raw::catch(|| make_thumb(&src, Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8, true));
+    t.check(&made);
+    drop(t);
+    match made {
         Ok(bytes) => {
             if let Err(e) = st.images.thumbs.put(id, sig, thumbstore::Kind::Thumb, &bytes) {
                 tracing::warn!("thumbnail of {} not cached: {e:#}", src.display());
@@ -1042,6 +1139,8 @@ pub fn thumb_pixels(st: &AppState, loc: &Located) -> Result<Rgb> {
     }
     let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
     let (kind, orientation) = (Kind::from_i32(loc.rec.kind), loc.rec.orientation as u8);
+    let mut t = crate::tel_op!("img.thumb.for_analysis", 3000);
+    t.detail(|| src.display().to_string());
     let img = raw::catch(|| -> Result<Rgb> {
         let img = load_display_rgb(&src, kind, THUMB_LONG)?;
         Ok(jpeg::orient(jpeg::fit_long(img, THUMB_LONG)?, orientation))
@@ -1101,6 +1200,7 @@ fn thumbstore_upkeep(st: &Arc<AppState>) {
             continue;
         }
         if let Some(cur) = current() {
+            let _t = crate::tel_op!("thumbstore.gc", 10_000);
             let n = st.images.thumbs.gc(|id, sig| cur.get(&id) == Some(&sig));
             if n > 0 {
                 tracing::debug!("thumbnails: {n} no longer needed");
@@ -1109,6 +1209,7 @@ fn thumbstore_upkeep(st: &Arc<AppState>) {
         let mut freed = 0u64;
         loop {
             wait();
+            let _t = crate::tel_op!("thumbstore.compact", 60_000);
             match st.images.thumbs.compact(&wait) {
                 Ok(0) => break,
                 Ok(b) => freed += b,
@@ -1189,7 +1290,12 @@ pub fn pregen_pass(st: &AppState, since: i64, busy: &dyn Fn() -> bool) -> usize 
                 continue;
             }
             let src = scan::photo_path(st, &loc.folder_path, &loc.rec.name);
-            match raw::catch(|| make_preview(&src, Kind::from_i32(loc.rec.kind), long, &out, true)) {
+            let mut t = crate::tel_op!("img.preview.bg", 3000);
+            t.detail(|| src.display().to_string());
+            let res = raw::catch(|| make_preview(&src, Kind::from_i32(loc.rec.kind), long, &out, true));
+            t.check(&res);
+            drop(t);
+            match res {
                 Ok(()) => {
                     used += std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
                     made += 1;

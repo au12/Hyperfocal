@@ -29,6 +29,7 @@ Hyperfocal indexes a plain `Year/Event` folder library of RAW files (CR2, CR3, D
 - [Performance](#performance)
 - [Limitations](#limitations)
 - [Troubleshooting a file](#troubleshooting-a-file)
+- [Debug mode and telemetry](#debug-mode-and-telemetry)
 - [Development](#development)
 - [Roadmap](ROADMAP.md)
 - [Credits](#credits)
@@ -504,6 +505,10 @@ Full screen works like a desktop app: `Esc` keeps its usual meaning and does not
 | `HYPERFOCAL_IMMICH_API_KEY` | – | An Immich API key (Account settings → API keys) with `asset.read`, `asset.upload`, `album.read`, `album.create` and `albumAsset.create` |
 | `HYPERFOCAL_IMMICH_LIBRARY_PATH` | – | Where Immich sees this photo folder, if it reads it as an external library (e.g. `/mnt/media/photos`): photos it has are then found by path instead of uploaded |
 | `HYPERFOCAL_IMMICH_PUBLIC_URL` | the URL above | Immich's address for links in the browser, when the one above is internal |
+| `HYPERFOCAL_DEBUG` | `false` | `true`: debug mode, detailed telemetry for finding errors, slow spots and where memory and battery go (see [Debug mode and telemetry](#debug-mode-and-telemetry)); `trace` also records trace-level log events |
+| `HYPERFOCAL_DEBUG_MAX_MB` | `1024` | Disk budget for debug mode's files in `AppData/debug` (the oldest days go first) |
+| `HYPERFOCAL_DEBUG_DAYS` | `30` | Debug mode's files older than this are deleted |
+| `HYPERFOCAL_DEBUG_INTERVAL` | `30` | Seconds between debug mode's samples of the process, the container and every background pass |
 | `TZ` | `UTC` | Time zone of the container, for the nightly window (for example `Europe/Lisbon`) |
 | `PUID` / `PGID` | `99` / `100` | User and group the app runs as (Unraid `nobody:users`) |
 | `UMASK` | `000` | `000` matches Unraid share permissions, so Excire can still edit sidecars over SMB |
@@ -559,6 +564,30 @@ On the same VM, the LibRaw helper starts in a few milliseconds, and a LibRaw dev
 docker exec hyperfocal hyperfocal inspect "/photos/2024/Trip/IMG_0001.CR3"
 # add --render /config/inspect to also save the RAW developments as JPEGs
 ```
+
+## Debug mode and telemetry
+
+For finding what fails, what is slow, and where memory, CPU time and a phone's battery go, on your own library and devices. Set `HYPERFOCAL_DEBUG=true` (on Unraid: *Debug mode*, in the Advanced View) and restart the container. It is off by default, and off it costs nothing: each hook in the code is a single check.
+
+It records, in `AppData/debug` (one NDJSON file per kind and day; at most `HYPERFOCAL_DEBUG_MAX_MB`, 1 GB, and `HYPERFOCAL_DEBUG_DAYS`, 30):
+
+- **Errors.** Every warning and error, plus debug-level detail (a file that could not be read, a thumbnail that failed), grouped by the line of code that logged it, with counts and examples. Panics, and a run that ended without shutting down (a crash, or the container killed for memory), with its last known memory figures. HTTP errors with their message. From the index, every per-file error the scanner and the background passes recorded, grouped by message, file type and camera.
+- **Speed.** Every request per route: count, p50/p95/max, bytes, transfers the browser gave up, and requests it gave up before the answer was ready. The work behind them: reading and decoding RAW files (per decoder) and developing them, the wait for a decoder, thumbnails and previews, JPEG encoding, metadata, the scanner, culling, the AI engine and its own steps, sidecar writes, hashing. Every SQL statement, with the rows its full scans walked.
+- **Resources**, every `HYPERFOCAL_DEBUG_INTERVAL` seconds: CPU per thread pool, with wake-ups and time spent waiting for a CPU; memory split into what the app holds, what the allocator keeps after freeing, and mapped files; every memory cache with its hits, misses and evictions; the indexes held in memory; child processes (the AI engine, ExifTool); the container's memory limit, out-of-memory kills, CPU throttling and pressure stalls; disk reads; the GPU (with the NVIDIA runtime, every 2 minutes while the AI engine is loaded); the progress of every background pass.
+- **Browsers.** Every browser with Hyperfocal open reports about once a minute while it is visible, and not at all while hidden: script errors and failed requests; how long the single view takes to show each photo (thumbnail, then preview, full JPEG or RAW); the grid's thumbnail loading; long tasks and the scripts behind them; slow taps and key presses; frames dropped while scrolling or panning; network use per route, with the server's share of each request's time (`Server-Timing`); event-stream traffic; memory (the JavaScript heap, decoded images, graphics); and the battery's level and drain where the browser tells (Chrome, Edge).
+
+**Settings → Debug** shows the live picture, and:
+
+- **Download report**: one `.tar.gz` with a one-page summary, a full JSON report (with a census of the library by file type and camera, which is to say by decoder path) and the telemetry files of the last days. Passwords, tokens and API keys are left out; folder and file names are in it. It is compressed: three busy days usually come to a few MB, rarely more than 20.
+- **Copy summary**: the one-page summary as text, to paste into a conversation.
+- **Mark a moment**: say what you saw ("the RAW view hung on this photo"); it is saved with what was on screen and what the server was doing, so it can be found in the timeline. Also from the bug tab on the left edge of the screen, or `Alt+Shift+M` (`⌥⇧M`) anywhere.
+- **Release free memory**: asks the allocator to give back what it keeps after freeing, and says how much that was, which tells real memory use from memory merely held.
+
+![Settings → Debug](docs/screenshots/desktop-debug.jpg)
+
+![Debug mode on a phone: the panel, and a moment marked from the single view](docs/screenshots/mobile-debug.jpg)
+
+The same data is at `GET /api/debug/summary`, `/api/debug/live` and `/api/debug/bundle?days=3`, behind the login like the rest of the API. Remove the variable to turn debug mode off, and delete `AppData/debug` to remove its files.
 
 ## Development
 

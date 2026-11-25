@@ -56,6 +56,30 @@ pub enum Event {
     Tuning,
 }
 
+impl Event {
+    /// The counter of this type of message in debug mode.
+    fn counter(&self) -> &'static str {
+        match self {
+            Event::Progress(_) => "sse.progress",
+            Event::Folder { .. } => "sse.folder",
+            Event::Tree => "sse.tree",
+            Event::Photos { .. } => "sse.photos",
+            Event::Collections => "sse.collections",
+            Event::Albums => "sse.albums",
+            Event::Visual { .. } => "sse.visual",
+            Event::Cull { .. } => "sse.cull",
+            Event::Job(_) => "sse.job",
+            Event::Integrity { .. } => "sse.integrity",
+            Event::Thumbs { .. } => "sse.thumbs",
+            Event::People { .. } => "sse.people",
+            Event::PeopleStatus(_) => "sse.people_status",
+            Event::Dupes => "sse.dupes",
+            Event::Ml(_) => "sse.ml",
+            Event::Tuning => "sse.tuning",
+        }
+    }
+}
+
 pub enum ScanMsg {
     Folder(i64),
     Full,
@@ -99,6 +123,10 @@ pub struct AppState {
 
 impl AppState {
     pub fn emit(&self, e: Event) {
+        if crate::telemetry::on() {
+            // Messages on the event stream, by type (each one goes to every open browser).
+            crate::telemetry::count(e.counter(), 1);
+        }
         let _ = self.events.send(e);
     }
 

@@ -109,10 +109,17 @@ fn hash_one(state: &AppState, row: &PhotoRec) -> Result<Outcome> {
     let id = loc.rec.id;
     let label = if loc.folder_path.is_empty() { loc.rec.name.clone() } else { format!("{}/{}", loc.folder_path, loc.rec.name) };
     set_phase(state, "hashing", Some(label));
+    let mut t = crate::tel_op!("dupes.photo", 3000);
+    t.detail(|| format!("photo {id}"));
     let (hash, dih, sharp, error) = match crate::images::thumb_pixels(state, &loc) {
         Ok(img) => (Some(phash::phash(&img) as i64), Some(super::dih_to_blob(&phash::dihedral(&img))), Some(phash::sharpness(&img) as f64), None),
-        Err(e) => (None, None, None, Some(format!("{e:#}"))),
+        Err(e) => {
+            t.fail();
+            tracing::debug!("duplicates: photo {id} could not be read: {e:#}");
+            (None, None, None, Some(format!("{e:#}")))
+        }
     };
+    drop(t);
     let c = state.db.get()?;
     c.execute(
         "INSERT INTO phashes(photo_id, size, mtime, orientation, hash, dih, sharp, at, error) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)

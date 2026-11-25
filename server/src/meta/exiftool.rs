@@ -100,8 +100,11 @@ impl ExifTool {
             }
         }
         if self.proc.is_none() {
+            crate::tel_count!("exiftool.starts");
             self.spawn().await?;
         }
+        let mut t = crate::tel_op!("exiftool.exec", 2000);
+        t.detail(|| args.last().cloned().unwrap_or_default());
         self.seq += 1;
         let marker = format!("{{ready{}}}", self.seq);
         let result = tokio::time::timeout(Duration::from_secs(120), async {
@@ -139,6 +142,10 @@ impl ExifTool {
             Ok::<_, anyhow::Error>(ExecOutput { stdout: out, stderr: err })
         })
         .await;
+        if !matches!(result, Ok(Ok(_))) {
+            t.fail();
+        }
+        drop(t);
         match result {
             Ok(Ok(o)) => Ok(o),
             Ok(Err(e)) => {

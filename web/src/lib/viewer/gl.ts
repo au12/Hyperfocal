@@ -9,6 +9,8 @@
 // pixel of the neighbouring tiles around it so filtering is seamless) and a page table
 // says which layer holds which tile.
 
+import { tel } from '../telemetry';
+
 const VS = `#version 300 es
 in vec2 p;
 void main() { gl_Position = vec4(p, 0.0, 1.0); }`;
@@ -311,6 +313,18 @@ export function hexToRgb(h: string): [number, number, number] {
 
 type Uniforms = Record<string, WebGLUniformLocation | null>;
 
+/** Every view, for debug mode's estimate of the graphics memory the viewer holds. */
+const views = new Set<WeakRef<GLView>>();
+tel.gauge('gpu_mb', () => {
+  let b = 0;
+  for (const r of views) {
+    const v = r.deref();
+    if (!v) views.delete(r);
+    else b += v.memoryBytes();
+  }
+  return b / 1048576;
+});
+
 export class GLView {
   gl: WebGL2RenderingContext;
   private prog: WebGLProgram;
@@ -350,6 +364,11 @@ export class GLView {
     const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, premultipliedAlpha: false, preserveDrawingBuffer: false });
     if (!gl) throw new Error('WebGL2 is not available');
     this.gl = gl;
+    views.add(new WeakRef(this));
+    // Not when the view closes: destroy() lets go of the context on purpose.
+    canvas.addEventListener('webglcontextlost', () => {
+      if (!this.gone) tel.error('webgl', 'WebGL context lost (the graphics driver reset or the browser reclaimed memory)');
+    });
     this.maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     this.maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS);
     const sh = (type: number, src: string) => {
@@ -426,8 +445,11 @@ export class GLView {
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL);
+    const t0 = tel.on ? performance.now() : 0;
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, src);
     gl.generateMipmap(gl.TEXTURE_2D);
+    // Debug mode: the upload as the main thread feels it (a 24 MP image is ~130 MB of mips).
+    if (tel.on) tel.time(w * h > 8e6 ? 'gl.upload.large' : 'gl.upload', performance.now() - t0);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -661,7 +683,20 @@ export class GLView {
     gl.uniform1i(u.u_orient, v.orientation);
   }
 
+  /** Graphics memory held (an estimate: textures and render targets, mipmaps included). */
+  memoryBytes(): number {
+    if (this.gone) return 0;
+    const mips = 4 / 3;
+    let b = this.hasImg ? this.texW * this.texH * 4 * mips : 0;
+    if (this.hasMask) b += this.maskW * this.maskH * 4 * mips * 2;
+    const d = this.detail;
+    if (d && this.atlas) b += (d.tile + 2 * d.apron) ** 2 * 4 * d.layers;
+    if (this.targets) b += this.targets.w * this.targets.h * 4 * 2;
+    return b + this.pageW * this.pageH * 2 + this.canvas.width * this.canvas.height * 4 * 2;
+  }
+
   draw(v: ViewParams) {
+    tel.count('gl.draw');
     const gl = this.gl;
     const u = this.u;
     const { width: cw, height: ch } = this.canvas;
@@ -722,7 +757,10 @@ export class GLView {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
+  private gone = false;
+
   destroy() {
+    this.gone = true;
     const gl = this.gl;
     gl.deleteTexture(this.tex);
     gl.deleteTexture(this.overCov);

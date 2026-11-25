@@ -28,6 +28,7 @@ pub mod repo;
 pub mod scan;
 pub mod sets;
 pub mod state;
+pub mod telemetry;
 pub mod tracks;
 pub mod tuning;
 pub mod visual;
@@ -192,12 +193,20 @@ pub async fn build_state(cfg: config::Config) -> Result<Arc<AppState>> {
 }
 
 async fn run() -> Result<()> {
-    tracing_subscriber::fmt()
+    use tracing_subscriber::prelude::*;
+    let cfg = config::Config::from_env();
+    // Debug mode starts first, so its log layer and SQL hook see everything.
+    let debug_layer = telemetry::init(&cfg.debug).map(|layer| {
+        let level = if cfg.debug.trace { tracing::Level::TRACE } else { tracing::Level::DEBUG };
+        layer.with_filter(tracing_subscriber::filter::Targets::new().with_target("hyperfocal", level).with_default(tracing::Level::WARN))
+    });
+    let stdout = tracing_subscriber::fmt::layer()
         // Plain text in `docker logs`; colours only on a terminal.
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "hyperfocal=info,tower_http=warn".into()))
-        .init();
-    let cfg = config::Config::from_env();
+        .with_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "hyperfocal=info,tower_http=warn".into()));
+    tracing_subscriber::registry().with(stdout).with(debug_layer).init();
+    // Named, so CPU time per thread can be told apart (top -H, debug mode's samples).
+    let _ = rayon::ThreadPoolBuilder::new().thread_name(|i| format!("rayon-{i}")).build_global();
     tracing::info!("Hyperfocal {} — library {} (config {})", env!("CARGO_PKG_VERSION"), cfg.photos_root.display(), cfg.config_dir.display());
     let state = build_state(cfg.clone()).await?;
     if state.is_readonly() {
@@ -213,6 +222,7 @@ async fn run() -> Result<()> {
         images::simd::level(),
     );
 
+    telemetry::attach(&state);
     scan::spawn(state.clone());
     images::Images::spawn_workers(state.clone());
     ml::supervisor::spawn(state.clone());
@@ -253,7 +263,9 @@ async fn run() -> Result<()> {
         .fallback_service(spa)
         .layer(middleware::from_fn(static_cache))
         // Not the binary tile data of the RAW viewer (noisy samples: little to gain).
-        .layer(CompressionLayer::new().compress_when(DefaultPredicate::new().and(NotForContentType::const_new("application/octet-stream"))));
+        .layer(CompressionLayer::new().compress_when(DefaultPredicate::new().and(NotForContentType::const_new("application/octet-stream"))))
+        // Outermost: debug mode counts what goes over the wire (a no-op otherwise).
+        .layer(middleware::from_fn(telemetry::http::middleware));
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port));
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("binding {addr}"))?;
@@ -266,7 +278,11 @@ async fn run() -> Result<()> {
                 _ = term.recv() => {}
             }
             tracing::info!("shutting down");
+            // Debug mode marks the run as ended cleanly now: an open event stream keeps the
+            // server waiting until the container is killed.
+            telemetry::shutdown();
         })
         .await?;
+    telemetry::shutdown();
     Ok(())
 }

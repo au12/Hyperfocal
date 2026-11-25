@@ -23,6 +23,8 @@ type Outcome<T> = std::result::Result<Arc<T>, String>;
 /// The work running per key.
 pub struct Flights<K, T> {
     map: Mutex<HashMap<K, Arc<Flight<T>>>>,
+    /// What the work is ("develop"), for debug mode's timings.
+    name: &'static str,
 }
 
 struct Flight<T> {
@@ -41,8 +43,8 @@ where
     K: Clone + Eq + Hash + Send + Sync + 'static,
     T: Send + Sync + 'static,
 {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Flights { map: Mutex::new(HashMap::new()) })
+    pub fn new(name: &'static str) -> Arc<Self> {
+        Arc::new(Flights { map: Mutex::new(HashMap::new()), name })
     }
 
     /// The result of the work for `key`. Joins the work already running for it; else,
@@ -90,20 +92,41 @@ where
         if let Some(tx) = start {
             let ended = Ended { flights: self.clone(), key: key.clone(), flight: flight.clone() };
             let gate = gate.clone();
+            let name = self.name;
             tokio::spawn(async move {
                 let f = &ended.flight;
+                let queued = std::time::Instant::now();
                 let res = tokio::select! {
                     biased;
                     // Nobody waits any more: it never starts.
-                    _ = f.stop.notified() => Err(cancel::Cancelled.to_string()),
+                    _ = f.stop.notified() => {
+                        if crate::telemetry::on() {
+                            crate::telemetry::count(&format!("flight.{name}.dropped_waiting"), 1);
+                        }
+                        Err(cancel::Cancelled.to_string())
+                    }
                     permit = gate.acquire_as(&f.high) => {
                         let token = f.token.clone();
+                        // Debug mode: time waiting for a decoder slot, then the work itself.
+                        if crate::telemetry::on() {
+                            crate::telemetry::record(&format!("flight.{name}.wait"), queued.elapsed(), false);
+                        }
                         tokio::task::spawn_blocking(move || {
                             let _permit = permit;
                             if token.is_cancelled() {
                                 return Err(cancel::Cancelled.to_string());
                             }
-                            cancel::scope(&token, work).map_err(|e| format!("{e:#}"))
+                            let started = std::time::Instant::now();
+                            let r = cancel::scope(&token, work).map_err(|e| format!("{e:#}"));
+                            if crate::telemetry::on() {
+                                if token.is_cancelled() {
+                                    // Stopped part-way: the time it ran was spent for nothing.
+                                    crate::telemetry::record(&format!("flight.{name}.cancelled"), started.elapsed(), false);
+                                } else {
+                                    crate::telemetry::record(&format!("flight.{name}"), started.elapsed(), r.is_err());
+                                }
+                            }
+                            r
                         })
                         .await
                         .unwrap_or_else(|e| Err(format!("the decoder stopped: {e}")))
@@ -121,6 +144,11 @@ where
     /// Flights running now.
     #[cfg(test)]
     pub fn running(&self) -> usize {
+        self.map.lock().len()
+    }
+
+    /// Flights running now (debug mode's samples).
+    pub fn len(&self) -> usize {
         self.map.lock().len()
     }
 
@@ -195,7 +223,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn requests_share_one_run() {
-        let (flights, gate) = (Flights::<u8, u32>::new(), Arc::new(Gate::new(1)));
+        let (flights, gate) = (Flights::<u8, u32>::new("test"), Arc::new(Gate::new(1)));
         let (starts, cancelled) = counters();
         let a = flights.get(1, true, &gate, || None, work(150, &starts, &cancelled));
         let b = flights.get(1, true, &gate, || None, work(150, &starts, &cancelled));
@@ -220,7 +248,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_last_request_to_go_cancels_it() {
-        let (flights, gate) = (Flights::<u8, u32>::new(), Arc::new(Gate::new(1)));
+        let (flights, gate) = (Flights::<u8, u32>::new("test"), Arc::new(Gate::new(1)));
         let (starts, cancelled) = counters();
         let request = tokio::spawn({
             let (flights, gate, w) = (flights.clone(), gate.clone(), work(10_000, &starts, &cancelled));
@@ -244,7 +272,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn carries_on_while_anyone_waits() {
-        let (flights, gate) = (Flights::<u8, u32>::new(), Arc::new(Gate::new(1)));
+        let (flights, gate) = (Flights::<u8, u32>::new("test"), Arc::new(Gate::new(1)));
         let (starts, cancelled) = counters();
         let request = |ms| {
             let (flights, gate, w) = (flights.clone(), gate.clone(), work(ms, &starts, &cancelled));
@@ -262,7 +290,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_while_waiting_for_the_gate() {
-        let (flights, gate) = (Flights::<u8, u32>::new(), Arc::new(Gate::new(1)));
+        let (flights, gate) = (Flights::<u8, u32>::new("test"), Arc::new(Gate::new(1)));
         let held = gate.acquire(true).await;
         let (starts, cancelled) = counters();
         let r = tokio::time::timeout(Duration::from_millis(50), flights.get(1, true, &gate, || None, work(10, &starts, &cancelled))).await;
@@ -278,7 +306,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cached_result_needs_no_flight() {
-        let (flights, gate) = (Flights::<u8, u32>::new(), Arc::new(Gate::new(1)));
+        let (flights, gate) = (Flights::<u8, u32>::new("test"), Arc::new(Gate::new(1)));
         let (starts, cancelled) = counters();
         assert_eq!(*flights.get(1, true, &gate, || Some(Arc::new(9)), work(10, &starts, &cancelled)).await.unwrap(), 9);
         assert_eq!(starts.load(Ordering::SeqCst), 0);
@@ -286,7 +314,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn errors_reach_every_waiter() {
-        let (flights, gate) = (Flights::<u8, u32>::new(), Arc::new(Gate::new(1)));
+        let (flights, gate) = (Flights::<u8, u32>::new("test"), Arc::new(Gate::new(1)));
         let fail = || -> Result<Arc<u32>> {
             std::thread::sleep(Duration::from_millis(50));
             Err(anyhow!("not a RAW file"))

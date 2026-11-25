@@ -65,6 +65,7 @@ pub fn dims(data: &[u8]) -> Result<(usize, usize)> {
 }
 
 pub fn encode(img: &Rgb, quality: i32, chroma_full: bool) -> Result<Vec<u8>> {
+    let _t = crate::tel_op!("jpeg.encode", 200);
     let mut c = Compressor::new()?;
     c.set_quality(quality)?;
     c.set_subsamp(if chroma_full { Subsamp::None } else { Subsamp::Sub2x2 })?;
@@ -86,6 +87,7 @@ pub fn encode(img: &Rgb, quality: i32, chroma_full: bool) -> Result<Vec<u8>> {
 /// 150 ms a 2048 preview on one core). jpegli did better on paper (12%) but only as C++
 /// to build; WebP was 4% smaller, inconsistent, and 25 times slower.
 pub fn encode_small(img: &Rgb, quality: u8) -> Result<Vec<u8>> {
+    let _t = crate::tel_op!("jpeg.encode_small", 1000);
     if img.px.len() != img.w * img.h * 3 {
         return Err(anyhow!("bad image buffer"));
     }

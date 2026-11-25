@@ -257,6 +257,20 @@ impl Space {
         self.ids.len()
     }
 
+    /// Memory held (from capacities: what was allocated, not just what is used).
+    pub fn mem_bytes(&self) -> usize {
+        use std::mem::size_of;
+        self.ids.capacity() * 8
+            + self.photos.capacity() * 8
+            + self.vecs.capacity()
+            + self.norms.capacity() * 4
+            + self.codes.capacity() * 8
+            + self.quality.capacity() * 4
+            + self.subject.capacity() * 8
+            + self.confirmed.capacity()
+            + self.pos.capacity() * (size_of::<(i64, usize)>() + 1)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }

@@ -68,6 +68,11 @@ pub struct Assigned {
 }
 
 impl Engine {
+    /// Memory held by both embedding spaces and the rejections.
+    pub fn mem_bytes(&self) -> usize {
+        self.faces.mem_bytes() + self.pets.mem_bytes() + self.rejects.capacity() * (std::mem::size_of::<(i64, Vec<i64>)>() + 1) + self.rejects.values().map(|v| v.capacity() * 8).sum::<usize>()
+    }
+
     pub fn empty() -> Engine {
         Engine { faces: Space::default(), pets: Space::default(), rejects: HashMap::new() }
     }
